@@ -68,6 +68,14 @@
     <div class="row"><label>Ширина устья <span id="v_w">11°</span></label>
       <input type="range" id="w" min="4" max="40" step="1" value="11"></div>
 
+    <div class="sec">Движок геометрии</div>
+    <div class="row" style="display:flex;gap:14px">
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="radio" name="engine" value="own" checked> свой (экструзия)</label>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="radio" name="engine" value="csg"> csgrs (булевы)</label>
+    </div>
+
     <div class="sec">Расчёт (с сервера)</div>
     <div class="stat">Радиус кармана (апекс)<b id="s_apex">–</b></div>
     <div class="stat">Шаг между карманами<b id="s_pitch">–</b></div>
@@ -116,7 +124,8 @@ function readParams(){
           n:+n.value, depth:+dep.value, mouth:+w.value};
 }
 function queryString(p){
-  return `dia=${p.dia}&thk=${p.thk}&shaft=${p.shaft}&n=${p.n}&depth=${p.depth}&mouth=${p.mouth}`;
+  const engine = document.querySelector('input[name=engine]:checked').value;
+  return `dia=${p.dia}&thk=${p.thk}&shaft=${p.shaft}&n=${p.n}&depth=${p.depth}&mouth=${p.mouth}&engine=${engine}`;
 }
 
 // бинарный STL -> Float32Array позиций (нормали Three пересчитает сам)
@@ -205,6 +214,7 @@ function loop(t){
 ['dia','thk','sh','n','dep','w'].forEach(id=>{
   document.getElementById(id).addEventListener('input', rebuild);
 });
+document.querySelectorAll('input[name=engine]').forEach(r=>r.addEventListener('change', rebuild));
 document.getElementById('stl').addEventListener('click', downloadSTL);
 document.getElementById('reset').addEventListener('click', ()=>{
   const d={dia:70,thk:11,sh:5,n:12,dep:6,w:11};

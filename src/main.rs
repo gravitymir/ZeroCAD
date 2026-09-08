@@ -6,6 +6,7 @@
 //!
 //! Параметры query: dia, thk, shaft, n, depth, mouth (дефолты — в geometry.rs).
 
+mod csg;
 mod geometry;
 mod stl;
 
@@ -56,8 +57,13 @@ fn handle(stream: TcpStream) {
         ),
         "/api/wheel.stl" => {
             let p = params_from_query(query);
+            let use_csg = query.split('&').any(|kv| kv == "engine=csg");
             let started = std::time::Instant::now();
-            let tris = geometry::build_wheel(&p);
+            let tris = if use_csg {
+                csg::build_wheel_csg(&p)
+            } else {
+                geometry::build_wheel(&p)
+            };
             let body = stl::to_binary("zerocad_wheel", &tris);
             let extra = [
                 format!("X-Apex-Mm: {:.2}", p.apex()),
