@@ -44,6 +44,19 @@
   .hint{font-size:11px;color:var(--muted);margin-top:14px;line-height:1.5}
   .sec{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--accent2);
     margin:18px 0 4px;border-bottom:1px solid var(--line);padding-bottom:4px}
+  /* капсульный переключатель */
+  .switch{position:relative;display:inline-block;width:40px;height:22px;flex:none}
+  .switch input{opacity:0;width:0;height:0}
+  .switch .knob{position:absolute;cursor:pointer;inset:0;background:#3a3f4b;
+    border-radius:22px;transition:.2s}
+  .switch .knob:before{content:"";position:absolute;height:16px;width:16px;left:3px;top:3px;
+    background:#e7e9ee;border-radius:50%;transition:.2s}
+  .switch input:checked + .knob{background:#3ecf6a}
+  .switch input:checked + .knob:before{transform:translateX(18px)}
+  /* режим одного 3D-окна на весь вьюпорт */
+  #view.single .quadonly{display:none}
+  #view.single #hud{bottom:10px}
+  #view.single #vpanel{bottom:56px}
   /* всплывашка постановки точки на ребро */
   #popup{position:absolute;z-index:5;background:var(--panel);border:1px solid var(--accent2);
     border-radius:10px;padding:10px 12px;font-size:12px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
@@ -75,11 +88,11 @@
 <div id="app">
   <div id="view">
     <div id="grid">
-      <div class="h"></div><div class="v"></div>
-      <div class="vplabel" style="left:10px;top:10px"><b>3D</b> · ЛКМ вращать · клик по ребру — точка · колесо зум · ПКМ сдвиг</div>
-      <div class="vplabel" style="left:calc(50% + 10px);top:10px">Вид <b>+X</b> (сбоку) · сетка 1/10 мм</div>
-      <div class="vplabel" style="left:10px;top:calc(50% + 10px)">Вид <b>+Y</b> (сбоку) · сетка 1/10 мм</div>
-      <div class="vplabel" style="left:calc(50% + 10px);top:calc(50% + 10px)">Вид <b>+Z</b> (в плане) · сетка 1/10 мм</div>
+      <div class="h quadonly"></div><div class="v quadonly"></div>
+      <div class="vplabel" style="left:10px;top:10px"><b>3D</b> · ЛКМ вращать · клик по ребру — точка · колесо зум · ПКМ сдвиг · Ctrl+Z отмена</div>
+      <div class="vplabel quadonly" style="left:calc(50% + 10px);top:10px">Вид <b>+X</b> (сбоку) · сетка 1/10 мм</div>
+      <div class="vplabel quadonly" style="left:10px;top:calc(50% + 10px)">Вид <b>+Y</b> (сбоку) · сетка 1/10 мм</div>
+      <div class="vplabel quadonly" style="left:calc(50% + 10px);top:calc(50% + 10px)">Вид <b>+Z</b> (в плане) · сетка 1/10 мм</div>
     </div>
     <div id="hud"><b id="fps"></b></div>
     <div id="popup" hidden>
@@ -121,6 +134,12 @@
     <div class="row"><label>Ширина устья <span id="v_w">11°</span></label>
       <input type="range" id="w" min="4" max="40" step="1" value="11"></div>
 
+    <div class="sec">Окна</div>
+    <div class="row" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+      <span style="font-size:12px;color:var(--muted)">Виды X/Y/Z (4 окна) · <b style="color:var(--text);font-weight:400">Ctrl+Alt+Q</b></span>
+      <label class="switch"><input type="checkbox" id="quadview"><span class="knob"></span></label>
+    </div>
+
     <div class="sec">Движок геометрии</div>
     <div class="row" style="display:flex;gap:14px">
       <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
@@ -147,8 +166,11 @@
     вытянутся следом. Жёлтое — вершины: их можно тянуть или задавать X/Y/Z
     точно в полях. Бирюзовое — середина ребра. У дуговых рёбер показывается
     и правится радиус; галочка «тянуть дугой» изгибает ребро окружностью.
-    После ручной правки кнопка STL отдаёт изменённый меш из браузера.
-    Все единицы — миллиметры: шаг правок 0.1 мм, сетка 1 и 10 мм.</p>
+    Рёбра, вершины и точки выбираются в любом из четырёх окон; в орто-видах
+    перетаскивание идёт строго в плоскости вида, колесо мыши — зум.
+    Ctrl+Z отменяет правки (до 30 шагов). После ручной правки кнопка STL
+    отдаёт изменённый меш из браузера. Все единицы — миллиметры:
+    шаг правок 0.1 мм, сетка 1 и 10 мм.</p>
   </div>
 </div>
 
@@ -391,6 +413,7 @@ function moveVerticesByKey(oldPos, newPos){
 }
 for(const inp of [vx,vy,vz]) inp.addEventListener('change', ()=>{
   if(!sel) return;
+  pushUndo();
   const np = new THREE.Vector3(snapMM(+vx.value||0), snapMM(+vy.value||0), snapMM(+vz.value||0));
   moveVerticesByKey(sel.pos, np);
   sel.pos.copy(np); selMarker.position.copy(np);
@@ -406,6 +429,28 @@ function makeAnchor(p){
 function clearAnchors(){
   for(const a of anchors){ scene.remove(a.marker); }
   anchors = [];
+}
+
+// ---------- отмена (Ctrl+Z) ----------
+let undoStack = [];
+function takeSnapshot(){
+  return {
+    pos: mesh.geometry.attributes.position.array.slice(),
+    anchors: anchors.map(a=>({pos: a.pos.clone(),
+      bend: a.bend ? {pts0: a.bend.pts0.map(p=>p.clone()), t: a.bend.t.slice(), j: a.bend.j} : null}))
+  };
+}
+function pushUndo(){ undoStack.push(takeSnapshot()); if(undoStack.length>30) undoStack.shift(); }
+function undo(){
+  const s = undoStack.pop();
+  if(!s) return;
+  setMeshFromArray(s.pos);
+  clearAnchors();
+  for(const sa of s.anchors){ const a = makeAnchor(sa.pos); if(sa.bend) a.bend = sa.bend; }
+  deselect(); closePopup(); tipHide();
+  modified = undoStack.length > 0;
+  s_mod.textContent = modified ? 'да' : 'нет';
+  extractEdges();
 }
 
 // ---------- подсветка наведённой цепочки ----------
@@ -488,6 +533,7 @@ function buildIndexMap(points){
 }
 // сменить радиус дуговой цепочки: точки скользят по своим радиусам от центра
 function applyRadius(chain, arc, Rnew){
+  pushUndo();
   const im = buildIndexMap(chain.pts);
   const pos = mesh.geometry.attributes.position.array;
   const nUnit = arc.n.clone().normalize();
@@ -586,6 +632,7 @@ async function rebuild(){
   setMeshFromArray(parseSTL(buf));
   closePopup(); clearAnchors(); deselect(); tipHide();
   modified = false; s_mod.textContent = 'нет';
+  undoStack = []; // новая серверная модель — новая точка отсчёта
   extractEdges();
 
   camDist = Math.max(p.dia*1.9, 60);
@@ -629,13 +676,28 @@ function downloadSTL(){
 }
 
 // ---------- мышь ----------
+// режим окон: false = одно 3D на весь вьюпорт, true = 4 окна
+const quadChk = document.getElementById('quadview');
+function applyViewMode(){ view.classList.toggle('single', !quadChk.checked); }
+quadChk.addEventListener('change', applyViewMode);
+applyViewMode();
+
+// какой квадрант под курсором: его камера и локальные координаты
 function quadPos(e){
   const r = canvas.getBoundingClientRect();
-  const mx=e.clientX-r.left, my=e.clientY-r.top, w=r.width/2, h=r.height/2;
-  return {mx,my,w,h, inside: mx<w && my<h};
+  const x=e.clientX-r.left, y=e.clientY-r.top;
+  const inside = x>=0 && y>=0 && x<r.width && y<r.height;
+  if(!quadChk.checked)
+    return {mx:x, my:y, w:r.width, h:r.height, cam:persp, ox:0, oy:0, is3D:true, inside};
+  const w=r.width/2, h=r.height/2;
+  const right = x>=w, bottom = y>=h;
+  const cam = (!right && !bottom) ? persp : (right && !bottom) ? orthoX
+            : (!right && bottom) ? orthoY : orthoZ;
+  return {mx: x-(right?w:0), my: y-(bottom?h:0), w, h, cam,
+          ox: right?w:0, oy: bottom?h:0, is3D: cam===persp, inside};
 }
-function projTo3DQuad(v, w, h, out){
-  const p = v.clone().project(persp);
+function projToQuad(v, cam, w, h, out){
+  const p = v.clone().project(cam);
   out.x=(p.x+1)/2*w; out.y=(1-p.y)/2*h; out.z=p.z;
   return out;
 }
@@ -645,8 +707,8 @@ function pickEdge(q){
   let best=null, bestD=8; // порог 8px
   for(const ch of chains){
     for(let i=1;i<ch.pts.length;i++){
-      projTo3DQuad(ch.pts[i-1], q.w, q.h, P1);
-      projTo3DQuad(ch.pts[i],   q.w, q.h, P2);
+      projToQuad(ch.pts[i-1], q.cam, q.w, q.h, P1);
+      projToQuad(ch.pts[i],   q.cam, q.w, q.h, P2);
       if(P1.z>1||P2.z>1||P1.z<-1||P2.z<-1) continue;
       const dx=P2.x-P1.x, dy=P2.y-P1.y;
       const L2=dx*dx+dy*dy; if(L2<1e-9) continue;
@@ -662,7 +724,7 @@ function pickEdge(q){
 function anchorAt(q){
   const P={x:0,y:0,z:0};
   for(const a of anchors){
-    projTo3DQuad(a.marker.position, q.w, q.h, P);
+    projToQuad(a.marker.position, q.cam, q.w, q.h, P);
     if(Math.hypot(P.x-q.mx, P.y-q.my)<10) return a;
   }
   return null;
@@ -672,7 +734,7 @@ function pickCorner(q){
   const P={x:0,y:0,z:0};
   let best=null, bestD=10;
   for(const c of corners){
-    projTo3DQuad(c.pos, q.w, q.h, P);
+    projToQuad(c.pos, q.cam, q.w, q.h, P);
     if(P.z>1||P.z<-1) continue;
     const d=Math.hypot(P.x-q.mx, P.y-q.my);
     if(d<bestD){ bestD=d; best=c; }
@@ -725,6 +787,7 @@ p_rad.addEventListener('change', ()=>{
 });
 document.getElementById('p_ok').addEventListener('click', ()=>{
   if(!placing) return;
+  pushUndo();
   placing.s = snapMM(placing.s);
   const bendWanted = !p_bendrow.hidden && p_bend.checked;
   const P = splitEdgeAt(placing.chain, placing.s) || chainPointAt(placing.chain, placing.s);
@@ -742,6 +805,15 @@ document.getElementById('p_ok').addEventListener('click', ()=>{
   }
 });
 window.addEventListener('keydown', e=>{
+  if((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase()==='z'){
+    e.preventDefault(); undo(); return;
+  }
+  if(e.ctrlKey && e.altKey && e.code==='KeyQ'){ // как в Blender: Toggle Quad View
+    e.preventDefault();
+    quadChk.checked = !quadChk.checked;
+    applyViewMode();
+    return;
+  }
   if(e.key==='Escape'){ closePopup(); deselect(); tipHide(); }
 });
 
@@ -753,12 +825,16 @@ canvas.addEventListener('pointerdown', e=>{
   if(e.button===0){
     const a = anchorAt(q);
     const c = a ? null : pickCorner(q);
-    if(a || c){ // тащим точку или вершину: плоскость параллельна экрану
+    if(a || c){ // тащим точку или вершину: плоскость параллельна экрану окна
       if(c) selectVertex(c.pos);
       const tgt = a ? a.pos : sel.pos;
-      const nrm = new THREE.Vector3().subVectors(persp.position, camTarget).normalize();
+      const nrm = q.is3D
+        ? new THREE.Vector3().subVectors(persp.position, camTarget).normalize()
+        : q.cam.position.clone().normalize(); // орто: строго в плоскости вида
       const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(nrm, tgt);
       dragPt = {a, isSel: !!c, start: tgt.clone(), plane,
+                q0: {cam:q.cam, ox:q.ox, oy:q.oy, w:q.w, h:q.h},
+                snap: takeSnapshot(), snapPushed: false,
                 markers: a ? [a.marker] : [selMarker]};
       if(a && a.bend){ // режим дуги: индексы всех точек цепочки одним проходом
         const im = buildIndexMap(a.bend.pts0);
@@ -782,8 +858,10 @@ canvas.addEventListener('pointerdown', e=>{
     if(hover){ openPopup(e, q); return; } // клик по ребру
   }
   tipHide();
-  drag={x:e.clientX,y:e.clientY,b:e.button};
-  canvas.setPointerCapture(e.pointerId);
+  if(q.is3D){ // орбита/сдвиг — только в 3D-окне
+    drag={x:e.clientX,y:e.clientY,b:e.button};
+    canvas.setPointerCapture(e.pointerId);
+  }
 });
 canvas.addEventListener('pointerup', ()=>{
   if(dragPt){
@@ -798,11 +876,19 @@ const raycaster = new THREE.Raycaster();
 canvas.addEventListener('pointermove', e=>{
   const q = quadPos(e);
   if(dragPt){
-    if(!q.inside) return;
-    raycaster.setFromCamera({x:q.mx/q.w*2-1, y:-(q.my/q.h*2-1)}, persp);
+    // драг привязан к окну, где начался (курсор может выходить за его границы)
+    const rc = canvas.getBoundingClientRect();
+    const q0 = dragPt.q0;
+    const lx = (e.clientX-rc.left) - q0.ox, ly = (e.clientY-rc.top) - q0.oy;
+    raycaster.setFromCamera({x: lx/q0.w*2-1, y: -(ly/q0.h*2-1)}, q0.cam);
     const hit = new THREE.Vector3();
     if(!raycaster.ray.intersectPlane(dragPt.plane, hit)) return;
     hit.set(snapMM(hit.x), snapMM(hit.y), snapMM(hit.z)); // привязка 0.1 мм
+    if(!dragPt.snapPushed){ // первый сдвиг — пишем историю для Ctrl+Z
+      undoStack.push(dragPt.snap);
+      if(undoStack.length>30) undoStack.shift();
+      dragPt.snapPushed = true;
+    }
     const pos = mesh.geometry.attributes.position.array;
     if(dragPt.bendRun){
       // гнём цепочку дугой через её концы и ручку (bulge как в SketchUp)
@@ -859,7 +945,7 @@ canvas.addEventListener('pointermove', e=>{
   const h = q.inside ? pickEdge(q) : null;
   if(h){
     const midP = chainPointAt(h.chain, h.chain.total/2);
-    const scr = projTo3DQuad(midP, q.w, q.h, {x:0,y:0,z:0});
+    const scr = projToQuad(midP, q.cam, q.w, q.h, {x:0,y:0,z:0});
     let isMid = false;
     if(!h.chain.closed && Math.hypot(scr.x-q.mx, scr.y-q.my) < 8){
       h.s = h.chain.total/2; isMid = true;
@@ -875,10 +961,16 @@ canvas.addEventListener('pointermove', e=>{
 });
 canvas.addEventListener('contextmenu', e=>e.preventDefault());
 canvas.addEventListener('wheel', e=>{
-  if(!quadPos(e).inside) return;
+  const q = quadPos(e);
+  if(!q.inside) return;
   e.preventDefault();
-  camDist *= (1+Math.sign(e.deltaY)*0.1);
-  camDist = Math.max(20, Math.min(1200, camDist));
+  const k = 1+Math.sign(e.deltaY)*0.1;
+  if(q.is3D){
+    camDist = Math.max(20, Math.min(1200, camDist*k));
+  } else { // зум орто-видов (общий для трёх)
+    orthoFit = Math.max(5, Math.min(400, orthoFit*k));
+    updateOrthoFrusta();
+  }
 }, {passive:false});
 
 // ---------- рендер 4 окон ----------
@@ -904,7 +996,6 @@ function loop(t){
     camTarget.y + camDist*cp*Math.sin(yaw),
     camTarget.z + camDist*sp);
   persp.lookAt(camTarget);
-  persp.aspect = hw/hh; persp.updateProjectionMatrix();
 
   // маркеры постоянного экранного размера
   ghost.scale.setScalar(camDist*0.008);
@@ -912,10 +1003,16 @@ function loop(t){
   selMarker.scale.setScalar(camDist*0.011);
   for(const a of anchors) a.marker.scale.setScalar(camDist*0.011);
 
-  renderViewport(persp,  0,  hh, hw, hh, VIEW_GRIDS.persp); // 3D — слева сверху
-  renderViewport(orthoX, hw, hh, hw, hh, VIEW_GRIDS.ox);    // +X — справа сверху
-  renderViewport(orthoY, 0,  0,  hw, hh, VIEW_GRIDS.oy);    // +Y — слева снизу
-  renderViewport(orthoZ, hw, 0,  hw, hh, VIEW_GRIDS.oz);    // +Z — справа снизу
+  if(quadChk.checked){
+    persp.aspect = hw/hh; persp.updateProjectionMatrix();
+    renderViewport(persp,  0,  hh, hw, hh, VIEW_GRIDS.persp); // 3D — слева сверху
+    renderViewport(orthoX, hw, hh, hw, hh, VIEW_GRIDS.ox);    // +X — справа сверху
+    renderViewport(orthoY, 0,  0,  hw, hh, VIEW_GRIDS.oy);    // +Y — слева снизу
+    renderViewport(orthoZ, hw, 0,  hw, hh, VIEW_GRIDS.oz);    // +Z — справа снизу
+  } else {
+    persp.aspect = w/h; persp.updateProjectionMatrix();
+    renderViewport(persp, 0, 0, w, h, VIEW_GRIDS.persp);      // одно 3D на всё
+  }
 
   frames++; fpsT+=t-last; last=t;
   if(fpsT>500){ document.getElementById('fps').textContent=(1000*frames/fpsT).toFixed(0)+' fps'; frames=0; fpsT=0; }
