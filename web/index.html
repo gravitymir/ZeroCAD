@@ -15,9 +15,15 @@
   #app{display:flex;height:100%}
   #view{flex:1;position:relative}
   canvas{display:block}
-  #hud{position:absolute;left:12px;top:12px;font-size:12px;color:var(--muted);
-    background:rgba(0,0,0,.35);padding:8px 10px;border-radius:8px;pointer-events:none}
-  #hud b{color:var(--text)}
+  /* сетка 2x2 поверх canvas: рамки и подписи окон */
+  #grid{position:absolute;inset:0;pointer-events:none}
+  #grid .h{position:absolute;left:0;right:0;top:50%;height:1px;background:var(--line)}
+  #grid .v{position:absolute;top:0;bottom:0;left:50%;width:1px;background:var(--line)}
+  .vplabel{position:absolute;font-size:11px;color:var(--muted);
+    background:rgba(0,0,0,.4);padding:3px 8px;border-radius:6px;pointer-events:none}
+  .vplabel b{color:var(--accent2)}
+  #hud{position:absolute;left:10px;bottom:calc(50% + 8px);font-size:11px;color:var(--muted);
+    background:rgba(0,0,0,.35);padding:6px 8px;border-radius:6px;pointer-events:none}
   #panel{width:290px;background:var(--panel);border-left:1px solid var(--line);
     padding:16px;overflow-y:auto}
   h1{font-size:15px;margin:0 0 4px}
@@ -43,10 +49,14 @@
 <body>
 <div id="app">
   <div id="view">
-    <div id="hud">
-      ЛКМ — вращать &nbsp;·&nbsp; колесо — зум &nbsp;·&nbsp; ПКМ — сдвиг<br>
-      <b id="fps"></b>
+    <div id="grid">
+      <div class="h"></div><div class="v"></div>
+      <div class="vplabel" style="left:10px;top:10px"><b>3D</b> · ЛКМ вращать · колесо зум · ПКМ сдвиг</div>
+      <div class="vplabel" style="left:calc(50% + 10px);top:10px">Вид <b>+X</b> (сбоку)</div>
+      <div class="vplabel" style="left:10px;top:calc(50% + 10px)">Вид <b>+Y</b> (сбоку)</div>
+      <div class="vplabel" style="left:calc(50% + 10px);top:calc(50% + 10px)">Вид <b>+Z</b> (в плане)</div>
     </div>
+    <div id="hud"><b id="fps"></b></div>
   </div>
   <div id="panel">
     <h1>🦀 ZeroCAD · колесо-дозатор</h1>
@@ -87,9 +97,9 @@
       <button id="stl" class="primary">⬇ Скачать STL</button>
     </div>
 
-    <p class="hint">Каждое движение ползунка — HTTP-запрос к Rust: сервер строит меш,
-    пишет <b>бинарный STL</b> и отдаёт его сюда. Кнопка скачивает ровно тот же файл —
-    что видишь, то и печатаешь.</p>
+    <p class="hint">Четыре окна как в настоящем CAD: слева-сверху 3D (орбита камеры),
+    остальные — жёсткие ортогональные проекции вдоль осей. Деталь неподвижна,
+    двигаются только камеры.</p>
   </div>
 </div>
 
@@ -100,23 +110,44 @@ const view = document.getElementById('view');
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x15171c);
 
-const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
-let camDist = 160;
-const camTarget = new THREE.Vector3(0,0,0);
-
 const renderer = new THREE.WebGLRenderer({antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setScissorTest(true);
 view.appendChild(renderer.domElement);
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(1,1.5,1); scene.add(key);
-const fill = new THREE.DirectionalLight(0x88aaff, 0.35); fill.position.set(-1,-.5,-1); scene.add(fill);
+const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(1,1,1.5); scene.add(key);
+const fill = new THREE.DirectionalLight(0x88aaff, 0.35); fill.position.set(-1,-1,-.5); scene.add(fill);
 
-const pivot = new THREE.Group(); scene.add(pivot);
-pivot.add(new THREE.AxesHelper(50));
-
+scene.add(new THREE.AxesHelper(50));
 let mesh = null;
 const mat = new THREE.MeshStandardMaterial({color:0xff8a3d, metalness:0.15, roughness:0.55, flatShading:true});
+
+// ---------- камеры: 1 перспективная (орбита) + 3 ортогональные ----------
+// Колесо лежит в плоскости XY, толщина вдоль Z. Мировой «верх» = +Z.
+const persp = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
+persp.up.set(0,0,1);
+let camDist = 160, yaw = -1.1, pitch = 0.55; // орбита вокруг цели
+const camTarget = new THREE.Vector3(0,0,0);
+
+function makeOrtho(pos, up){
+  const c = new THREE.OrthographicCamera(-1,1,1,-1,1,3000);
+  c.position.copy(pos); c.up.copy(up); c.lookAt(0,0,0);
+  return c;
+}
+const D = 1000;
+const orthoX = makeOrtho(new THREE.Vector3(D,0,0), new THREE.Vector3(0,0,1));
+const orthoY = makeOrtho(new THREE.Vector3(0,D,0), new THREE.Vector3(0,0,1));
+const orthoZ = makeOrtho(new THREE.Vector3(0,0,D), new THREE.Vector3(0,1,0));
+let orthoFit = 70; // полувысота кадра орто-видов, мм (авто от диаметра)
+
+function updateOrthoFrusta(){
+  const w=view.clientWidth/2, h=view.clientHeight/2, aspect=w/h;
+  for(const c of [orthoX, orthoY, orthoZ]){
+    c.left=-orthoFit*aspect; c.right=orthoFit*aspect; c.top=orthoFit; c.bottom=-orthoFit;
+    c.updateProjectionMatrix();
+  }
+}
 
 // ---------- параметры и запрос к Rust ----------
 function readParams(){
@@ -161,11 +192,13 @@ async function rebuild(){
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.computeVertexNormals();
-  if(mesh){ pivot.remove(mesh); mesh.geometry.dispose(); }
+  if(mesh){ scene.remove(mesh); mesh.geometry.dispose(); }
   mesh = new THREE.Mesh(geo, mat);
-  pivot.add(mesh);
+  scene.add(mesh);
 
   camDist = Math.max(p.dia*1.9, 60);
+  orthoFit = p.dia*0.62;
+  updateOrthoFrusta();
   s_apex.textContent = res.headers.get('X-Apex-Mm')+' мм';
   s_pitch.textContent = res.headers.get('X-Pitch-Mm')+' мм';
   s_tris.textContent = pos.length/9;
@@ -180,31 +213,72 @@ function downloadSTL(){
   a.click();
 }
 
-// ---------- управление мышью ----------
+// ---------- мышь: работает только в 3D-окне (левый верхний квадрант) ----------
+function in3D(e){
+  const r = renderer.domElement.getBoundingClientRect();
+  return (e.clientX - r.left) < r.width/2 && (e.clientY - r.top) < r.height/2;
+}
 let drag=null;
-renderer.domElement.addEventListener('pointerdown', e=>{drag={x:e.clientX,y:e.clientY,b:e.button}; renderer.domElement.setPointerCapture(e.pointerId);});
+renderer.domElement.addEventListener('pointerdown', e=>{
+  if(!in3D(e)) return;
+  drag={x:e.clientX,y:e.clientY,b:e.button};
+  renderer.domElement.setPointerCapture(e.pointerId);
+});
 renderer.domElement.addEventListener('pointerup', ()=>drag=null);
 renderer.domElement.addEventListener('pointermove', e=>{
   if(!drag) return;
   const dx=e.clientX-drag.x, dy=e.clientY-drag.y; drag.x=e.clientX; drag.y=e.clientY;
-  if(drag.b===2){ camTarget.x -= dx*camDist*0.0015; camTarget.y += dy*camDist*0.0015; }
-  else { pivot.rotation.y += dx*0.01; pivot.rotation.x += dy*0.01; }
+  if(drag.b===2){
+    // сдвиг цели в плоскости экрана
+    const dir = new THREE.Vector3().subVectors(camTarget, persp.position).normalize();
+    const right = new THREE.Vector3().crossVectors(dir, persp.up).normalize();
+    const upv = new THREE.Vector3().crossVectors(right, dir);
+    camTarget.addScaledVector(right, -dx*camDist*0.0015);
+    camTarget.addScaledVector(upv, dy*camDist*0.0015);
+  } else {
+    yaw -= dx*0.01;
+    pitch = Math.max(-1.5, Math.min(1.5, pitch + dy*0.01));
+  }
 });
 renderer.domElement.addEventListener('contextmenu', e=>e.preventDefault());
-renderer.domElement.addEventListener('wheel', e=>{e.preventDefault(); camDist *= (1+Math.sign(e.deltaY)*0.1); camDist=Math.max(20,Math.min(1200,camDist));}, {passive:false});
+renderer.domElement.addEventListener('wheel', e=>{
+  if(!in3D(e)) return;
+  e.preventDefault();
+  camDist *= (1+Math.sign(e.deltaY)*0.1);
+  camDist = Math.max(20, Math.min(1200, camDist));
+}, {passive:false});
 
-// ---------- цикл ----------
+// ---------- рендер 4 окон ----------
 function resize(){
-  const w=view.clientWidth, h=view.clientHeight;
-  renderer.setSize(w,h); camera.aspect=w/h; camera.updateProjectionMatrix();
+  renderer.setSize(view.clientWidth, view.clientHeight);
+  updateOrthoFrusta();
 }
 window.addEventListener('resize', resize);
 
+function renderViewport(cam, x, y, w, h){
+  renderer.setViewport(x,y,w,h);
+  renderer.setScissor(x,y,w,h);
+  renderer.render(scene, cam);
+}
+
 let last=performance.now(), frames=0, fpsT=0;
 function loop(t){
-  camera.position.set(camTarget.x, camTarget.y+camDist*0.35, camTarget.z+camDist);
-  camera.lookAt(camTarget);
-  renderer.render(scene,camera);
+  const w=view.clientWidth, h=view.clientHeight, hw=w/2, hh=h/2;
+  // перспективная камера по орбите
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  persp.position.set(
+    camTarget.x + camDist*cp*Math.cos(yaw),
+    camTarget.y + camDist*cp*Math.sin(yaw),
+    camTarget.z + camDist*sp);
+  persp.lookAt(camTarget);
+  persp.aspect = hw/hh; persp.updateProjectionMatrix();
+
+  // setViewport меряет от НИЖНЕГО левого угла: верхний ряд имеет y=hh
+  renderViewport(persp,  0,  hh, hw, hh); // 3D — слева сверху
+  renderViewport(orthoX, hw, hh, hw, hh); // +X — справа сверху
+  renderViewport(orthoY, 0,  0,  hw, hh); // +Y — слева снизу
+  renderViewport(orthoZ, hw, 0,  hw, hh); // +Z — справа снизу
+
   frames++; fpsT+=t-last; last=t;
   if(fpsT>500){ document.getElementById('fps').textContent=(1000*frames/fpsT).toFixed(0)+' fps'; frames=0; fpsT=0; }
   requestAnimationFrame(loop);
@@ -219,10 +293,11 @@ document.getElementById('stl').addEventListener('click', downloadSTL);
 document.getElementById('reset').addEventListener('click', ()=>{
   const d={dia:70,thk:11,sh:5,n:12,dep:6,w:11};
   dia.value=d.dia; thk.value=d.thk; sh.value=d.sh; n.value=d.n; dep.value=d.dep; w.value=d.w;
+  yaw=-1.1; pitch=0.55; camTarget.set(0,0,0);
   rebuild();
 });
 
-resize(); rebuild(); pivot.rotation.x=-0.5; requestAnimationFrame(loop);
+resize(); rebuild(); requestAnimationFrame(loop);
 </script>
 </body>
 </html>
