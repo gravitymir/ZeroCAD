@@ -94,7 +94,7 @@
       <div class="vplabel quadonly" style="left:10px;top:calc(50% + 10px)">Вид <b>+Y</b> (сбоку) · сетка 1/10 мм</div>
       <div class="vplabel quadonly" style="left:calc(50% + 10px);top:calc(50% + 10px)">Вид <b>+Z</b> (в плане) · сетка 1/10 мм</div>
     </div>
-    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>ТЯНИ-ТОЛКАЙ · ЛКМ по грани — тянуть · P/Esc — выход<br></b><b id="fps"></b></div>
+    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>ТЯНИ-ТОЛКАЙ · ЛКМ по грани — тянуть · P/Esc — выход<br></b><b id="lnb" style="color:var(--accent2)" hidden>ЛИНИЯ · клик–клик — хорда · набери длину и Enter · Esc/L — выход<br></b><b id="fps"></b></div>
     <div id="popup" hidden>
       <div class="prow">Ребро: <b id="p_len">–</b> мм</div>
       <div class="prow">Отступ: <input id="p_off" type="number" step="0.1" min="0"> мм</div>
@@ -159,7 +159,11 @@
       <button id="stl" class="primary">⬇ Скачать STL</button>
     </div>
 
-    <p class="hint">Клавиша <b>P</b> — «Тяни-толкай» как в SketchUp: навёл на плоскую
+    <p class="hint">Клавиша <b>L</b> — «Линия» (карандаш SketchUp): клик по вершине,
+    ребру или грани ставит точку, второй клик рисует пунктирную хорду-направляющую
+    (в меш и STL она не попадает). Зажатый <b>Shift</b> фиксирует направление;
+    набери длину цифрами и <b>Enter</b> — точка встанет на точном расстоянии.
+    Клавиша <b>P</b> — «Тяни-толкай» как в SketchUp: навёл на плоскую
     грань, потянул ЛКМ — грань выдавливается вдоль нормали (шаг 0.1 мм),
     стенки идут следом; P или Esc — выход.
     Наведи курсор на ребро в 3D-окне — оно подсветится, по нему
@@ -433,7 +437,54 @@ function setPPMode(on){
   ppb.hidden = !on;
   canvas.style.cursor = on ? 'crosshair' : '';
   ppPatch = null; hidePatch();
-  if(on){ setHover(null); tipHide(); }
+  if(on){ setHover(null); tipHide(); if(lineMode) setLineMode(false); }
+}
+
+// ---------- «Линия» (L — карандаш SketchUp): чертёжные хорды-направляющие ----------
+let lineMode=false, lineStart=null, lastLinePt=null, lineLenStr='', lineDirLock=null;
+let guides=[], rubber=null;
+const lnb = document.getElementById('lnb');
+function setLineMode(on){
+  lineMode = on;
+  lnb.hidden = !on;
+  canvas.style.cursor = on ? 'crosshair' : '';
+  lineStart = null; lastLinePt = null; lineLenStr = ''; lineDirLock = null;
+  killRubber();
+  if(on){ setHover(null); tipHide(); if(ppMode) setPPMode(false); }
+  else { ghost.visible = false; vGhost.visible = false; tipHide(); }
+}
+function killRubber(){ if(rubber){ scene.remove(rubber); rubber.geometry.dispose(); rubber=null; } }
+function addGuide(A, B){
+  const g = new THREE.BufferGeometry().setFromPoints([A, B]);
+  const l = new THREE.Line(g, new THREE.LineDashedMaterial(
+    {color:0xb9c2d4, dashSize:1.6, gapSize:1.1})); // пунктир — как направляющие SketchUp
+  l.computeLineDistances();
+  scene.add(l);
+  guides.push({a:A.clone(), b:B.clone(), line:l});
+}
+function restoreGuides(list){
+  for(const g of guides){ scene.remove(g.line); g.line.geometry.dispose(); }
+  guides = [];
+  for(const s of list) addGuide(s.a, s.b);
+}
+// точка для рисования: вершина > точка на ребре (0.1 мм) > точка на грани
+function linePickPoint(q){
+  const c = pickCorner(q);
+  if(c) return {pos:c.pos.clone(), kind:'вершина'};
+  const h = pickEdge(q);
+  if(h) return {pos:chainPointAt(h.chain, snapMM(h.s)), kind:'на ребре'};
+  const f = raycastFace(q);
+  if(f){ const p=f.point.clone(); p.set(snapMM(p.x),snapMM(p.y),snapMM(p.z)); return {pos:p, kind:'на грани'}; }
+  return null;
+}
+function commitLinePoint(pos){
+  if(!lineStart){ lineStart = pos.clone(); }
+  else {
+    pushUndo();
+    addGuide(lineStart, pos);
+    lineStart = pos.clone(); // цепочка отрезков, как в SketchUp
+  }
+  lineLenStr = '';
 }
 function triNormalAt(t){
   const pos = mesh.geometry.attributes.position.array;
@@ -562,7 +613,8 @@ function takeSnapshot(){
   return {
     pos: mesh.geometry.attributes.position.array.slice(),
     anchors: anchors.map(a=>({pos: a.pos.clone(),
-      bend: a.bend ? {pts0: a.bend.pts0.map(p=>p.clone()), t: a.bend.t.slice(), j: a.bend.j} : null}))
+      bend: a.bend ? {pts0: a.bend.pts0.map(p=>p.clone()), t: a.bend.t.slice(), j: a.bend.j} : null})),
+    guides: guides.map(g=>({a: g.a.clone(), b: g.b.clone()}))
   };
 }
 function pushUndo(){ undoStack.push(takeSnapshot()); if(undoStack.length>30) undoStack.shift(); }
@@ -572,6 +624,7 @@ function undo(){
   setMeshFromArray(s.pos);
   clearAnchors();
   for(const sa of s.anchors){ const a = makeAnchor(sa.pos); if(sa.bend) a.bend = sa.bend; }
+  restoreGuides(s.guides || []);
   deselect(); closePopup(); tipHide(); hidePatch(); ppPatch=null;
   modified = undoStack.length > 0;
   s_mod.textContent = modified ? 'да' : 'нет';
@@ -755,7 +808,7 @@ async function rebuild(){
   }catch(e){ return; }
   const buf = await res.arrayBuffer();
   setMeshFromArray(parseSTL(buf));
-  closePopup(); clearAnchors(); deselect(); tipHide(); setPPMode(false);
+  closePopup(); clearAnchors(); deselect(); tipHide(); setPPMode(false); setLineMode(false);
   modified = false; s_mod.textContent = 'нет';
   undoStack = []; // новая серверная модель — новая точка отсчёта
   extractEdges();
@@ -936,6 +989,27 @@ window.addEventListener('keydown', e=>{
      && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); setPPMode(!ppMode); return; // P — Push/Pull, как в SketchUp
   }
+  if(lineMode && lineStart){ // набор длины отрезка с клавиатуры (Measurements SketchUp)
+    if(/^[0-9]$/.test(e.key) || e.key==='.' || e.key===','){
+      lineLenStr += (e.key===',' ? '.' : e.key);
+      e.preventDefault(); return;
+    }
+    if(e.key==='Backspace'){ lineLenStr = lineLenStr.slice(0,-1); e.preventDefault(); return; }
+    if(e.key==='Enter' && lineLenStr){
+      const len = parseFloat(lineLenStr);
+      const dir = lineDirLock || (lastLinePt && lastLinePt.distanceTo(lineStart)>0.05
+        ? new THREE.Vector3().subVectors(lastLinePt, lineStart).normalize() : null);
+      if(len>0 && dir){
+        commitLinePoint(lineStart.clone().addScaledVector(dir, snapMM(len)));
+        killRubber();
+      }
+      e.preventDefault(); return;
+    }
+  }
+  if((e.code==='KeyL' || e.key.toLowerCase()==='l') && !e.ctrlKey && !e.altKey && !e.metaKey
+     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); setLineMode(!lineMode); return; // L — Линия, как в SketchUp
+  }
   if((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase()==='z'){
     e.preventDefault(); undo(); return;
   }
@@ -945,7 +1019,14 @@ window.addEventListener('keydown', e=>{
     applyViewMode();
     return;
   }
-  if(e.key==='Escape'){ closePopup(); deselect(); tipHide(); if(ppMode) setPPMode(false); }
+  if(e.key==='Escape'){
+    closePopup(); deselect(); tipHide();
+    if(lineMode){
+      if(lineStart){ lineStart=null; lastLinePt=null; lineLenStr=''; lineDirLock=null; killRubber(); }
+      else setLineMode(false);
+    }
+    if(ppMode) setPPMode(false);
+  }
 });
 
 let drag=null;
@@ -953,6 +1034,22 @@ canvas.addEventListener('pointerdown', e=>{
   const q = quadPos(e);
   if(!q.inside) return;
   if(placing){ closePopup(); return; }
+  if(lineMode){ // режим «Линия»: клики ставят точки хорды
+    if(e.button===0 && q.inside){
+      const pt = linePickPoint(q);
+      if(pt){
+        let pos = pt.pos;
+        if(lineStart && lineDirLock){ // Shift: проекция на зафиксированное направление
+          const t = new THREE.Vector3().subVectors(pos, lineStart).dot(lineDirLock);
+          pos = lineStart.clone().addScaledVector(lineDirLock, snapMM(t));
+        }
+        commitLinePoint(pos);
+        lineDirLock = null;
+        killRubber();
+      }
+    }
+    return;
+  }
   if(ppMode){ // режим «Тяни-толкай»: ЛКМ по грани начинает выдавливание
     if(e.button===0){
       const hf = raycastFace(q);
@@ -1145,6 +1242,38 @@ canvas.addEventListener('pointermove', e=>{
     return;
   }
   if(placing) return;               // пока открыта всплывашка — наведение заморожено
+  if(lineMode){ // резинка и привязки в режиме «Линия»
+    if(!q.inside){ ghost.visible=false; killRubber(); tipHide(); return; }
+    const pt = linePickPoint(q);
+    if(pt){
+      let pos = pt.pos, note = pt.kind;
+      if(lineStart){
+        if(e.shiftKey){ // Shift зажат — фиксируем текущее направление (SketchUp)
+          if(!lineDirLock && lastLinePt && lastLinePt.distanceTo(lineStart)>0.05)
+            lineDirLock = new THREE.Vector3().subVectors(lastLinePt, lineStart).normalize();
+        } else lineDirLock = null;
+        if(lineDirLock){
+          const t = new THREE.Vector3().subVectors(pos, lineStart).dot(lineDirLock);
+          pos = lineStart.clone().addScaledVector(lineDirLock, snapMM(t));
+          note += ' · Shift: направление зафикс.';
+        }
+      }
+      lastLinePt = pos.clone();
+      ghost.material.color.setHex(pt.kind==='вершина' ? C_VERT : C_EDGE);
+      ghost.position.copy(pos); ghost.visible = true;
+      let msg = 'Линия · ' + note;
+      if(lineStart){
+        killRubber();
+        const rg = new THREE.BufferGeometry().setFromPoints([lineStart, pos]);
+        rubber = new THREE.Line(rg, new THREE.LineBasicMaterial({color:0x4da3ff}));
+        scene.add(rubber);
+        msg += ' · L '+lineStart.distanceTo(pos).toFixed(1)+' мм';
+        if(lineLenStr) msg += ' · ввод: '+lineLenStr+' мм (Enter)';
+      }
+      tipAt(e, msg);
+    } else { ghost.visible=false; killRubber(); tipHide(); }
+    return;
+  }
   if(ppMode){ // наведение на грань в режиме «Тяни-толкай»
     if(!q.inside){ ppPatch=null; hidePatch(); tipHide(); return; }
     const hf = raycastFace(q);
