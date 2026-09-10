@@ -169,8 +169,9 @@
     точно в полях. Бирюзовое — середина ребра. У дуговых рёбер показывается
     и правится радиус; точка на ребре с зажатым Alt тянется дугой
     (изгиб окружностью, радиус — в подсказке), без Alt — изломом.
-    <b>Ctrl</b> при захвате вершины тянет всё кольцо одинаковых вершин
-    (одинаковый радиус и высота — все зубья/впадины разом).
+    Кольцо одинаковых вершин (все зубья/впадины разом): <b>Alt+захват</b>
+    вершины — как loop-select в Blender, или <b>двойной клик</b> по вершине
+    (как петля в Max/Maya) и затем обычное перетаскивание.
     Во время перетаскивания клавиши X/Y/Z ограничивают движение одной осью
     (как в Blender, повторное нажатие снимает); точка прилипает к чужим
     вершинам (зелёная цель) и рёбрам (красная) — отпустишь, и она сядет
@@ -598,7 +599,7 @@ function selectVertex(pos){
   selMarker.position.copy(sel.pos); selMarker.visible = true;
   updateVPanel(); vpanel.hidden = false;
 }
-function deselect(){ sel = null; selMarker.visible = false; vpanel.hidden = true; }
+function deselect(){ sel = null; selMarker.visible = false; vpanel.hidden = true; clearRingMarkers(); }
 
 // перенос всех совпадающих вершин буфера в новую позицию
 function moveVerticesByKey(oldPos, newPos){
@@ -1092,9 +1093,23 @@ window.addEventListener('keydown', e=>{
 });
 
 let drag=null;
+// кольцо одинаковых вершин (тот же радиус и Z вокруг оси)
+function ringCornersAt(pos){
+  const r0 = Math.hypot(pos.x, pos.y), z0 = pos.z;
+  return corners.filter(cc =>
+    Math.abs(Math.hypot(cc.pos.x, cc.pos.y) - r0) < 0.05 &&
+    Math.abs(cc.pos.z - z0) < 0.05);
+}
+let ringMarkers = [];
+function clearRingMarkers(){ for(const m of ringMarkers) scene.remove(m); ringMarkers = []; }
+
 // начать перетаскивание точки (a) или выбранной вершины (c)
 function beginDrag(a, c, q, altKey, pointerId, ctrlKey){
+  // кольцо: Alt (loop-select Blender), Ctrl, или вершина уже выбрана двойным кликом
+  const wantRing = !!c && (altKey || ctrlKey ||
+    (sel && sel.ring && sel.pos.distanceTo(c.pos) < 1e-3));
   if(c) selectVertex(c.pos);
+  if(wantRing){ sel.ring = true; clearRingMarkers(); }
   const tgt = a ? a.pos : sel.pos;
   const nrm = q.is3D
     ? new THREE.Vector3().subVectors(persp.position, camTarget).normalize()
@@ -1104,11 +1119,8 @@ function beginDrag(a, c, q, altKey, pointerId, ctrlKey){
             q0: {cam:q.cam, ox:q.ox, oy:q.oy, w:q.w, h:q.h},
             snap: takeSnapshot(), snapPushed: false,
             markers: a ? [a.marker] : [selMarker]};
-  if(c && ctrlKey){ // Ctrl: кольцо одинаковых вершин (тот же радиус и Z вокруг оси колеса)
-    const r0 = Math.hypot(tgt.x, tgt.y), z0 = tgt.z;
-    const ring = corners.filter(cc =>
-      Math.abs(Math.hypot(cc.pos.x, cc.pos.y) - r0) < 0.05 &&
-      Math.abs(cc.pos.z - z0) < 0.05);
+  if(wantRing){ // кольцевая симметрия: тянем все повторяющиеся вершины
+    const ring = ringCornersAt(tgt);
     const byKey = new Map();
     const items = ring.map(cc => {
       const it = {ang: Math.atan2(cc.pos.y, cc.pos.x), idx: []};
@@ -1120,7 +1132,7 @@ function beginDrag(a, c, q, altKey, pointerId, ctrlKey){
       const it = byKey.get(keyOf(pos[i], pos[i+1], pos[i+2]));
       if(it) it.idx.push(i);
     }
-    dragPt.ringRun = {items, r0, z0};
+    dragPt.ringRun = {items, r0: Math.hypot(tgt.x, tgt.y), z0: tgt.z};
   } else if(a && a.bend && altKey){ // Alt = режим дуги (как модификаторы Move в SketchUp)
     const im = buildIndexMap(a.bend.pts0);
     dragPt.bendRun = {
@@ -1430,6 +1442,22 @@ canvas.addEventListener('pointermove', e=>{
     tipHide();
   }
 });
+// двойной клик по вершине — выбрать кольцо одинаковых вершин (как loop в Max/Maya)
+canvas.addEventListener('dblclick', e=>{
+  const q = quadPos(e);
+  if(!q.inside || lineMode || ppMode || placing) return;
+  const c = pickCorner(q);
+  if(!c) return;
+  selectVertex(c.pos);
+  sel.ring = true;
+  clearRingMarkers();
+  for(const cc of ringCornersAt(c.pos)){
+    const m = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VERT}));
+    m.position.copy(cc.pos);
+    scene.add(m);
+    ringMarkers.push(m);
+  }
+});
 canvas.addEventListener('contextmenu', e=>e.preventDefault());
 canvas.addEventListener('wheel', e=>{
   const q = quadPos(e);
@@ -1473,6 +1501,7 @@ function loop(t){
   vGhost.scale.setScalar(camDist*0.012);
   selMarker.scale.setScalar(camDist*0.011);
   snapDot.scale.setScalar(camDist*0.012);
+  for(const m of ringMarkers) m.scale.setScalar(camDist*0.009);
   for(const sp of axisLabels) sp.scale.setScalar(camDist*0.045);
   for(const a of anchors) a.marker.scale.setScalar(camDist*0.011);
 
