@@ -157,7 +157,9 @@
 
     <p class="hint">Клавиша <b>L</b> — «Линия» (карандаш SketchUp): клик по вершине,
     ребру или грани ставит точку, второй клик рисует пунктирную хорду-направляющую
-    (в меш и STL она не попадает). Зажатый <b>Shift</b> фиксирует направление;
+    (в меш и STL она не попадает). Хорда, лежащая на плоской грани, работает
+    границей для «Тяни-толкай»: P возьмёт область только до неё — так можно
+    поднять или вдавить один зуб. Зажатый <b>Shift</b> фиксирует направление;
     набери длину цифрами и <b>Enter</b> — точка встанет на точном расстоянии.
     Клавиша <b>P</b> — «Тяни-толкай» как в SketchUp: навёл на плоскую
     грань, потянул ЛКМ — грань выдавливается вдоль нормали (шаг 0.1 мм),
@@ -171,7 +173,9 @@
     (изгиб окружностью, радиус — в подсказке), без Alt — изломом.
     Кольцо одинаковых вершин (все зубья/впадины разом): <b>Alt+захват</b>
     вершины — как loop-select в Blender, или <b>двойной клик</b> по вершине
-    (как петля в Max/Maya) и затем обычное перетаскивание.
+    (как петля в Max/Maya) и затем обычное перетаскивание. Кольцо двигается
+    в своей плоскости (меняется радиус); нажми <b>Z</b> во время
+    перетаскивания, чтобы менять высоту.
     Во время перетаскивания клавиши X/Y/Z ограничивают движение одной осью
     (как в Blender, повторное нажатие снимает); точка прилипает к чужим
     вершинам (зелёная цель) и рёбрам (красная) — отпустишь, и она сядет
@@ -506,9 +510,78 @@ function commitLinePoint(pos){
   else {
     pushUndo();
     addGuide(lineStart, pos);
+    splitMeshByChord(lineStart, pos); // врезаем хорду в сетку — как режет линия в SketchUp
+    extractEdges();
     lineStart = pos.clone(); // цепочка отрезков, как в SketchUp
   }
   lineLenStr = '';
+}
+
+// Врезка отрезка A-B в копланарные треугольники меша: каждый пересечённый
+// треугольник делится по линии хорды на 2-3. После этого вдоль хорды есть
+// настоящие рёбра сетки, и заливка граней режется по ней точно.
+function splitMeshByChord(A, B){
+  const pos = mesh.geometry.attributes.position.array;
+  const dir = new THREE.Vector3().subVectors(B, A);
+  const chordLen = dir.length();
+  if(chordLen < 1e-6) return;
+  dir.multiplyScalar(1/chordLen);
+  const out = [];
+  const V = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  const push3 = (a,b,c) => {
+    // отбрасываем вырожденные осколки
+    const ar = new THREE.Vector3().crossVectors(
+      new THREE.Vector3().subVectors(b,a),
+      new THREE.Vector3().subVectors(c,a)).length();
+    if(ar < 1e-6) return;
+    out.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
+  };
+  let changed = false;
+  for(let o=0; o<pos.length; o+=9){
+    for(let k=0;k<3;k++) V[k].fromArray(pos, o+k*3);
+    const orig = () => { for(let j=0;j<9;j++) out.push(pos[o+j]); };
+    const n = new THREE.Vector3().crossVectors(
+      new THREE.Vector3().subVectors(V[1],V[0]),
+      new THREE.Vector3().subVectors(V[2],V[0]));
+    const a2 = n.length();
+    if(a2 < 1e-9){ orig(); continue; }
+    n.multiplyScalar(1/a2);
+    // хорда должна лежать в плоскости треугольника
+    if(Math.abs(n.dot(new THREE.Vector3().subVectors(A, V[0]))) > 0.05 ||
+       Math.abs(n.dot(new THREE.Vector3().subVectors(B, V[0]))) > 0.05){ orig(); continue; }
+    // знаковые расстояния вершин до линии хорды (в плоскости)
+    const nl = new THREE.Vector3().crossVectors(n, dir);
+    const d = V.map(v => nl.dot(new THREE.Vector3().subVectors(v, A)));
+    const EPS = 1e-4;
+    const s = d.map(x => x > EPS ? 1 : (x < -EPS ? -1 : 0));
+    if(!(s.includes(1) && s.includes(-1))){ orig(); continue; }
+    // пересечение должно попадать в сам отрезок хорды (с полем 0.5 мм)
+    const cx = (V[0].x+V[1].x+V[2].x)/3, cy=(V[0].y+V[1].y+V[2].y)/3, cz=(V[0].z+V[1].z+V[2].z)/3;
+    const t = dir.x*(cx-A.x) + dir.y*(cy-A.y) + dir.z*(cz-A.z);
+    if(t < -0.5 || t > chordLen + 0.5){ orig(); continue; }
+    changed = true;
+    const zeroIdx = s.indexOf(0);
+    if(zeroIdx >= 0){
+      // вершина на линии, две другие по разные стороны: делим на 2
+      const a0 = zeroIdx, b0 = (zeroIdx+1)%3, c0 = (zeroIdx+2)%3;
+      const tt = d[b0]/(d[b0]-d[c0]);
+      const P = new THREE.Vector3().lerpVectors(V[b0], V[c0], tt);
+      push3(V[a0], V[b0], P);
+      push3(V[a0], P, V[c0]);
+    } else {
+      // одна вершина по одну сторону, две по другую: делим на 3
+      let a0 = 0;
+      if(s[1] !== s[0] && s[1] !== s[2]) a0 = 1;
+      else if(s[2] !== s[0] && s[2] !== s[1]) a0 = 2;
+      const b0 = (a0+1)%3, c0 = (a0+2)%3;
+      const Pab = new THREE.Vector3().lerpVectors(V[a0], V[b0], d[a0]/(d[a0]-d[b0]));
+      const Pca = new THREE.Vector3().lerpVectors(V[c0], V[a0], d[c0]/(d[c0]-d[a0]));
+      push3(V[a0], Pab, Pca);
+      push3(Pab, V[b0], V[c0]);
+      push3(Pab, V[c0], Pca);
+    }
+  }
+  if(changed) setMeshFromArray(new Float32Array(out));
 }
 function triNormalAt(t){
   const pos = mesh.geometry.attributes.position.array;
@@ -517,30 +590,77 @@ function triNormalAt(t){
         C=new THREE.Vector3().fromArray(pos,t*9+6);
   return new THREE.Vector3().crossVectors(B.sub(A), C.sub(A)).normalize();
 }
-// связная копланарная грань вокруг треугольника (заливка по общим вершинам)
+// пересекаются ли 2D-отрезки ab и cd (строго, касание не считается)
+function segCross2(a,b,c,d){
+  const o=(p,q,r)=>(q[0]-p[0])*(r[1]-p[1])-(q[1]-p[1])*(r[0]-p[0]);
+  const o1=o(a,b,c), o2=o(a,b,d), o3=o(c,d,a), o4=o(c,d,b);
+  return ((o1>0)!==(o2>0)) && ((o3>0)!==(o4>0));
+}
+// связная копланарная грань вокруг треугольника.
+// Заливка идёт по общим РЁБРАМ и не пересекает направляющие («Линия»),
+// лежащие в плоскости грани, — хорда режет грань на области, как в SketchUp.
 function facePatchAt(triIdx){
   const pos = mesh.geometry.attributes.position.array;
   const n0 = triNormalAt(triIdx);
   const d0 = n0.x*pos[triIdx*9] + n0.y*pos[triIdx*9+1] + n0.z*pos[triIdx*9+2];
+  // 2D-базис плоскости для тестов пересечения с хордами
+  const u = (Math.abs(n0.z) < 0.9
+    ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n0).normalize();
+  const v = n0.clone().cross(u);
+  const to2 = (x,y,z) => [x*u.x+y*u.y+z*u.z, x*v.x+y*v.y+z*v.z];
+  const inPlane = P => Math.abs(P.x*n0.x+P.y*n0.y+P.z*n0.z - d0) < 0.1;
+  const cuts = guides.filter(g => inPlane(g.a) && inPlane(g.b))
+    .map(g => {
+      // продлеваем хорду на 1 мм за концы, чтобы заливка не «обтекала» их
+      const A = to2(g.a.x,g.a.y,g.a.z), B = to2(g.b.x,g.b.y,g.b.z);
+      const dx = B[0]-A[0], dy = B[1]-A[1];
+      const L = Math.hypot(dx,dy) || 1;
+      const ex = dx/L, ey = dy/L;
+      return [[A[0]-ex, A[1]-ey], [B[0]+ex, B[1]+ey]];
+    });
+  // смежность по рёбрам
+  const eAdj = new Map();
+  const triCount = pos.length/9;
+  for(let t=0;t<triCount;t++){
+    for(let e=0;e<3;e++){
+      const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+      const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+      const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+      let arr=eAdj.get(ek); if(!arr){arr=[];eAdj.set(ek,arr);} arr.push(t);
+    }
+  }
+  const cent2 = t => {
+    const o=t*9;
+    return to2((pos[o]+pos[o+3]+pos[o+6])/3, (pos[o+1]+pos[o+4]+pos[o+7])/3, (pos[o+2]+pos[o+5]+pos[o+8])/3);
+  };
   const set = new Set([triIdx]);
   const queue = [triIdx];
   while(queue.length){
     const t = queue.pop();
-    for(let v=0; v<3; v++){
-      const o = t*9+v*3;
-      const adj = vertTris.get(keyOf(pos[o],pos[o+1],pos[o+2])) || [];
-      for(const t2 of adj){
+    const ct = cent2(t);
+    for(let e=0;e<3;e++){
+      const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+      const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+      const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+      for(const t2 of (eAdj.get(ek)||[])){
         if(set.has(t2)) continue;
         if(triNormalAt(t2).dot(n0) < 0.999) continue;
-        const o2 = t2*9;
-        if(Math.abs(n0.x*pos[o2]+n0.y*pos[o2+1]+n0.z*pos[o2+2] - d0) > 0.02) continue;
+        const o3 = t2*9;
+        if(Math.abs(n0.x*pos[o3]+n0.y*pos[o3+1]+n0.z*pos[o3+2] - d0) > 0.02) continue;
+        // не переступаем через хорду: путь центроид->центроид не должен её резать
+        if(cuts.length){
+          const c2 = cent2(t2);
+          let crossed = false;
+          for(const cut of cuts) if(segCross2(ct, c2, cut[0], cut[1])){ crossed=true; break; }
+          if(crossed) continue;
+        }
         set.add(t2); queue.push(t2);
       }
     }
   }
   const keys = new Set();
-  for(const t of set) for(let v=0; v<3; v++){
-    const o = t*9+v*3;
+  for(const t of set) for(let vv=0; vv<3; vv++){
+    const o = t*9+vv*3;
     keys.add(keyOf(pos[o],pos[o+1],pos[o+2]));
   }
   return {set, tris:[...set], keys, normal:n0};
@@ -1274,15 +1394,30 @@ canvas.addEventListener('pointermove', e=>{
               axisLock==='y' ? hit.y : st.y,
               axisLock==='z' ? hit.z : st.z);
     }
-    // кольцевая симметрия: Ctrl-драг вершины тянет все повторяющиеся вершины
+    // кольцевая симметрия: тянем все повторяющиеся вершины
     if(dragPt.ringRun){
       const rr = dragPt.ringRun;
       const st = dragPt.start;
-      const nR = snapMM(Math.max(0.2, rr.r0 + Math.hypot(hit.x,hit.y) - Math.hypot(st.x,st.y)));
-      const nz = snapMM(rr.z0 + hit.z - st.z);
+      const posR = mesh.geometry.attributes.position.array;
+      // по умолчанию — движение в плоскости кольца (только радиус);
+      // высота меняется только при зафиксированной оси Z (клавиша Z)
+      let dr = 0, dz = 0;
+      if(axisLock === 'z'){
+        dz = hit.z - st.z;
+      } else {
+        const ru = Math.hypot(st.x, st.y) || 1;
+        dr = ((hit.x - st.x)*st.x + (hit.y - st.y)*st.y) / ru;
+      }
+      const nR = snapMM(Math.max(0.2, rr.r0 + dr));
+      const nz = snapMM(rr.z0 + dz);
+      if(!dragPt.snapPushed){ // история для Ctrl+Z
+        undoStack.push(dragPt.snap);
+        if(undoStack.length>30) undoStack.shift();
+        dragPt.snapPushed = true;
+      }
       for(const it of rr.items){
         const nx = Math.cos(it.ang)*nR, ny = Math.sin(it.ang)*nR;
-        for(const i of it.idx){ pos[i]=nx; pos[i+1]=ny; pos[i+2]=nz; }
+        for(const i of it.idx){ posR[i]=nx; posR[i+1]=ny; posR[i+2]=nz; }
       }
       mesh.geometry.attributes.position.needsUpdate = true;
       normalsThrottled();
@@ -1292,7 +1427,8 @@ canvas.addEventListener('pointermove', e=>{
         selMarker.position.copy(sel.pos);
         updateVPanel();
       }
-      tipAt(e, 'кольцо ×'+rr.items.length+' вершин<br>R '+nR.toFixed(1)+' мм · Z '+nz.toFixed(1)+' мм');
+      tipAt(e, 'кольцо ×'+rr.items.length+' вершин<br>R '+nR.toFixed(1)+' мм · Z '+nz.toFixed(1)+' мм'
+               +(axisLock==='z' ? ' · ось Z' : ' · (Z — по высоте)'));
       if(!modified){ modified=true; s_mod.textContent='да'; }
       return;
     }
