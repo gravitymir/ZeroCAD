@@ -193,7 +193,13 @@ scene.add(new THREE.AmbientLight(0xffffff, 0.55));
 const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(1,1,1.5); scene.add(key);
 const fill = new THREE.DirectionalLight(0x88aaff, 0.35); fill.position.set(-1,-1,-.5); scene.add(fill);
 
-scene.add(new THREE.AxesHelper(50));
+// оси мира в тех же цветах, что и фиксация осей: X красная, Y зелёная, Z синяя
+const AXIS_COLORS = {x:0xd9534f, y:0x4cbb5c, z:0x4d7dff};
+for(const [ax, v] of [['x',[50,0,0]], ['y',[0,50,0]], ['z',[0,0,50]]]){
+  const g = new THREE.BufferGeometry().setFromPoints(
+    [new THREE.Vector3(0,0,0), new THREE.Vector3(v[0],v[1],v[2])]);
+  scene.add(new THREE.Line(g, new THREE.LineBasicMaterial({color:AXIS_COLORS[ax]})));
+}
 
 // ---------- миллиметровая сетка ----------
 // Все единицы проекта — мм. 10 мм — крупная сетка, 1 мм — тонкая (в орто-видах).
@@ -265,7 +271,7 @@ function setAxisLock(ax){
   if(ax && dragPt){
     const s = dragPt.start;
     const d = {x:[1,0,0], y:[0,1,0], z:[0,0,1]}[ax];
-    const col = {x:0xd9534f, y:0x4cbb5c, z:0x4d7dff}[ax];
+    const col = AXIS_COLORS[ax];
     const g = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(s.x-d[0]*500, s.y-d[1]*500, s.z-d[2]*500),
       new THREE.Vector3(s.x+d[0]*500, s.y+d[1]*500, s.z+d[2]*500)]);
