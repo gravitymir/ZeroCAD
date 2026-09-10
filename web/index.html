@@ -94,7 +94,7 @@
       <div class="vplabel quadonly" style="left:10px;top:calc(50% + 10px)">Вид <b>+Y</b> (сбоку) · сетка 1/10 мм</div>
       <div class="vplabel quadonly" style="left:calc(50% + 10px);top:calc(50% + 10px)">Вид <b>+Z</b> (в плане) · сетка 1/10 мм</div>
     </div>
-    <div id="hud"><b id="fps"></b></div>
+    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>ТЯНИ-ТОЛКАЙ · ЛКМ по грани — тянуть · P/Esc — выход<br></b><b id="fps"></b></div>
     <div id="popup" hidden>
       <div class="prow">Ребро: <b id="p_len">–</b> мм</div>
       <div class="prow">Отступ: <input id="p_off" type="number" step="0.1" min="0"> мм</div>
@@ -159,7 +159,10 @@
       <button id="stl" class="primary">⬇ Скачать STL</button>
     </div>
 
-    <p class="hint">Наведи курсор на ребро в 3D-окне — оно подсветится, по нему
+    <p class="hint">Клавиша <b>P</b> — «Тяни-толкай» как в SketchUp: навёл на плоскую
+    грань, потянул ЛКМ — грань выдавливается вдоль нормали (шаг 0.1 мм),
+    стенки идут следом; P или Esc — выход.
+    Наведи курсор на ребро в 3D-окне — оно подсветится, по нему
     побежит точка. Клик — точка фиксируется, в окошке можно задать отступ от
     начала ребра или нажать «Центр». Поставленную точку тяни мышью — грани
     вытянутся следом. Жёлтое — вершины: их можно тянуть или задавать X/Y/Z
@@ -186,7 +189,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x15171c);
 
 const renderer = new THREE.WebGLRenderer({antialias:true});
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));
 renderer.setScissorTest(true);
 view.appendChild(renderer.domElement);
 const canvas = renderer.domElement;
@@ -258,6 +261,7 @@ const CHAIN_COS   = Math.cos(25*Math.PI/180); // поворот >25° => кон�
 const QP = 1000;                              // квантование координат, 0.001 мм
 
 let chains = [];     // {pts:[Vector3], cum:[мм], total, closed}
+let vertTris = new Map(); // ключ вершины -> [индексы треугольников] (для граней)
 let edgeLines = null;   // все рёбра (тонкие тёмные)
 let hiLine = null;      // подсвеченная цепочка
 let hover = null;       // {chain, s}
@@ -265,6 +269,19 @@ let placing = null;     // {chain, s} — открыта всплывашка
 let anchors = [];       // поставленные точки {pos, marker, bend?}
 let dragPt = null;      // текущее перетаскивание {a?, isSel, start, plane, idx|bendRun, markers}
 let modified = false;
+// нормали при драге пересчитываем не чаще раза в 120 мс (иначе fps проседает)
+let normalsDirty = false, lastNormalsAt = 0;
+function normalsThrottled(){
+  const now = performance.now();
+  if(now - lastNormalsAt > 120){
+    mesh.geometry.computeVertexNormals();
+    lastNormalsAt = now; normalsDirty = false;
+  } else normalsDirty = true;
+}
+function normalsFlush(){
+  if(normalsDirty){ mesh.geometry.computeVertexNormals(); normalsDirty = false; }
+}
+
 // фиксация оси при перетаскивании (X/Y/Z как в Blender)
 let axisLock = null, axisGuide = null;
 function setAxisLock(ax){
@@ -296,6 +313,7 @@ function extractEdges(){
   if(!mesh) return;
   const pos = mesh.geometry.attributes.position.array;
   const eMap = new Map(); // "ka|kb" -> {ka,kb,A,B,normals:[]}
+  vertTris = new Map();
   const a=new THREE.Vector3(), b=new THREE.Vector3(), c=new THREE.Vector3(),
         ab=new THREE.Vector3(), ac=new THREE.Vector3();
   for(let i=0;i<pos.length;i+=9){
@@ -306,6 +324,9 @@ function extractEdges(){
     for(let e=0;e<3;e++){
       const P=vs[e], Q=vs[(e+1)%3];
       const kp=keyOf(P.x,P.y,P.z), kq=keyOf(Q.x,Q.y,Q.z);
+      let vt = vertTris.get(kp);
+      if(!vt){ vt=[]; vertTris.set(kp, vt); }
+      vt.push(i/9);
       if(kp===kq) continue;
       const ek = kp<kq ? kp+'|'+kq : kq+'|'+kp;
       let ent = eMap.get(ek);
@@ -404,6 +425,81 @@ selMarker.visible = false; scene.add(selMarker);
 const snapDot = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x52c752}));
 snapDot.visible = false; scene.add(snapDot);
 
+// ---------- «Тяни-толкай» (клавиша P, как Push/Pull в SketchUp) ----------
+let ppMode=false, ppPatch=null, ppHi=null, ppDrag=null;
+const ppb = document.getElementById('ppb');
+function setPPMode(on){
+  ppMode = on;
+  ppb.hidden = !on;
+  canvas.style.cursor = on ? 'crosshair' : '';
+  ppPatch = null; hidePatch();
+  if(on){ setHover(null); tipHide(); }
+}
+function triNormalAt(t){
+  const pos = mesh.geometry.attributes.position.array;
+  const A=new THREE.Vector3().fromArray(pos,t*9),
+        B=new THREE.Vector3().fromArray(pos,t*9+3),
+        C=new THREE.Vector3().fromArray(pos,t*9+6);
+  return new THREE.Vector3().crossVectors(B.sub(A), C.sub(A)).normalize();
+}
+// связная копланарная грань вокруг треугольника (заливка по общим вершинам)
+function facePatchAt(triIdx){
+  const pos = mesh.geometry.attributes.position.array;
+  const n0 = triNormalAt(triIdx);
+  const d0 = n0.x*pos[triIdx*9] + n0.y*pos[triIdx*9+1] + n0.z*pos[triIdx*9+2];
+  const set = new Set([triIdx]);
+  const queue = [triIdx];
+  while(queue.length){
+    const t = queue.pop();
+    for(let v=0; v<3; v++){
+      const o = t*9+v*3;
+      const adj = vertTris.get(keyOf(pos[o],pos[o+1],pos[o+2])) || [];
+      for(const t2 of adj){
+        if(set.has(t2)) continue;
+        if(triNormalAt(t2).dot(n0) < 0.999) continue;
+        const o2 = t2*9;
+        if(Math.abs(n0.x*pos[o2]+n0.y*pos[o2+1]+n0.z*pos[o2+2] - d0) > 0.02) continue;
+        set.add(t2); queue.push(t2);
+      }
+    }
+  }
+  const keys = new Set();
+  for(const t of set) for(let v=0; v<3; v++){
+    const o = t*9+v*3;
+    keys.add(keyOf(pos[o],pos[o+1],pos[o+2]));
+  }
+  return {set, tris:[...set], keys, normal:n0};
+}
+function showPatch(patch){
+  hidePatch();
+  if(!patch) return;
+  const pos = mesh.geometry.attributes.position.array;
+  const arr = new Float32Array(patch.tris.length*9);
+  let o = 0;
+  for(const t of patch.tris) for(let j=0;j<9;j++) arr[o++] = pos[t*9+j];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(arr,3));
+  ppHi = new THREE.Mesh(g, new THREE.MeshBasicMaterial(
+    {color:0x4da3ff, transparent:true, opacity:0.35, side:THREE.DoubleSide}));
+  ppHi.position.copy(patch.normal).multiplyScalar(0.05); // чуть над гранью
+  scene.add(ppHi);
+}
+function hidePatch(){ if(ppHi){ scene.remove(ppHi); ppHi.geometry.dispose(); ppHi=null; } }
+function raycastFace(q){
+  raycaster.setFromCamera({x:q.mx/q.w*2-1, y:-(q.my/q.h*2-1)}, q.cam);
+  const hits = raycaster.intersectObject(mesh);
+  return hits.length ? hits[0] : null;
+}
+// параметр t на прямой P+t*dir, ближайший к лучу
+function rayLineParam(ray, P, dir){
+  const O = ray.origin, d = ray.direction;
+  const w0 = new THREE.Vector3().subVectors(P, O);
+  const a = dir.dot(dir), b = dir.dot(d), c = d.dot(d);
+  const den = a*c - b*b;
+  if(Math.abs(den) < 1e-9) return 0;
+  return (b*w0.dot(d) - c*w0.dot(dir)) / den;
+}
+
 const dragTip = document.getElementById('dragTip');
 const vpanel = document.getElementById('vpanel'),
       vx=document.getElementById('vx'), vy=document.getElementById('vy'), vz=document.getElementById('vz');
@@ -476,7 +572,7 @@ function undo(){
   setMeshFromArray(s.pos);
   clearAnchors();
   for(const sa of s.anchors){ const a = makeAnchor(sa.pos); if(sa.bend) a.bend = sa.bend; }
-  deselect(); closePopup(); tipHide();
+  deselect(); closePopup(); tipHide(); hidePatch(); ppPatch=null;
   modified = undoStack.length > 0;
   s_mod.textContent = modified ? 'да' : 'нет';
   extractEdges();
@@ -659,7 +755,7 @@ async function rebuild(){
   }catch(e){ return; }
   const buf = await res.arrayBuffer();
   setMeshFromArray(parseSTL(buf));
-  closePopup(); clearAnchors(); deselect(); tipHide();
+  closePopup(); clearAnchors(); deselect(); tipHide(); setPPMode(false);
   modified = false; s_mod.textContent = 'нет';
   undoStack = []; // новая серверная модель — новая точка отсчёта
   extractEdges();
@@ -832,8 +928,13 @@ document.getElementById('p_ok').addEventListener('click', ()=>{
 });
 window.addEventListener('keydown', e=>{
   if(dragPt && !e.ctrlKey && !e.altKey && !e.metaKey){
-    const ax = {KeyX:'x', KeyY:'y', KeyZ:'z'}[e.code]; // как в Blender
+    const ax = {KeyX:'x', KeyY:'y', KeyZ:'z'}[e.code]
+             || {x:'x', y:'y', z:'z'}[e.key.toLowerCase()]; // как в Blender
     if(ax){ e.preventDefault(); setAxisLock(axisLock===ax ? null : ax); return; }
+  }
+  if((e.code==='KeyP' || e.key.toLowerCase()==='p') && !e.ctrlKey && !e.altKey && !e.metaKey
+     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); setPPMode(!ppMode); return; // P — Push/Pull, как в SketchUp
   }
   if((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase()==='z'){
     e.preventDefault(); undo(); return;
@@ -844,7 +945,7 @@ window.addEventListener('keydown', e=>{
     applyViewMode();
     return;
   }
-  if(e.key==='Escape'){ closePopup(); deselect(); tipHide(); }
+  if(e.key==='Escape'){ closePopup(); deselect(); tipHide(); if(ppMode) setPPMode(false); }
 });
 
 let drag=null;
@@ -852,6 +953,26 @@ canvas.addEventListener('pointerdown', e=>{
   const q = quadPos(e);
   if(!q.inside) return;
   if(placing){ closePopup(); return; }
+  if(ppMode){ // режим «Тяни-толкай»: ЛКМ по грани начинает выдавливание
+    if(e.button===0){
+      const hf = raycastFace(q);
+      if(hf){
+        const patch = facePatchAt(hf.faceIndex);
+        const pos = mesh.geometry.attributes.position.array;
+        const idx=[];
+        for(let i=0;i<pos.length;i+=3)
+          if(patch.keys.has(keyOf(pos[i],pos[i+1],pos[i+2]))) idx.push(i);
+        const orig = new Float32Array(idx.length*3);
+        idx.forEach((bi,k)=>{ orig[k*3]=pos[bi]; orig[k*3+1]=pos[bi+1]; orig[k*3+2]=pos[bi+2]; });
+        ppDrag = {normal: patch.normal.clone(), base: hf.point.clone(), idx, orig,
+                  q0:{cam:q.cam, ox:q.ox, oy:q.oy, w:q.w, h:q.h},
+                  snap: takeSnapshot(), snapPushed:false};
+        ppPatch = patch; showPatch(patch);
+        try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+      }
+    }
+    return; // орбиты в режиме P нет — выход по P/Esc
+  }
   if(e.button===0){
     const a = anchorAt(q);
     const c = a ? null : pickCorner(q);
@@ -894,7 +1015,9 @@ canvas.addEventListener('pointerdown', e=>{
   }
 });
 canvas.addEventListener('pointerup', ()=>{
+  if(ppDrag){ ppDrag=null; tipHide(); hidePatch(); ppPatch=null; normalsFlush(); extractEdges(); }
   if(dragPt){
+    normalsFlush();
     // после изгиба запоминаем новые позиции цепочки для следующего раза
     if(dragPt.bendRun && dragPt.a && dragPt.a.bend)
       dragPt.a.bend.pts0 = dragPt.bendRun.cur.map(p=>p.clone());
@@ -907,6 +1030,31 @@ canvas.addEventListener('pointerup', ()=>{
 const raycaster = new THREE.Raycaster();
 canvas.addEventListener('pointermove', e=>{
   const q = quadPos(e);
+  if(ppDrag){ // выдавливание: смещение вдоль нормали грани
+    const rc = canvas.getBoundingClientRect();
+    const q0 = ppDrag.q0;
+    const lx=(e.clientX-rc.left)-q0.ox, ly=(e.clientY-rc.top)-q0.oy;
+    raycaster.setFromCamera({x:lx/q0.w*2-1, y:-(ly/q0.h*2-1)}, q0.cam);
+    const t = snapMM(rayLineParam(raycaster.ray, ppDrag.base, ppDrag.normal));
+    if(!ppDrag.snapPushed){
+      undoStack.push(ppDrag.snap);
+      if(undoStack.length>30) undoStack.shift();
+      ppDrag.snapPushed = true;
+    }
+    const pos = mesh.geometry.attributes.position.array;
+    const n = ppDrag.normal;
+    ppDrag.idx.forEach((bi,k)=>{
+      pos[bi]   = ppDrag.orig[k*3]   + n.x*t;
+      pos[bi+1] = ppDrag.orig[k*3+1] + n.y*t;
+      pos[bi+2] = ppDrag.orig[k*3+2] + n.z*t;
+    });
+    mesh.geometry.attributes.position.needsUpdate = true;
+    normalsThrottled();
+    if(ppHi) ppHi.position.copy(n).multiplyScalar(0.05 + t);
+    tipAt(e, 'Тяни-толкай Δ <b>'+(t>=0?'+':'')+t.toFixed(1)+'</b> мм');
+    if(!modified){ modified=true; s_mod.textContent='да'; }
+    return;
+  }
   if(dragPt){
     // драг привязан к окну, где начался (курсор может выходить за его границы)
     const rc = canvas.getBoundingClientRect();
@@ -962,6 +1110,10 @@ canvas.addEventListener('pointermove', e=>{
       for(const m of dragPt.markers) m.position.copy(hp);
       if(dragPt.a) dragPt.a.pos.copy(hp);
       tipAt(e, f.R ? 'Дуга R <b>'+f.R.toFixed(1)+'</b> мм' : 'прямая');
+      mesh.geometry.attributes.position.needsUpdate = true;
+      normalsThrottled();
+      if(!modified){ modified=true; s_mod.textContent='да'; }
+      return;
     } else {
       for(const i of dragPt.idx){ pos[i]=hit.x; pos[i+1]=hit.y; pos[i+2]=hit.z; }
       for(const m of dragPt.markers) m.position.copy(hit);
@@ -974,7 +1126,7 @@ canvas.addEventListener('pointermove', e=>{
                +'X '+fmt(hit.x,hit.x-st.x)+'<br>Y '+fmt(hit.y,hit.y-st.y)+'<br>Z '+fmt(hit.z,hit.z-st.z));
     }
     mesh.geometry.attributes.position.needsUpdate = true;
-    mesh.geometry.computeVertexNormals();
+    normalsThrottled();
     if(!modified){ modified=true; s_mod.textContent='да'; }
     return;
   }
@@ -993,6 +1145,18 @@ canvas.addEventListener('pointermove', e=>{
     return;
   }
   if(placing) return;               // пока открыта всплывашка — наведение заморожено
+  if(ppMode){ // наведение на грань в режиме «Тяни-толкай»
+    if(!q.inside){ ppPatch=null; hidePatch(); tipHide(); return; }
+    const hf = raycastFace(q);
+    if(hf){
+      if(!(ppPatch && ppPatch.set.has(hf.faceIndex))){
+        ppPatch = facePatchAt(hf.faceIndex);
+        showPatch(ppPatch);
+      }
+      tipAt(e, 'Грань · тяни ЛКМ');
+    } else { ppPatch=null; hidePatch(); tipHide(); }
+    return;
+  }
   // приоритет привязок как в SketchUp: вершина > середина > ребро
   const c = q.inside ? pickCorner(q) : null;
   if(c){
