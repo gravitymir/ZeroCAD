@@ -62,9 +62,9 @@
     <div id="grid">
       <div class="h"></div><div class="v"></div>
       <div class="vplabel" style="left:10px;top:10px"><b>3D</b> · ЛКМ вращать · клик по ребру — точка · колесо зум · ПКМ сдвиг</div>
-      <div class="vplabel" style="left:calc(50% + 10px);top:10px">Вид <b>+X</b> (сбоку)</div>
-      <div class="vplabel" style="left:10px;top:calc(50% + 10px)">Вид <b>+Y</b> (сбоку)</div>
-      <div class="vplabel" style="left:calc(50% + 10px);top:calc(50% + 10px)">Вид <b>+Z</b> (в плане)</div>
+      <div class="vplabel" style="left:calc(50% + 10px);top:10px">Вид <b>+X</b> (сбоку) · сетка 1/10 мм</div>
+      <div class="vplabel" style="left:10px;top:calc(50% + 10px)">Вид <b>+Y</b> (сбоку) · сетка 1/10 мм</div>
+      <div class="vplabel" style="left:calc(50% + 10px);top:calc(50% + 10px)">Вид <b>+Z</b> (в плане) · сетка 1/10 мм</div>
     </div>
     <div id="hud"><b id="fps"></b></div>
     <div id="popup" hidden>
@@ -84,15 +84,15 @@
     <div class="row"><label>Диаметр <span id="v_dia">70 мм</span></label>
       <input type="range" id="dia" min="30" max="160" step="1" value="70"></div>
     <div class="row"><label>Толщина (= ширина ореха) <span id="v_thk">11 мм</span></label>
-      <input type="range" id="thk" min="4" max="30" step="0.5" value="11"></div>
+      <input type="range" id="thk" min="4" max="30" step="0.1" value="11"></div>
     <div class="row"><label>Отверстие под вал <span id="v_sh">5 мм</span></label>
-      <input type="range" id="sh" min="2" max="20" step="0.5" value="5"></div>
+      <input type="range" id="sh" min="2" max="20" step="0.1" value="5"></div>
 
     <div class="sec">V-карманы</div>
     <div class="row"><label>Кол-во карманов <span id="v_n">12</span></label>
       <input type="range" id="n" min="3" max="30" step="1" value="12"></div>
     <div class="row"><label>Глубина кармана <span id="v_dep">6 мм</span></label>
-      <input type="range" id="dep" min="1" max="20" step="0.5" value="6"></div>
+      <input type="range" id="dep" min="1" max="20" step="0.1" value="6"></div>
     <div class="row"><label>Ширина устья <span id="v_w">11°</span></label>
       <input type="range" id="w" min="4" max="40" step="1" value="11"></div>
 
@@ -120,7 +120,8 @@
     побежит точка. Клик — точка фиксируется, в окошке можно задать отступ от
     начала ребра или нажать «Центр». Поставленную точку тяни мышью — грани
     вытянутся следом. После ручной правки кнопка STL отдаёт изменённый меш
-    из браузера, а не серверный.</p>
+    из браузера, а не серверный. Все единицы — миллиметры: шаг ручных правок
+    0.1 мм, сетка 1 и 10 мм.</p>
   </div>
 </div>
 
@@ -142,6 +143,25 @@ const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(1,1,1.5)
 const fill = new THREE.DirectionalLight(0x88aaff, 0.35); fill.position.set(-1,-1,-.5); scene.add(fill);
 
 scene.add(new THREE.AxesHelper(50));
+
+// ---------- миллиметровая сетка ----------
+// Все единицы проекта — мм. 10 мм — крупная сетка, 1 мм — тонкая (в орто-видах).
+function mmGrid(size, step, cCenter, cGrid){
+  const g = new THREE.GridHelper(size, Math.round(size/step), cCenter, cGrid);
+  g.material.depthWrite = false;
+  return g;
+}
+const bedGrid = mmGrid(300, 10, 0x39404e, 0x232833); bedGrid.rotation.x = Math.PI/2; // «стол» под деталью в 3D
+const gXY10 = mmGrid(300, 10, 0x39404e, 0x232833); gXY10.rotation.x = Math.PI/2;
+const gXY1  = mmGrid(200, 1, 0x1d212a, 0x1d212a);  gXY1.rotation.x  = Math.PI/2;
+const gYZ10 = mmGrid(300, 10, 0x39404e, 0x232833); gYZ10.rotation.z = Math.PI/2;
+const gYZ1  = mmGrid(200, 1, 0x1d212a, 0x1d212a);  gYZ1.rotation.z  = Math.PI/2;
+const gXZ10 = mmGrid(300, 10, 0x39404e, 0x232833);
+const gXZ1  = mmGrid(200, 1, 0x1d212a, 0x1d212a);
+const ALL_GRIDS = [bedGrid, gXY10, gXY1, gYZ10, gYZ1, gXZ10, gXZ1];
+for(const g of ALL_GRIDS){ g.visible = false; scene.add(g); }
+const VIEW_GRIDS = { persp:[bedGrid], ox:[gYZ1,gYZ10], oy:[gXZ1,gXZ10], oz:[gXY1,gXY10] };
+
 let mesh = null;
 // polygonOffset отодвигает грани, чтобы линии рёбер не мерцали поверх них
 const mat = new THREE.MeshStandardMaterial({color:0xff8a3d, metalness:0.15, roughness:0.55,
@@ -189,6 +209,10 @@ let modified = false;
 
 const kf = v => Math.round(v*QP);
 const keyOf = (x,y,z) => kf(x)+','+kf(y)+','+kf(z);
+
+// минимальный шаг ручных правок: 0.1 мм (типовая точность FDM по XY)
+const SNAP = 0.1;
+const snapMM = v => Math.round(v/SNAP)*SNAP;
 
 function extractEdges(){
   chains = [];
@@ -389,6 +413,7 @@ async function rebuild(){
   camDist = Math.max(p.dia*1.9, 60);
   orthoFit = p.dia*0.62;
   updateOrthoFrusta();
+  bedGrid.position.z = -p.thk/2 - 0.05; // «стол» сразу под деталью
   s_apex.textContent = res.headers.get('X-Apex-Mm')+' мм';
   s_pitch.textContent = res.headers.get('X-Pitch-Mm')+' мм';
   const us = +res.headers.get('X-Gen-Us');
@@ -492,12 +517,13 @@ p_off.addEventListener('input', ()=>{
 });
 document.getElementById('p_center').addEventListener('click', ()=>{
   if(!placing) return;
-  placing.s = placing.chain.total/2;
+  placing.s = snapMM(placing.chain.total/2);
   p_off.value = placing.s.toFixed(1);
   ghost.position.copy(chainPointAt(placing.chain, placing.s));
 });
 document.getElementById('p_ok').addEventListener('click', ()=>{
   if(!placing) return;
+  placing.s = snapMM(placing.s);
   const P = splitEdgeAt(placing.chain, placing.s) || chainPointAt(placing.chain, placing.s);
   makeAnchor(P);
   closePopup(); setHover(null); extractEdges();
@@ -540,6 +566,7 @@ canvas.addEventListener('pointermove', e=>{
     raycaster.setFromCamera({x:q.mx/q.w*2-1, y:-(q.my/q.h*2-1)}, persp);
     const hit = new THREE.Vector3();
     if(!raycaster.ray.intersectPlane(dragAnchor.plane, hit)) return;
+    hit.set(snapMM(hit.x), snapMM(hit.y), snapMM(hit.z)); // привязка 0.1 мм
     const pos = mesh.geometry.attributes.position.array;
     for(const i of dragAnchor.idx){ pos[i]=hit.x; pos[i+1]=hit.y; pos[i+2]=hit.z; }
     mesh.geometry.attributes.position.needsUpdate = true;
@@ -581,7 +608,8 @@ function resize(){
 }
 window.addEventListener('resize', resize);
 
-function renderViewport(cam, x, y, w, h){
+function renderViewport(cam, x, y, w, h, grids){
+  for(const g of ALL_GRIDS) g.visible = grids.includes(g);
   renderer.setViewport(x,y,w,h);
   renderer.setScissor(x,y,w,h);
   renderer.render(scene, cam);
@@ -602,10 +630,10 @@ function loop(t){
   ghost.scale.setScalar(camDist*0.008);
   for(const a of anchors) a.marker.scale.setScalar(camDist*0.011);
 
-  renderViewport(persp,  0,  hh, hw, hh); // 3D — слева сверху
-  renderViewport(orthoX, hw, hh, hw, hh); // +X — справа сверху
-  renderViewport(orthoY, 0,  0,  hw, hh); // +Y — слева снизу
-  renderViewport(orthoZ, hw, 0,  hw, hh); // +Z — справа снизу
+  renderViewport(persp,  0,  hh, hw, hh, VIEW_GRIDS.persp); // 3D — слева сверху
+  renderViewport(orthoX, hw, hh, hw, hh, VIEW_GRIDS.ox);    // +X — справа сверху
+  renderViewport(orthoY, 0,  0,  hw, hh, VIEW_GRIDS.oy);    // +Y — слева снизу
+  renderViewport(orthoZ, hw, 0,  hw, hh, VIEW_GRIDS.oz);    // +Z — справа снизу
 
   frames++; fpsT+=t-last; last=t;
   if(fpsT>500){ document.getElementById('fps').textContent=(1000*frames/fpsT).toFixed(0)+' fps'; frames=0; fpsT=0; }
