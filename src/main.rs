@@ -16,6 +16,7 @@ use std::net::{TcpListener, TcpStream};
 
 const ADDR: &str = "127.0.0.1:8777";
 const INDEX_HTML: &str = include_str!("../web/index.html");
+const BUILD: &str = env!("ZEROCAD_BUILD");
 
 fn main() {
     let listener = TcpListener::bind(ADDR).unwrap_or_else(|e| {
@@ -48,13 +49,16 @@ fn handle(stream: TcpStream) {
     };
 
     match path {
-        "/" | "/index.html" => respond(
-            &mut stream,
-            "200 OK",
-            "text/html; charset=utf-8",
-            &[],
-            INDEX_HTML.as_bytes(),
-        ),
+        "/" | "/index.html" => {
+            let page = INDEX_HTML.replace("__BUILD__", BUILD);
+            respond(
+                &mut stream,
+                "200 OK",
+                "text/html; charset=utf-8",
+                &[],
+                page.as_bytes(),
+            );
+        }
         "/api/wheel.stl" => {
             let p = params_from_query(query);
             let use_csg = query.split('&').any(|kv| kv == "engine=csg");

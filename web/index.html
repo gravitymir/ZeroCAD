@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -94,106 +94,99 @@
   <div id="view">
     <div id="grid">
       <div class="h quadonly"></div><div class="v quadonly"></div>
-      <div class="vplabel" style="left:10px;top:10px"><b>3D</b> · ЛКМ вращать · клик по ребру — точка · колесо зум · ПКМ сдвиг · Ctrl+Z отмена</div>
-      <div class="vplabel quadonly" style="left:calc(50% + 10px);top:10px">Вид <b>+X</b> (сбоку) · сетка 1/10 мм</div>
-      <div class="vplabel quadonly" style="left:10px;top:calc(50% + 10px)">Вид <b>+Y</b> (сбоку) · сетка 1/10 мм</div>
-      <div class="vplabel quadonly" style="left:calc(50% + 10px);top:calc(50% + 10px)">Вид <b>+Z</b> (в плане) · сетка 1/10 мм</div>
+      <div class="vplabel" style="left:10px;top:10px"><b>3D</b> · LMB orbit · click edge — point · wheel zoom · RMB pan · Ctrl+Z undo</div>
+      <div class="vplabel quadonly" style="left:calc(50% + 10px);top:10px"><b>+X</b> view (side) · grid 1/10 mm</div>
+      <div class="vplabel quadonly" style="left:10px;top:calc(50% + 10px)"><b>+Y</b> view (side) · grid 1/10 mm</div>
+      <div class="vplabel quadonly" style="left:calc(50% + 10px);top:calc(50% + 10px)"><b>+Z</b> view (top) · grid 1/10 mm</div>
     </div>
-    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>ТЯНИ-ТОЛКАЙ · ЛКМ по грани — тянуть · P/Esc — выход<br></b><b id="lnb" style="color:var(--accent2)" hidden>ЛИНИЯ · клик–клик — хорда · набери длину и Enter · Esc/L — выход<br></b><b id="fps"></b></div>
+    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>PUSH/PULL · drag a face · P/Esc — exit<br></b><b id="lnb" style="color:var(--accent2)" hidden>LINE · click–click — chord · type length + Enter · Esc/L — exit<br></b><b id="fps"></b></div>
     <div id="popup" hidden>
-      <div class="prow">Ребро: <b id="p_len">–</b> мм</div>
-      <div class="prow">Отступ: <input id="p_off" type="number" step="0.1" min="0"> мм</div>
-      <div class="prow" id="p_radrow" hidden>Радиус: <input id="p_rad" type="number" step="0.1"> мм</div>
-      <div class="prow" style="font-size:10px;color:var(--muted)">клик по точке — поставить и тянуть · Alt — гнуть дугой</div>
+      <div class="prow">Edge: <b id="p_len">–</b> mm</div>
+      <div class="prow">Offset: <input id="p_off" type="number" step="0.1" min="0"> mm</div>
+      <div class="prow" id="p_radrow" hidden>Radius: <input id="p_rad" type="number" step="0.1"> mm</div>
+      <div class="prow" style="font-size:10px;color:var(--muted)">click the dot — place &amp; drag · Alt — bend as arc</div>
     </div>
     <div id="vpanel" hidden>
-      <div class="prow"><b>Вершина</b><span style="font-size:10px">(Esc — снять выбор)</span></div>
-      <div class="prow">X <input id="vx" type="number" step="0.1"> мм</div>
-      <div class="prow">Y <input id="vy" type="number" step="0.1"> мм</div>
-      <div class="prow">Z <input id="vz" type="number" step="0.1"> мм</div>
+      <div class="prow"><b>Vertex</b><span style="font-size:10px">(Esc — deselect)</span></div>
+      <div class="prow">X <input id="vx" type="number" step="0.1"> mm</div>
+      <div class="prow">Y <input id="vy" type="number" step="0.1"> mm</div>
+      <div class="prow">Z <input id="vz" type="number" step="0.1"> mm</div>
     </div>
     <div id="dragTip" hidden></div>
     <div id="toolTag" hidden></div>
   </div>
   <div id="panel">
-    <h1>🦀 ZeroCAD · колесо-дозатор</h1>
-    <p class="sub">Геометрию и STL считает Rust-сервер · браузер только рисует</p>
+    <h1>🦀 ZeroCAD · peanut wheel</h1>
+    <p class="sub">Geometry &amp; STL computed by the Rust server · browser only renders</p>
 
-    <div class="sec">Колесо</div>
-    <div class="row"><label>Диаметр <span id="v_dia">70 мм</span></label>
+    <div class="sec">Wheel</div>
+    <div class="row"><label>Diameter <span id="v_dia">70 mm</span></label>
       <input type="range" id="dia" min="30" max="160" step="1" value="70"></div>
-    <div class="row"><label>Толщина (= ширина ореха) <span id="v_thk">11 мм</span></label>
+    <div class="row"><label>Thickness (= nut width) <span id="v_thk">11 mm</span></label>
       <input type="range" id="thk" min="4" max="30" step="0.1" value="11"></div>
-    <div class="row"><label>Отверстие под вал <span id="v_sh">5 мм</span></label>
+    <div class="row"><label>Shaft bore <span id="v_sh">5 mm</span></label>
       <input type="range" id="sh" min="2" max="20" step="0.1" value="5"></div>
 
-    <div class="sec">V-карманы</div>
-    <div class="row"><label>Кол-во карманов <span id="v_n">12</span></label>
+    <div class="sec">V-pockets</div>
+    <div class="row"><label>Pocket count <span id="v_n">12</span></label>
       <input type="range" id="n" min="3" max="30" step="1" value="12"></div>
-    <div class="row"><label>Глубина кармана <span id="v_dep">6 мм</span></label>
+    <div class="row"><label>Pocket depth <span id="v_dep">6 mm</span></label>
       <input type="range" id="dep" min="1" max="20" step="0.1" value="6"></div>
-    <div class="row"><label>Ширина устья <span id="v_w">11°</span></label>
+    <div class="row"><label>Mouth width <span id="v_w">11°</span></label>
       <input type="range" id="w" min="4" max="40" step="1" value="11"></div>
 
-    <div class="sec">Окна</div>
+    <div class="sec">Views</div>
     <div class="row" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
-      <span style="font-size:12px;color:var(--muted)">Виды X/Y/Z (4 окна) · <b style="color:var(--text);font-weight:400">Ctrl+Alt+Q</b></span>
+      <span style="font-size:12px;color:var(--muted)">X/Y/Z views (quad) · <b style="color:var(--text);font-weight:400">Ctrl+Alt+Q</b></span>
       <label class="switch"><input type="checkbox" id="quadview"><span class="knob"></span></label>
     </div>
 
-    <div class="sec">Движок геометрии</div>
+    <div class="sec">Geometry engine</div>
     <div class="row" style="display:flex;gap:14px">
       <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
-        <input type="radio" name="engine" value="own" checked> свой (экструзия)</label>
+        <input type="radio" name="engine" value="own" checked> built-in (extrude)</label>
       <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
-        <input type="radio" name="engine" value="csg"> csgrs (булевы)</label>
+        <input type="radio" name="engine" value="csg"> csgrs (booleans)</label>
     </div>
 
-    <div class="sec">Расчёт (с сервера)</div>
-    <div class="stat">Радиус кармана (апекс)<b id="s_apex">–</b></div>
-    <div class="stat">Шаг между карманами<b id="s_pitch">–</b></div>
-    <div class="stat">Треугольников в STL<b id="s_tris">–</b></div>
-    <div class="stat">Генерация на Rust<b id="s_gen">–</b></div>
-    <div class="stat">Правка мышью<b id="s_mod">нет</b></div>
+    <div class="sec">Computed (server)</div>
+    <div class="stat">Pocket apex radius<b id="s_apex">–</b></div>
+    <div class="stat">Pocket pitch<b id="s_pitch">–</b></div>
+    <div class="stat">STL triangles<b id="s_tris">–</b></div>
+    <div class="stat">Rust gen time<b id="s_gen">–</b></div>
+    <div class="stat">Manual edits<b id="s_mod">no</b></div>
 
     <div class="btns">
-      <button id="reset">Сброс</button>
-      <button id="stl" class="primary">⬇ Скачать STL</button>
+      <button id="reset">Reset</button>
+      <button id="stl" class="primary">⬇ Download STL</button>
     </div>
 
-    <p class="hint">Клавиша <b>L</b> — «Линия» (карандаш SketchUp): клик по вершине,
-    ребру или грани ставит точку, второй клик рисует пунктирную хорду-направляющую
-    (в меш и STL она не попадает). Хорда, лежащая на плоской грани, работает
-    границей для «Тяни-толкай»: P возьмёт область только до неё — так можно
-    поднять или вдавить один зуб. Зажатый <b>Shift</b> фиксирует направление;
-    набери длину цифрами и <b>Enter</b> — точка встанет на точном расстоянии.
-    Клавиша <b>P</b> — «Тяни-толкай» как в SketchUp: навёл на плоскую
-    грань, потянул ЛКМ — грань выдавливается вдоль нормали (шаг 0.1 мм),
-    стенки идут следом; P или Esc — выход.
-    Наведи курсор на ребро в 3D-окне — оно подсветится, по нему
-    побежит точка. Клик — точка фиксируется, в окошке можно задать отступ от
-    начала ребра или нажать «Центр». Поставленную точку тяни мышью — грани
-    вытянутся следом. Жёлтое — вершины: их можно тянуть или задавать X/Y/Z
-    точно в полях. Бирюзовое — середина ребра. У дуговых рёбер показывается
-    и правится радиус; точка на ребре с зажатым Alt тянется дугой
-    (изгиб окружностью, радиус — в подсказке), без Alt — изломом.
-    Кольцо одинаковых вершин (все зубья/впадины разом): <b>Alt+захват</b>
-    вершины — как loop-select в Blender, или <b>двойной клик</b> по вершине
-    (как петля в Max/Maya) и затем обычное перетаскивание. Кольцо двигается
-    в своей плоскости (меняется радиус); нажми <b>Z</b> во время
-    перетаскивания, чтобы менять высоту.
-    Во время перетаскивания клавиши X/Y/Z ограничивают движение одной осью
-    (как в Blender, повторное нажатие снимает); точка прилипает к чужим
-    вершинам (зелёная цель) и рёбрам (красная) — отпустишь, и она сядет
-    ровно туда. Рёбра, вершины и точки
-    выбираются в любом из четырёх окон; в орто-видах перетаскивание идёт
-    строго в плоскости вида, колесо мыши — зум.
-    Ctrl+Z отменяет правки (до 30 шагов). После ручной правки кнопка STL
-    отдаёт изменённый меш из браузера. Все единицы — миллиметры:
-    шаг правок 0.1 мм, сетка 1 и 10 мм.</p>
+    <p class="hint"><b>L</b> — Line (SketchUp pencil): click a vertex, edge or
+    face to place a point; the second click draws a dashed guide chord (it is
+    also cut into the mesh, but never exported to STL). A chord lying on a flat
+    face becomes a boundary for Push/Pull. Hold <b>Shift</b> to lock direction;
+    type a length + <b>Enter</b> for an exact point.
+    <b>P</b> — Push/Pull: hover a flat face, drag with LMB to extrude along its
+    normal (0.1 mm steps); walls follow. P or Esc exits any tool.
+    Hover an edge — it highlights and a point runs along it; click to open the
+    popup (offset / radius, scroll wheel over the fields edits live), click the
+    dot to place it and drag. Yellow — vertices: drag them or type exact X/Y/Z.
+    Cyan — edge midpoint. Alt while dragging an edge point bends the whole edge
+    as an arc (radius in the tooltip); without Alt it folds.
+    Ring of identical vertices (all teeth at once): <b>Alt+grab</b> a vertex
+    (Blender loop-select) or <b>double-click</b> it, then drag; the ring moves
+    in its own plane (radius), press <b>Z</b> to move height instead.
+    <b>Double-click a face</b> selects the whole flat region bounded by model
+    edges and drawn lines. X/Y/Z keys during a drag lock one axis; points snap
+    to other vertices (green) and edges (red). Everything works in all four
+    views; ortho drags stay in the view plane, wheel zooms.
+    Ctrl+Z undoes (30 steps). After manual edits the STL button exports the
+    edited mesh from the browser. All units are millimetres: 0.1 mm edit step,
+    1 &amp; 10 mm grids.</p>
   </div>
 </div>
 
+<script>window.ZC_BUILD = '__BUILD__';</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 // ---------- сцена ----------
@@ -234,6 +227,21 @@ for(const ax of ['x','y','z']){
   sp.userData.dir = v;
   scene.add(sp); axisLabels.push(sp);
 }
+// версия сборки в начале координат — чёрный билборд (всегда лицом к камере)
+const buildSprite = (()=>{
+  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 48;
+  const ctx = cv.getContext('2d');
+  ctx.font = 'bold 24px system-ui, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#111';
+  ctx.fillText((window.ZC_BUILD && window.ZC_BUILD.indexOf('__')<0) ? window.ZC_BUILD : 'dev', 128, 26);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial(
+    {map: new THREE.CanvasTexture(cv), transparent:true, depthTest:false}));
+  sp.position.set(0, 0, 0);
+  scene.add(sp);
+  return sp;
+})();
+
 // оси соразмерны модели: чуть выступают за край, не тонут и не улетают
 function updateAxesSize(len){
   for(const l of axisLines) l.scale.setScalar(len);
@@ -507,11 +515,11 @@ function restoreGuides(list){
 // точка для рисования: вершина > точка на ребре (0.1 мм) > точка на грани
 function linePickPoint(q){
   const c = pickCorner(q);
-  if(c) return {pos:c.pos.clone(), kind:'вершина'};
+  if(c) return {pos:c.pos.clone(), kind:'vertex'};
   const h = pickEdge(q);
-  if(h) return {pos:chainPointAt(h.chain, snapMM(h.s)), kind:'на ребре'};
+  if(h) return {pos:chainPointAt(h.chain, snapMM(h.s)), kind:'on edge'};
   const f = raycastFace(q);
-  if(f){ const p=f.point.clone(); p.set(snapMM(p.x),snapMM(p.y),snapMM(p.z)); return {pos:p, kind:'на грани'}; }
+  if(f){ const p=f.point.clone(); p.set(snapMM(p.x),snapMM(p.y),snapMM(p.z)); return {pos:p, kind:'on face'}; }
   return null;
 }
 function commitLinePoint(pos){
@@ -561,11 +569,15 @@ function splitMeshByChord(A, B){
     if(!(s.includes(1) && s.includes(-1))) continue;
     const snapV = P => { for(const v of V) if(P.distanceTo(v) < 0.02) return v.clone(); return P; };
     const isVert = P => { for(let i=0;i<3;i++) if(P.distanceTo(V[i]) < 1e-6) return i; return -1; };
-    const inChord = (t1,t2) => !(Math.max(t1,t2) < -0.1 || Math.min(t1,t2) > chordLen+0.1);
+    // середина линии реза должна лежать внутри отрезка хорды — иначе это
+    // продолжение линии за её концом (режет дольки вдоль, до вала)
+    const inChord = (t1,t2) => { const tm=(t1+t2)/2; return tm > -0.05 && tm < chordLen+0.05; };
     const zeroIdx = s.indexOf(0);
     if(zeroIdx >= 0){
       // вершина на линии, две другие по разные стороны
       const a0 = zeroIdx, b0 = (zeroIdx+1)%3, c0 = (zeroIdx+2)%3;
+      // рез почти вдоль ребра даёт микроосколки — границей служит само ребро
+      if(Math.min(Math.abs(d[b0]), Math.abs(d[c0])) < 0.04) continue;
       const P = snapV(new THREE.Vector3().lerpVectors(V[b0], V[c0], d[b0]/(d[b0]-d[c0])));
       if(isVert(P) >= 0) continue; // рез совпал с существующим ребром
       if(!inChord(tOf(V[a0]), tOf(P))) continue;
@@ -576,6 +588,8 @@ function splitMeshByChord(A, B){
       if(s[1] !== s[0] && s[1] !== s[2]) a0 = 1;
       else if(s[2] !== s[0] && s[2] !== s[1]) a0 = 2;
       const b0 = (a0+1)%3, c0 = (a0+2)%3;
+      // рез, прижатый к вершине, оставил бы микроосколок
+      if(Math.abs(d[a0]) < 0.04) continue;
       const Pab = snapV(new THREE.Vector3().lerpVectors(V[a0], V[b0], d[a0]/(d[a0]-d[b0])));
       const Pca = snapV(new THREE.Vector3().lerpVectors(V[c0], V[a0], d[c0]/(d[c0]-d[a0])));
       if(!inChord(tOf(Pab), tOf(Pca))) continue;
@@ -642,7 +656,17 @@ function splitMeshByChord(A, B){
       for(const st of sub) pushTri(st[0], st[1], st[2]);
     }
   }
-  setMeshFromArray(new Float32Array(out));
+  // страховка: дубликаты треугольников (одинаковые тройки вершин) выкидываем
+  const seen = new Set();
+  const ded = [];
+  for(let i=0;i<out.length;i+=9){
+    const ks = [keyOf(out[i],out[i+1],out[i+2]), keyOf(out[i+3],out[i+4],out[i+5]),
+                keyOf(out[i+6],out[i+7],out[i+8])].sort().join('#');
+    if(seen.has(ks)) continue;
+    seen.add(ks);
+    for(let j=0;j<9;j++) ded.push(out[i+j]);
+  }
+  setMeshFromArray(new Float32Array(ded));
 }
 function triNormalAt(t){
   const pos = mesh.geometry.attributes.position.array;
@@ -759,8 +783,8 @@ function rayLineParam(ray, P, dir){
 const dragTip = document.getElementById('dragTip');
 const toolTag = document.getElementById('toolTag');
 function updateToolTag(){
-  if(lineMode){ toolTag.textContent = 'L · ЛИНИЯ'; toolTag.hidden = false; }
-  else if(ppMode){ toolTag.textContent = 'P · ТЯНИ-ТОЛКАЙ'; toolTag.hidden = false; }
+  if(lineMode){ toolTag.textContent = 'L · LINE'; toolTag.hidden = false; }
+  else if(ppMode){ toolTag.textContent = 'P · PUSH/PULL'; toolTag.hidden = false; }
   else toolTag.hidden = true;
 }
 const vpanel = document.getElementById('vpanel'),
@@ -796,7 +820,7 @@ function moveVerticesByKey(oldPos, newPos){
     if(keyOf(pos[i],pos[i+1],pos[i+2])===k0){ pos[i]=newPos.x; pos[i+1]=newPos.y; pos[i+2]=newPos.z; }
   mesh.geometry.attributes.position.needsUpdate = true;
   mesh.geometry.computeVertexNormals();
-  if(!modified){ modified=true; s_mod.textContent='да'; }
+  if(!modified){ modified=true; s_mod.textContent='yes'; }
 }
 for(const inp of [vx,vy,vz]) inp.addEventListener('change', ()=>{
   if(!sel) return;
@@ -838,7 +862,7 @@ function undo(){
   restoreGuides(s.guides || []);
   deselect(); closePopup(); tipHide(); hidePatch(); ppPatch=null;
   modified = undoStack.length > 0;
-  s_mod.textContent = modified ? 'да' : 'нет';
+  s_mod.textContent = modified ? 'yes' : 'no';
   extractEdges();
 }
 
@@ -944,7 +968,7 @@ function applyRadiusLive(Rnew){
   }
   mesh.geometry.attributes.position.needsUpdate = true;
   mesh.geometry.computeVertexNormals();
-  if(!modified){ modified=true; s_mod.textContent='да'; }
+  if(!modified){ modified=true; s_mod.textContent='yes'; }
   extractEdges();
   // находим эту же дугу в пересобранных цепочках — по ожидаемой середине
   const expMid = arc.center.clone().addScaledVector(
@@ -1035,9 +1059,9 @@ function parseSTL(buf){
 let inflight = null;
 async function rebuild(){
   const p = readParams();
-  v_dia.textContent = p.dia+' мм'; v_thk.textContent = p.thk+' мм';
-  v_sh.textContent = p.shaft+' мм'; v_n.textContent = p.n;
-  v_dep.textContent = p.depth+' мм'; v_w.textContent = p.mouth+'°';
+  v_dia.textContent = p.dia+' mm'; v_thk.textContent = p.thk+' mm';
+  v_sh.textContent = p.shaft+' mm'; v_n.textContent = p.n;
+  v_dep.textContent = p.depth+' mm'; v_w.textContent = p.mouth+'°';
 
   if(inflight) inflight.abort();
   inflight = new AbortController();
@@ -1048,7 +1072,7 @@ async function rebuild(){
   const buf = await res.arrayBuffer();
   setMeshFromArray(parseSTL(buf));
   closePopup(); clearAnchors(); deselect(); tipHide(); setPPMode(false); setLineMode(false);
-  modified = false; s_mod.textContent = 'нет';
+  modified = false; s_mod.textContent = 'no';
   undoStack = []; // новая серверная модель — новая точка отсчёта
   extractEdges();
 
@@ -1057,10 +1081,10 @@ async function rebuild(){
   updateOrthoFrusta();
   bedGrid.position.z = -p.thk/2 - 0.05; // «стол» сразу под деталью
   updateAxesSize(p.dia*0.62); // оси чуть выступают за обод
-  s_apex.textContent = res.headers.get('X-Apex-Mm')+' мм';
-  s_pitch.textContent = res.headers.get('X-Pitch-Mm')+' мм';
+  s_apex.textContent = res.headers.get('X-Apex-Mm')+' mm';
+  s_pitch.textContent = res.headers.get('X-Pitch-Mm')+' mm';
   const us = +res.headers.get('X-Gen-Us');
-  s_gen.textContent = us >= 1000 ? (us/1000).toFixed(1)+' мс' : us+' мкс';
+  s_gen.textContent = us >= 1000 ? (us/1000).toFixed(1)+' ms' : us+' µs';
 }
 
 // экспорт ИЗМЕНЁННОГО меша из браузера (binary STL)
@@ -1271,6 +1295,7 @@ window.addEventListener('keydown', e=>{
   }
   if(e.key==='Escape'){
     closePopup(); deselect(); tipHide();
+    if(!ppMode){ hidePatch(); ppPatch=null; } // снять выбор плоскости
     if(lineMode){
       if(lineStart){ lineStart=null; lastLinePt=null; lineLenStr=''; lineDirLock=null; killRubber(); }
       else setLineMode(false);
@@ -1447,8 +1472,8 @@ canvas.addEventListener('pointermove', e=>{
     mesh.geometry.attributes.position.needsUpdate = true;
     normalsThrottled();
     if(ppHi) ppHi.position.copy(n).multiplyScalar(0.05 + t);
-    tipAt(e, 'Тяни-толкай Δ <b>'+(t>=0?'+':'')+t.toFixed(1)+'</b> мм');
-    if(!modified){ modified=true; s_mod.textContent='да'; }
+    tipAt(e, 'Push/Pull Δ <b>'+(t>=0?'+':'')+t.toFixed(1)+'</b> mm');
+    if(!modified){ modified=true; s_mod.textContent='yes'; }
     return;
   }
   if(dragPt){
@@ -1499,9 +1524,9 @@ canvas.addEventListener('pointermove', e=>{
         selMarker.position.copy(sel.pos);
         updateVPanel();
       }
-      tipAt(e, 'кольцо ×'+rr.items.length+' вершин<br>R '+nR.toFixed(1)+' мм · Z '+nz.toFixed(1)+' мм'
-               +(axisLock==='z' ? ' · ось Z' : ' · (Z — по высоте)'));
-      if(!modified){ modified=true; s_mod.textContent='да'; }
+      tipAt(e, 'ring ×'+rr.items.length+' vertices<br>R '+nR.toFixed(1)+' mm · Z '+nz.toFixed(1)+' mm'
+               +(axisLock==='z' ? ' · axis Z' : ' · (Z — height)'));
+      if(!modified){ modified=true; s_mod.textContent='yes'; }
       return;
     }
     // магнит к чужим вершинам и рёбрам (inference при Move, как в SketchUp)
@@ -1516,10 +1541,10 @@ canvas.addEventListener('pointermove', e=>{
         snapDot.material.color.setHex(tc ? 0x52c752 : 0xd9534f);
         snapDot.position.copy(tp);
         snapDot.visible = true;
-        snapLabel = tc ? '→ вершина' : '→ на ребро';
+        snapLabel = tc ? '→ vertex' : '→ on edge';
         if(axisLock){ // цель проецируется на зафиксированную ось
           hit[axisLock] = tp[axisLock];
-          snapLabel += ' (по оси '+axisLock.toUpperCase()+')';
+          snapLabel += ' (axis '+axisLock.toUpperCase()+')';
         } else {
           hit.copy(tp); // прилипаем точно, без округления
         }
@@ -1543,10 +1568,10 @@ canvas.addEventListener('pointermove', e=>{
       const hp = br.cur[br.j];
       for(const m of dragPt.markers) m.position.copy(hp);
       if(dragPt.a) dragPt.a.pos.copy(hp);
-      tipAt(e, f.R ? 'Дуга R <b>'+f.R.toFixed(1)+'</b> мм' : 'прямая');
+      tipAt(e, f.R ? 'Arc R <b>'+f.R.toFixed(1)+'</b> mm' : 'straight');
       mesh.geometry.attributes.position.needsUpdate = true;
       normalsThrottled();
-      if(!modified){ modified=true; s_mod.textContent='да'; }
+      if(!modified){ modified=true; s_mod.textContent='yes'; }
       return;
     } else {
       for(const i of dragPt.idx){ pos[i]=hit.x; pos[i+1]=hit.y; pos[i+2]=hit.z; }
@@ -1555,13 +1580,13 @@ canvas.addEventListener('pointermove', e=>{
       if(dragPt.isSel && sel){ sel.pos.copy(hit); updateVPanel(); }
       const st = dragPt.start,
             fmt = (v,d)=>v.toFixed(1)+' <span class="d">Δ'+(d>=0?'+':'')+d.toFixed(1)+'</span>';
-      tipAt(e, (axisLock ? 'ось '+axisLock.toUpperCase()+'<br>' : '')
+      tipAt(e, (axisLock ? 'axis '+axisLock.toUpperCase()+'<br>' : '')
                +(snapLabel ? snapLabel+'<br>' : '')
                +'X '+fmt(hit.x,hit.x-st.x)+'<br>Y '+fmt(hit.y,hit.y-st.y)+'<br>Z '+fmt(hit.z,hit.z-st.z));
     }
     mesh.geometry.attributes.position.needsUpdate = true;
     normalsThrottled();
-    if(!modified){ modified=true; s_mod.textContent='да'; }
+    if(!modified){ modified=true; s_mod.textContent='yes'; }
     return;
   }
   if(drag){
@@ -1592,20 +1617,20 @@ canvas.addEventListener('pointermove', e=>{
         if(lineDirLock){
           const t = new THREE.Vector3().subVectors(pos, lineStart).dot(lineDirLock);
           pos = lineStart.clone().addScaledVector(lineDirLock, snapMM(t));
-          note += ' · Shift: направление зафикс.';
+          note += ' · Shift: direction locked';
         }
       }
       lastLinePt = pos.clone();
-      ghost.material.color.setHex(pt.kind==='вершина' ? C_VERT : C_EDGE);
+      ghost.material.color.setHex(pt.kind==='vertex' ? C_VERT : C_EDGE);
       ghost.position.copy(pos); ghost.visible = true;
-      let msg = 'Линия · ' + note;
+      let msg = 'Line · ' + note;
       if(lineStart){
         killRubber();
         const rg = new THREE.BufferGeometry().setFromPoints([lineStart, pos]);
         rubber = new THREE.Line(rg, new THREE.LineBasicMaterial({color:0x4da3ff}));
         scene.add(rubber);
-        msg += ' · L '+lineStart.distanceTo(pos).toFixed(1)+' мм';
-        if(lineLenStr) msg += ' · ввод: '+lineLenStr+' мм (Enter)';
+        msg += ' · L '+lineStart.distanceTo(pos).toFixed(1)+' mm';
+        if(lineLenStr) msg += ' · typed: '+lineLenStr+' mm (Enter)';
       }
       tipAt(e, msg);
     } else { ghost.visible=false; killRubber(); tipHide(); }
@@ -1619,7 +1644,7 @@ canvas.addEventListener('pointermove', e=>{
         ppPatch = facePatchAt(hf.faceIndex);
         showPatch(ppPatch);
       }
-      tipAt(e, 'Грань · тяни ЛКМ');
+      tipAt(e, 'Face · drag with LMB');
     } else { ppPatch=null; hidePatch(); tipHide(); }
     return;
   }
@@ -1629,7 +1654,7 @@ canvas.addEventListener('pointermove', e=>{
     setHover(null);
     cornerHover = c;
     vGhost.position.copy(c.pos); vGhost.visible = true;
-    tipAt(e, 'Вершина');
+    tipAt(e, 'Vertex');
     return;
   }
   cornerHover = null; vGhost.visible = false;
@@ -1643,27 +1668,36 @@ canvas.addEventListener('pointermove', e=>{
     }
     setHover(h, isMid);
     const arc = fitArc(h.chain);
-    tipAt(e, (isMid ? 'Середина' : 'На ребре · '+h.s.toFixed(1)+' мм')
-             + (arc ? '<br>Дуга R '+arc.R.toFixed(1)+' мм' : ''));
+    tipAt(e, (isMid ? 'Midpoint' : 'On edge · '+h.s.toFixed(1)+' mm')
+             + (arc ? '<br>Arc R '+arc.R.toFixed(1)+' mm' : ''));
   } else {
     setHover(null);
     tipHide();
   }
 });
-// двойной клик по вершине — выбрать кольцо одинаковых вершин (как loop в Max/Maya)
+// двойной клик: по вершине — кольцо одинаковых вершин (loop как в Max/Maya),
+// по грани — выбрать плоскую область (границы: рёбра модели + линии)
 canvas.addEventListener('dblclick', e=>{
   const q = quadPos(e);
   if(!q.inside || lineMode || ppMode || placing) return;
   const c = pickCorner(q);
-  if(!c) return;
-  selectVertex(c.pos);
-  sel.ring = true;
-  clearRingMarkers();
-  for(const cc of ringCornersAt(c.pos)){
-    const m = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VERT}));
-    m.position.copy(cc.pos);
-    scene.add(m);
-    ringMarkers.push(m);
+  if(c){
+    selectVertex(c.pos);
+    sel.ring = true;
+    clearRingMarkers();
+    for(const cc of ringCornersAt(c.pos)){
+      const m = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VERT}));
+      m.position.copy(cc.pos);
+      scene.add(m);
+      ringMarkers.push(m);
+    }
+    return;
+  }
+  const hf = raycastFace(q);
+  if(hf){
+    ppPatch = facePatchAt(hf.faceIndex);
+    showPatch(ppPatch);
+    tipAt(e, 'Face selected · '+ppPatch.tris.length+' tris · P to push/pull · Esc');
   }
 });
 canvas.addEventListener('contextmenu', e=>e.preventDefault());
@@ -1711,6 +1745,7 @@ function loop(t){
   snapDot.scale.setScalar(camDist*0.012);
   for(const m of ringMarkers) m.scale.setScalar(camDist*0.009);
   for(const sp of axisLabels) sp.scale.setScalar(camDist*0.045);
+  buildSprite.scale.set(camDist*0.14, camDist*0.026, 1);
   for(const a of anchors) a.marker.scale.setScalar(camDist*0.011);
 
   if(quadChk.checked){

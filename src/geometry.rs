@@ -62,39 +62,56 @@ fn contour_r(p: &WheelParams, a: f64) -> f64 {
     }
 }
 
-/// Строит замкнутый меш колеса. Обход: две крышки (кольцевые ленты между
+/// Кольцевых поясов в триангуляции крышек. Мелкие ячейки вместо длинных
+/// «долек» от вала до обода — локальные правки меша (врезка линий,
+/// выдавливание областей) работают чисто.
+const CAP_RINGS: usize = 8;
+
+/// Строит замкнутый меш колеса. Обход: две крышки (кольцевые пояса между
 /// валом и контуром), внешняя стенка по контуру, внутренняя стенка отверстия.
 pub fn build_wheel(p: &WheelParams) -> Vec<Tri> {
     let rs = p.shaft / 2.0;
     let hz = p.thk / 2.0;
 
-    // Точки контура и отверстия на одинаковой угловой сетке.
-    let mut outer = [(0.0f64, 0.0f64); STEPS];
-    let mut inner = [(0.0f64, 0.0f64); STEPS];
+    // Кольцевые точки на общей угловой сетке: пояс 0 — вал, пояс CAP_RINGS — контур.
+    let mut rings = vec![[(0.0f64, 0.0f64); STEPS]; CAP_RINGS + 1];
     for i in 0..STEPS {
         let a = std::f64::consts::TAU * i as f64 / STEPS as f64;
         let (s, c) = a.sin_cos();
-        let r = contour_r(p, a);
-        outer[i] = (c * r, s * r);
-        inner[i] = (c * rs, s * rs);
+        let r_out = contour_r(p, a);
+        for (k, ring) in rings.iter_mut().enumerate() {
+            let r = rs + (r_out - rs) * k as f64 / CAP_RINGS as f64;
+            ring[i] = (c * r, s * r);
+        }
     }
 
     let v = |xy: (f64, f64), z: f64| [xy.0 as f32, xy.1 as f32, z as f32];
-    let mut tris: Vec<Tri> = Vec::with_capacity(STEPS * 8);
+    let mut tris: Vec<Tri> = Vec::with_capacity(STEPS * (CAP_RINGS * 4 + 4));
 
+    // крышки: квады между соседними поясами
+    for k in 0..CAP_RINGS {
+        let (rin, rout) = (&rings[k], &rings[k + 1]);
+        for i in 0..STEPS {
+            let j = (i + 1) % STEPS;
+            let (it, ot) = (v(rin[i], hz), v(rout[i], hz));
+            let (jt, pt) = (v(rin[j], hz), v(rout[j], hz));
+            let (ib, ob) = (v(rin[i], -hz), v(rout[i], -hz));
+            let (jb, pb) = (v(rin[j], -hz), v(rout[j], -hz));
+            // верхняя (нормаль +Z), нижняя (нормаль -Z)
+            tris.push([it, ot, pt]);
+            tris.push([it, pt, jt]);
+            tris.push([ib, pb, ob]);
+            tris.push([ib, jb, pb]);
+        }
+    }
+    // стенки
+    let (inner, outer) = (&rings[0], &rings[CAP_RINGS]);
     for i in 0..STEPS {
         let j = (i + 1) % STEPS;
         let (it, ot) = (v(inner[i], hz), v(outer[i], hz));
         let (jt, pt) = (v(inner[j], hz), v(outer[j], hz));
         let (ib, ob) = (v(inner[i], -hz), v(outer[i], -hz));
         let (jb, pb) = (v(inner[j], -hz), v(outer[j], -hz));
-
-        // верхняя крышка (нормаль +Z, обход против часовой при взгляде сверху)
-        tris.push([it, ot, pt]);
-        tris.push([it, pt, jt]);
-        // нижняя крышка (нормаль -Z)
-        tris.push([ib, pb, ob]);
-        tris.push([ib, jb, pb]);
         // внешняя стенка (нормаль наружу)
         tris.push([ob, pb, pt]);
         tris.push([ob, pt, ot]);
