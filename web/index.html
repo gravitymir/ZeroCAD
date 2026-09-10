@@ -54,6 +54,21 @@
     border-radius:6px;padding:4px 6px;font-size:12px}
   #popup .pbtns{display:flex;gap:6px;margin-top:8px}
   #popup .pbtns button{padding:5px 10px;font-size:12px;flex:1}
+  /* панель координат выбранной вершины (в 3D-окне) */
+  #vpanel{position:absolute;z-index:5;left:10px;bottom:calc(50% + 40px);
+    background:var(--panel);border:1px solid #ffd84d;border-radius:10px;
+    padding:8px 12px;font-size:12px}
+  #vpanel[hidden]{display:none}
+  #vpanel .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
+  #vpanel input{width:76px;background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:3px 6px;font-size:12px;font-variant-numeric:tabular-nums}
+  #vpanel b{color:#ffd84d}
+  /* полупрозрачный тултип при перетаскивании */
+  #dragTip{position:absolute;z-index:6;background:rgba(30,33,40,.78);border:1px solid var(--line);
+    border-radius:8px;padding:6px 9px;font-size:11px;line-height:1.5;color:var(--text);
+    font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
+  #dragTip[hidden]{display:none}
+  #dragTip .d{color:var(--accent2)}
 </style>
 </head>
 <body>
@@ -70,11 +85,21 @@
     <div id="popup" hidden>
       <div class="prow">Ребро: <b id="p_len">–</b> мм</div>
       <div class="prow">Отступ: <input id="p_off" type="number" step="0.1" min="0"> мм</div>
+      <div class="prow" id="p_radrow" hidden>Радиус: <input id="p_rad" type="number" step="0.1"> мм</div>
+      <div class="prow" id="p_bendrow" hidden><label style="display:flex;gap:5px;align-items:center;cursor:pointer">
+        <input type="checkbox" id="p_bend"> тянуть дугой</label></div>
       <div class="pbtns">
         <button id="p_center">Центр</button>
         <button id="p_ok" class="primary">Поставить</button>
       </div>
     </div>
+    <div id="vpanel" hidden>
+      <div class="prow"><b>Вершина</b><span style="font-size:10px">(Esc — снять выбор)</span></div>
+      <div class="prow">X <input id="vx" type="number" step="0.1"> мм</div>
+      <div class="prow">Y <input id="vy" type="number" step="0.1"> мм</div>
+      <div class="prow">Z <input id="vz" type="number" step="0.1"> мм</div>
+    </div>
+    <div id="dragTip" hidden></div>
   </div>
   <div id="panel">
     <h1>🦀 ZeroCAD · колесо-дозатор</h1>
@@ -119,9 +144,11 @@
     <p class="hint">Наведи курсор на ребро в 3D-окне — оно подсветится, по нему
     побежит точка. Клик — точка фиксируется, в окошке можно задать отступ от
     начала ребра или нажать «Центр». Поставленную точку тяни мышью — грани
-    вытянутся следом. После ручной правки кнопка STL отдаёт изменённый меш
-    из браузера, а не серверный. Все единицы — миллиметры: шаг ручных правок
-    0.1 мм, сетка 1 и 10 мм.</p>
+    вытянутся следом. Жёлтое — вершины: их можно тянуть или задавать X/Y/Z
+    точно в полях. Бирюзовое — середина ребра. У дуговых рёбер показывается
+    и правится радиус; галочка «тянуть дугой» изгибает ребро окружностью.
+    После ручной правки кнопка STL отдаёт изменённый меш из браузера.
+    Все единицы — миллиметры: шаг правок 0.1 мм, сетка 1 и 10 мм.</p>
   </div>
 </div>
 
@@ -203,8 +230,8 @@ let edgeLines = null;   // все рёбра (тонкие тёмные)
 let hiLine = null;      // подсвеченная цепочка
 let hover = null;       // {chain, s}
 let placing = null;     // {chain, s} — открыта всплывашка
-let anchors = [];       // поставленные точки {pos, marker}
-let dragAnchor = null;  // {anchor, plane, indices}
+let anchors = [];       // поставленные точки {pos, marker, bend?}
+let dragPt = null;      // текущее перетаскивание {a?, isSel, start, plane, idx|bendRun, markers}
 let modified = false;
 
 const kf = v => Math.round(v*QP);
@@ -287,6 +314,18 @@ function extractEdges(){
   lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lp),3));
   edgeLines = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({color:0x3a2c1c}));
   scene.add(edgeLines);
+  // вершины = концы незамкнутых цепочек (углы модели)
+  const cmap = new Map();
+  for(const ch of chains){
+    if(ch.closed) continue;
+    for(const P of [ch.pts[0], ch.pts[ch.pts.length-1]]){
+      const k = keyOf(P.x,P.y,P.z);
+      if(!cmap.has(k)) cmap.set(k, P.clone());
+    }
+  }
+  corners = [...cmap.entries()].map(([key,pos])=>({key,pos}));
+  cornerHover = null;
+  if(typeof vGhost !== 'undefined') vGhost.visible = false;
 }
 
 function chainPointAt(chain, s){
@@ -301,6 +340,62 @@ function chainPointAt(chain, s){
 const sphereGeo = new THREE.SphereGeometry(1, 16, 12);
 const ghost = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x4da3ff}));
 ghost.visible = false; scene.add(ghost);
+
+// цвета привязок (inference, как в SketchUp: точка меняет цвет по типу)
+const C_EDGE = 0x4da3ff, C_MID = 0x3fd9c9, C_VERT = 0xffd84d;
+
+// вершины модели (углы, где сходятся рёбра) и выбранная вершина
+let corners = [];       // [{key, pos:Vector3}]
+let cornerHover = null;
+let sel = null;         // {pos:Vector3}
+const vGhost = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VERT}));
+vGhost.visible = false; scene.add(vGhost);
+const selMarker = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VERT}));
+selMarker.visible = false; scene.add(selMarker);
+
+const dragTip = document.getElementById('dragTip');
+const vpanel = document.getElementById('vpanel'),
+      vx=document.getElementById('vx'), vy=document.getElementById('vy'), vz=document.getElementById('vz');
+
+function tipAt(e, html){
+  const vr = view.getBoundingClientRect();
+  dragTip.style.left = (e.clientX-vr.left+16)+'px';
+  dragTip.style.top  = (e.clientY-vr.top+12)+'px';
+  dragTip.innerHTML = html;
+  dragTip.hidden = false;
+}
+function tipHide(){ dragTip.hidden = true; }
+
+function updateVPanel(){
+  if(!sel) return;
+  vx.value = sel.pos.x.toFixed(1);
+  vy.value = sel.pos.y.toFixed(1);
+  vz.value = sel.pos.z.toFixed(1);
+}
+function selectVertex(pos){
+  sel = {pos: pos.clone()};
+  selMarker.position.copy(sel.pos); selMarker.visible = true;
+  updateVPanel(); vpanel.hidden = false;
+}
+function deselect(){ sel = null; selMarker.visible = false; vpanel.hidden = true; }
+
+// перенос всех совпадающих вершин буфера в новую позицию
+function moveVerticesByKey(oldPos, newPos){
+  const pos = mesh.geometry.attributes.position.array;
+  const k0 = keyOf(oldPos.x, oldPos.y, oldPos.z);
+  for(let i=0;i<pos.length;i+=3)
+    if(keyOf(pos[i],pos[i+1],pos[i+2])===k0){ pos[i]=newPos.x; pos[i+1]=newPos.y; pos[i+2]=newPos.z; }
+  mesh.geometry.attributes.position.needsUpdate = true;
+  mesh.geometry.computeVertexNormals();
+  if(!modified){ modified=true; s_mod.textContent='да'; }
+}
+for(const inp of [vx,vy,vz]) inp.addEventListener('change', ()=>{
+  if(!sel) return;
+  const np = new THREE.Vector3(snapMM(+vx.value||0), snapMM(+vy.value||0), snapMM(+vz.value||0));
+  moveVerticesByKey(sel.pos, np);
+  sel.pos.copy(np); selMarker.position.copy(np);
+  updateVPanel(); extractEdges();
+});
 function makeAnchor(p){
   const m = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0xff8a3d}));
   m.position.copy(p); scene.add(m);
@@ -314,18 +409,101 @@ function clearAnchors(){
 }
 
 // ---------- подсветка наведённой цепочки ----------
-function setHover(h){
+function setHover(h, isMid){
   hover = h;
   if(hiLine){ scene.remove(hiLine); hiLine.geometry.dispose(); hiLine=null; }
   if(h){
     const g = new THREE.BufferGeometry().setFromPoints(h.chain.pts);
     hiLine = new THREE.Line(g, new THREE.LineBasicMaterial({color:0x4da3ff}));
     scene.add(hiLine);
+    ghost.material.color.setHex(isMid ? C_MID : C_EDGE);
     ghost.position.copy(chainPointAt(h.chain, h.s));
     ghost.visible = true;
   } else if(!placing){
     ghost.visible = false;
   }
+}
+
+// ---------- окружности и дуги ----------
+// окружность через 3 точки (в 3D): центр, нормаль плоскости, радиус
+function circle3(A,B,C){
+  const ab = new THREE.Vector3().subVectors(B,A);
+  const ac = new THREE.Vector3().subVectors(C,A);
+  const n = new THREE.Vector3().crossVectors(ab,ac);
+  const n2 = n.lengthSq();
+  if(n2 < 1e-9) return null; // коллинеарны
+  const center = new THREE.Vector3()
+    .addScaledVector(new THREE.Vector3().crossVectors(n, ab), ac.lengthSq())
+    .addScaledVector(new THREE.Vector3().crossVectors(ac, n), ab.lengthSq())
+    .multiplyScalar(1/(2*n2)).add(A);
+  return {center, n, R: center.distanceTo(A)};
+}
+// цепочка — дуга одной окружности? (кэш на объекте цепочки)
+function fitArc(chain){
+  if(chain._arc !== undefined) return chain._arc;
+  const pts = chain.pts;
+  let res = null;
+  if(pts.length >= 4){
+    const i1 = chain.closed ? (pts.length/3)|0 : (pts.length/2)|0;
+    const i2 = chain.closed ? (2*pts.length/3)|0 : pts.length-1;
+    const c = circle3(pts[0], pts[i1], pts[i2]);
+    if(c){
+      res = c;
+      for(const p of pts)
+        if(Math.abs(p.distanceTo(c.center) - c.R) > 0.05){ res = null; break; }
+    }
+  }
+  chain._arc = res;
+  return res;
+}
+// сэмплер дуги через концы A,B и ручку P: t∈[0..1] -> точка дуги
+function arcSampler(A,B,P){
+  const c3 = circle3(A,B,P);
+  if(!c3){ const f = t => new THREE.Vector3().lerpVectors(A,B,t); f.R = 0; return f; }
+  const {center, R} = c3;
+  const u = new THREE.Vector3().subVectors(A,center).normalize();
+  const w = c3.n.clone().normalize();
+  const v = new THREE.Vector3().crossVectors(w,u);
+  const ang = X => { const d=new THREE.Vector3().subVectors(X,center); return Math.atan2(d.dot(v), d.dot(u)); };
+  const TAU = Math.PI*2;
+  let thB = ((ang(B)%TAU)+TAU)%TAU, thP = ((ang(P)%TAU)+TAU)%TAU;
+  if(thB < 1e-9) thB = TAU;
+  const sweep = (thP > thB) ? thB - TAU : thB; // дуга обязана проходить через ручку
+  const f = t => center.clone()
+    .addScaledVector(u, Math.cos(t*sweep)*R)
+    .addScaledVector(v, Math.sin(t*sweep)*R);
+  f.R = R;
+  return f;
+}
+// индексы вершин буфера для набора точек (один проход по мешу)
+function buildIndexMap(points){
+  const im = new Map();
+  for(const p of points) im.set(keyOf(p.x,p.y,p.z), []);
+  const pos = mesh.geometry.attributes.position.array;
+  for(let i=0;i<pos.length;i+=3){
+    const arr = im.get(keyOf(pos[i],pos[i+1],pos[i+2]));
+    if(arr) arr.push(i);
+  }
+  return im;
+}
+// сменить радиус дуговой цепочки: точки скользят по своим радиусам от центра
+function applyRadius(chain, arc, Rnew){
+  const im = buildIndexMap(chain.pts);
+  const pos = mesh.geometry.attributes.position.array;
+  const nUnit = arc.n.clone().normalize();
+  for(const p of chain.pts){
+    const v = new THREE.Vector3().subVectors(p, arc.center);
+    const h = v.dot(nUnit);
+    const ip = v.addScaledVector(nUnit, -h);
+    if(ip.lengthSq() < 1e-12) continue;
+    const np = arc.center.clone().addScaledVector(ip.normalize(), Rnew).addScaledVector(nUnit, h);
+    const arr = im.get(keyOf(p.x,p.y,p.z)) || [];
+    for(const i of arr){ pos[i]=np.x; pos[i+1]=np.y; pos[i+2]=np.z; }
+  }
+  mesh.geometry.attributes.position.needsUpdate = true;
+  mesh.geometry.computeVertexNormals();
+  if(!modified){ modified=true; s_mod.textContent='да'; }
+  closePopup(); setHover(null); extractEdges();
 }
 
 // ---------- геометрия меша ----------
@@ -406,7 +584,7 @@ async function rebuild(){
   }catch(e){ return; }
   const buf = await res.arrayBuffer();
   setMeshFromArray(parseSTL(buf));
-  closePopup(); clearAnchors();
+  closePopup(); clearAnchors(); deselect(); tipHide();
   modified = false; s_mod.textContent = 'нет';
   extractEdges();
 
@@ -489,15 +667,34 @@ function anchorAt(q){
   }
   return null;
 }
+// ближайшая вершина модели (жёлтая привязка)
+function pickCorner(q){
+  const P={x:0,y:0,z:0};
+  let best=null, bestD=10;
+  for(const c of corners){
+    projTo3DQuad(c.pos, q.w, q.h, P);
+    if(P.z>1||P.z<-1) continue;
+    const d=Math.hypot(P.x-q.mx, P.y-q.my);
+    if(d<bestD){ bestD=d; best=c; }
+  }
+  return best;
+}
 
 // всплывашка
 const popup=document.getElementById('popup'), p_len=document.getElementById('p_len'),
-      p_off=document.getElementById('p_off');
+      p_off=document.getElementById('p_off'),
+      p_radrow=document.getElementById('p_radrow'), p_rad=document.getElementById('p_rad'),
+      p_bendrow=document.getElementById('p_bendrow'), p_bend=document.getElementById('p_bend');
 function openPopup(e, q){
   placing = {chain:hover.chain, s:hover.s};
   p_len.textContent = placing.chain.total.toFixed(1);
   p_off.value = placing.s.toFixed(1);
   p_off.max = placing.chain.total.toFixed(1);
+  const arc = fitArc(placing.chain);
+  p_radrow.hidden = !arc;
+  if(arc) p_rad.value = arc.R.toFixed(1);
+  p_bendrow.hidden = placing.chain.pts.length < 5 || placing.chain.closed;
+  p_bend.checked = false;
   const vr = view.getBoundingClientRect();
   popup.style.left = Math.min(e.clientX-vr.left+14, vr.width-190)+'px';
   popup.style.top  = Math.min(e.clientY-vr.top+8, vr.height-120)+'px';
@@ -521,14 +718,32 @@ document.getElementById('p_center').addEventListener('click', ()=>{
   p_off.value = placing.s.toFixed(1);
   ghost.position.copy(chainPointAt(placing.chain, placing.s));
 });
+p_rad.addEventListener('change', ()=>{
+  if(!placing) return;
+  const arc = fitArc(placing.chain);
+  if(arc) applyRadius(placing.chain, arc, Math.max(0.2, snapMM(+p_rad.value||arc.R)));
+});
 document.getElementById('p_ok').addEventListener('click', ()=>{
   if(!placing) return;
   placing.s = snapMM(placing.s);
+  const bendWanted = !p_bendrow.hidden && p_bend.checked;
   const P = splitEdgeAt(placing.chain, placing.s) || chainPointAt(placing.chain, placing.s);
-  makeAnchor(P);
+  const a = makeAnchor(P);
   closePopup(); setHover(null); extractEdges();
+  if(bendWanted){
+    // привязываем к точке всю (пересобранную) цепочку — тянем её дугой
+    const kP = keyOf(P.x,P.y,P.z);
+    const ch = chains.find(c=>c.pts.some(pt=>keyOf(pt.x,pt.y,pt.z)===kP));
+    if(ch && !ch.closed && ch.pts.length>=3){
+      a.bend = {pts0: ch.pts.map(p=>p.clone()),
+                t: ch.cum.map(v=>v/ch.total),
+                j: ch.pts.findIndex(pt=>keyOf(pt.x,pt.y,pt.z)===kP)};
+    }
+  }
 });
-window.addEventListener('keydown', e=>{ if(e.key==='Escape') closePopup(); });
+window.addEventListener('keydown', e=>{
+  if(e.key==='Escape'){ closePopup(); deselect(); tipHide(); }
+});
 
 let drag=null;
 canvas.addEventListener('pointerdown', e=>{
@@ -537,42 +752,82 @@ canvas.addEventListener('pointerdown', e=>{
   if(placing){ closePopup(); return; }
   if(e.button===0){
     const a = anchorAt(q);
-    if(a){ // начало перетаскивания точки: плоскость параллельна экрану
+    const c = a ? null : pickCorner(q);
+    if(a || c){ // тащим точку или вершину: плоскость параллельна экрану
+      if(c) selectVertex(c.pos);
+      const tgt = a ? a.pos : sel.pos;
       const nrm = new THREE.Vector3().subVectors(persp.position, camTarget).normalize();
-      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(nrm, a.marker.position);
-      // какие вершины буфера двигаем
-      const pos = mesh.geometry.attributes.position.array;
-      const k0 = keyOf(a.marker.position.x, a.marker.position.y, a.marker.position.z);
-      const idx=[];
-      for(let i=0;i<pos.length;i+=3) if(keyOf(pos[i],pos[i+1],pos[i+2])===k0) idx.push(i);
-      dragAnchor = {a, plane, idx};
+      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(nrm, tgt);
+      dragPt = {a, isSel: !!c, start: tgt.clone(), plane,
+                markers: a ? [a.marker] : [selMarker]};
+      if(a && a.bend){ // режим дуги: индексы всех точек цепочки одним проходом
+        const im = buildIndexMap(a.bend.pts0);
+        dragPt.bendRun = {
+          A: a.bend.pts0[0].clone(),
+          B: a.bend.pts0[a.bend.pts0.length-1].clone(),
+          t: a.bend.t, j: a.bend.j,
+          cur: a.bend.pts0.map(p=>p.clone()),
+          idx: a.bend.pts0.map(p=>im.get(keyOf(p.x,p.y,p.z))||[])
+        };
+      } else {
+        const pos = mesh.geometry.attributes.position.array;
+        const k0 = keyOf(tgt.x, tgt.y, tgt.z);
+        const idx=[];
+        for(let i=0;i<pos.length;i+=3) if(keyOf(pos[i],pos[i+1],pos[i+2])===k0) idx.push(i);
+        dragPt.idx = idx;
+      }
       canvas.setPointerCapture(e.pointerId);
       return;
     }
     if(hover){ openPopup(e, q); return; } // клик по ребру
   }
+  tipHide();
   drag={x:e.clientX,y:e.clientY,b:e.button};
   canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener('pointerup', ()=>{
-  if(dragAnchor){ dragAnchor=null; extractEdges(); }
+  if(dragPt){
+    // после изгиба запоминаем новые позиции цепочки для следующего раза
+    if(dragPt.bendRun && dragPt.a && dragPt.a.bend)
+      dragPt.a.bend.pts0 = dragPt.bendRun.cur.map(p=>p.clone());
+    dragPt=null; tipHide(); extractEdges();
+  }
   drag=null;
 });
 const raycaster = new THREE.Raycaster();
 canvas.addEventListener('pointermove', e=>{
   const q = quadPos(e);
-  if(dragAnchor){
+  if(dragPt){
     if(!q.inside) return;
     raycaster.setFromCamera({x:q.mx/q.w*2-1, y:-(q.my/q.h*2-1)}, persp);
     const hit = new THREE.Vector3();
-    if(!raycaster.ray.intersectPlane(dragAnchor.plane, hit)) return;
+    if(!raycaster.ray.intersectPlane(dragPt.plane, hit)) return;
     hit.set(snapMM(hit.x), snapMM(hit.y), snapMM(hit.z)); // привязка 0.1 мм
     const pos = mesh.geometry.attributes.position.array;
-    for(const i of dragAnchor.idx){ pos[i]=hit.x; pos[i+1]=hit.y; pos[i+2]=hit.z; }
+    if(dragPt.bendRun){
+      // гнём цепочку дугой через её концы и ручку (bulge как в SketchUp)
+      const br = dragPt.bendRun;
+      const f = arcSampler(br.A, br.B, hit);
+      for(let i=1;i<br.cur.length-1;i++){
+        const np = f(br.t[i]);
+        for(const bi of br.idx[i]){ pos[bi]=np.x; pos[bi+1]=np.y; pos[bi+2]=np.z; }
+        br.cur[i].copy(np);
+      }
+      const hp = br.cur[br.j];
+      for(const m of dragPt.markers) m.position.copy(hp);
+      if(dragPt.a) dragPt.a.pos.copy(hp);
+      tipAt(e, f.R ? 'Дуга R <b>'+f.R.toFixed(1)+'</b> мм' : 'прямая');
+    } else {
+      for(const i of dragPt.idx){ pos[i]=hit.x; pos[i+1]=hit.y; pos[i+2]=hit.z; }
+      for(const m of dragPt.markers) m.position.copy(hit);
+      if(dragPt.a) dragPt.a.pos.copy(hit);
+      if(dragPt.isSel && sel){ sel.pos.copy(hit); updateVPanel(); }
+      const st = dragPt.start,
+            fmt = (v,d)=>v.toFixed(1)+' <span class="d">Δ'+(d>=0?'+':'')+d.toFixed(1)+'</span>';
+      tipAt(e, 'X '+fmt(hit.x,hit.x-st.x)+'<br>Y '+fmt(hit.y,hit.y-st.y)+'<br>Z '+fmt(hit.z,hit.z-st.z));
+    }
     mesh.geometry.attributes.position.needsUpdate = true;
     mesh.geometry.computeVertexNormals();
-    dragAnchor.a.marker.position.copy(hit);
-    dragAnchor.a.pos.copy(hit);
     if(!modified){ modified=true; s_mod.textContent='да'; }
     return;
   }
@@ -591,7 +846,32 @@ canvas.addEventListener('pointermove', e=>{
     return;
   }
   if(placing) return;               // пока открыта всплывашка — наведение заморожено
-  setHover(q.inside ? pickEdge(q) : null);
+  // приоритет привязок как в SketchUp: вершина > середина > ребро
+  const c = q.inside ? pickCorner(q) : null;
+  if(c){
+    setHover(null);
+    cornerHover = c;
+    vGhost.position.copy(c.pos); vGhost.visible = true;
+    tipAt(e, 'Вершина');
+    return;
+  }
+  cornerHover = null; vGhost.visible = false;
+  const h = q.inside ? pickEdge(q) : null;
+  if(h){
+    const midP = chainPointAt(h.chain, h.chain.total/2);
+    const scr = projTo3DQuad(midP, q.w, q.h, {x:0,y:0,z:0});
+    let isMid = false;
+    if(!h.chain.closed && Math.hypot(scr.x-q.mx, scr.y-q.my) < 8){
+      h.s = h.chain.total/2; isMid = true;
+    }
+    setHover(h, isMid);
+    const arc = fitArc(h.chain);
+    tipAt(e, (isMid ? 'Середина' : 'На ребре · '+h.s.toFixed(1)+' мм')
+             + (arc ? '<br>Дуга R '+arc.R.toFixed(1)+' мм' : ''));
+  } else {
+    setHover(null);
+    tipHide();
+  }
 });
 canvas.addEventListener('contextmenu', e=>e.preventDefault());
 canvas.addEventListener('wheel', e=>{
@@ -628,6 +908,8 @@ function loop(t){
 
   // маркеры постоянного экранного размера
   ghost.scale.setScalar(camDist*0.008);
+  vGhost.scale.setScalar(camDist*0.012);
+  selMarker.scale.setScalar(camDist*0.011);
   for(const a of anchors) a.marker.scale.setScalar(camDist*0.011);
 
   renderViewport(persp,  0,  hh, hw, hh, VIEW_GRIDS.persp); // 3D — слева сверху
