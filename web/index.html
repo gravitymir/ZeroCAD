@@ -167,7 +167,9 @@
     и правится радиус; точка на ребре с зажатым Alt тянется дугой
     (изгиб окружностью, радиус — в подсказке), без Alt — изломом.
     Во время перетаскивания клавиши X/Y/Z ограничивают движение одной осью
-    (как в Blender, повторное нажатие снимает). Рёбра, вершины и точки
+    (как в Blender, повторное нажатие снимает); точка прилипает к чужим
+    вершинам (зелёная цель) и рёбрам (красная) — отпустишь, и она сядет
+    ровно туда. Рёбра, вершины и точки
     выбираются в любом из четырёх окон; в орто-видах перетаскивание идёт
     строго в плоскости вида, колесо мыши — зум.
     Ctrl+Z отменяет правки (до 30 шагов). После ручной правки кнопка STL
@@ -398,6 +400,9 @@ const vGhost = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VE
 vGhost.visible = false; scene.add(vGhost);
 const selMarker = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VERT}));
 selMarker.visible = false; scene.add(selMarker);
+// маркер цели магнита при перетаскивании (зелёный — вершина, красный — ребро)
+const snapDot = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x52c752}));
+snapDot.visible = false; scene.add(snapDot);
 
 const dragTip = document.getElementById('dragTip');
 const vpanel = document.getElementById('vpanel'),
@@ -726,11 +731,12 @@ function projToQuad(v, cam, w, h, out){
   return out;
 }
 // ближайшее ребро к курсору (в пикселях 3D-окна)
-function pickEdge(q){
+function pickEdge(q, excl){
   const P1={x:0,y:0,z:0}, P2={x:0,y:0,z:0};
   let best=null, bestD=8; // порог 8px
   for(const ch of chains){
     for(let i=1;i<ch.pts.length;i++){
+      if(excl && (ch.pts[i-1].distanceTo(excl)<1e-3 || ch.pts[i].distanceTo(excl)<1e-3)) continue;
       projToQuad(ch.pts[i-1], q.cam, q.w, q.h, P1);
       projToQuad(ch.pts[i],   q.cam, q.w, q.h, P2);
       if(P1.z>1||P2.z>1||P1.z<-1||P2.z<-1) continue;
@@ -754,10 +760,11 @@ function anchorAt(q){
   return null;
 }
 // ближайшая вершина модели (жёлтая привязка)
-function pickCorner(q){
+function pickCorner(q, excl){
   const P={x:0,y:0,z:0};
   let best=null, bestD=10;
   for(const c of corners){
+    if(excl && c.pos.distanceTo(excl)<1e-3) continue;
     projToQuad(c.pos, q.cam, q.w, q.h, P);
     if(P.z>1||P.z<-1) continue;
     const d=Math.hypot(P.x-q.mx, P.y-q.my);
@@ -892,6 +899,7 @@ canvas.addEventListener('pointerup', ()=>{
     if(dragPt.bendRun && dragPt.a && dragPt.a.bend)
       dragPt.a.bend.pts0 = dragPt.bendRun.cur.map(p=>p.clone());
     setAxisLock(null);
+    snapDot.visible = false;
     dragPt=null; tipHide(); extractEdges();
   }
   drag=null;
@@ -913,6 +921,27 @@ canvas.addEventListener('pointermove', e=>{
       hit.set(axisLock==='x' ? hit.x : st.x,
               axisLock==='y' ? hit.y : st.y,
               axisLock==='z' ? hit.z : st.z);
+    }
+    // магнит к чужим вершинам и рёбрам (inference при Move, как в SketchUp)
+    let snapLabel = null;
+    snapDot.visible = false;
+    if(!dragPt.bendRun){
+      const qd = {mx:lx, my:ly, w:q0.w, h:q0.h, cam:q0.cam};
+      const tc = pickCorner(qd, dragPt.start);
+      const te = tc ? null : pickEdge(qd, dragPt.start);
+      if(tc || te){
+        const tp = tc ? tc.pos.clone() : chainPointAt(te.chain, te.s);
+        snapDot.material.color.setHex(tc ? 0x52c752 : 0xd9534f);
+        snapDot.position.copy(tp);
+        snapDot.visible = true;
+        snapLabel = tc ? '→ вершина' : '→ на ребро';
+        if(axisLock){ // цель проецируется на зафиксированную ось
+          hit[axisLock] = tp[axisLock];
+          snapLabel += ' (по оси '+axisLock.toUpperCase()+')';
+        } else {
+          hit.copy(tp); // прилипаем точно, без округления
+        }
+      }
     }
     if(!dragPt.snapPushed){ // первый сдвиг — пишем историю для Ctrl+Z
       undoStack.push(dragPt.snap);
@@ -941,6 +970,7 @@ canvas.addEventListener('pointermove', e=>{
       const st = dragPt.start,
             fmt = (v,d)=>v.toFixed(1)+' <span class="d">Δ'+(d>=0?'+':'')+d.toFixed(1)+'</span>';
       tipAt(e, (axisLock ? 'ось '+axisLock.toUpperCase()+'<br>' : '')
+               +(snapLabel ? snapLabel+'<br>' : '')
                +'X '+fmt(hit.x,hit.x-st.x)+'<br>Y '+fmt(hit.y,hit.y-st.y)+'<br>Z '+fmt(hit.z,hit.z-st.z));
     }
     mesh.geometry.attributes.position.needsUpdate = true;
@@ -1032,6 +1062,7 @@ function loop(t){
   ghost.scale.setScalar(camDist*0.008);
   vGhost.scale.setScalar(camDist*0.012);
   selMarker.scale.setScalar(camDist*0.011);
+  snapDot.scale.setScalar(camDist*0.012);
   for(const a of anchors) a.marker.scale.setScalar(camDist*0.011);
 
   if(quadChk.checked){
