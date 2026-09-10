@@ -44,6 +44,16 @@
   .hint{font-size:11px;color:var(--muted);margin-top:14px;line-height:1.5}
   .sec{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--accent2);
     margin:18px 0 4px;border-bottom:1px solid var(--line);padding-bottom:4px}
+  /* всплывашка постановки точки на ребро */
+  #popup{position:absolute;z-index:5;background:var(--panel);border:1px solid var(--accent2);
+    border-radius:10px;padding:10px 12px;font-size:12px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  #popup[hidden]{display:none}
+  #popup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
+  #popup b{color:var(--text);font-variant-numeric:tabular-nums}
+  #popup input{width:76px;background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:4px 6px;font-size:12px}
+  #popup .pbtns{display:flex;gap:6px;margin-top:8px}
+  #popup .pbtns button{padding:5px 10px;font-size:12px;flex:1}
 </style>
 </head>
 <body>
@@ -51,12 +61,20 @@
   <div id="view">
     <div id="grid">
       <div class="h"></div><div class="v"></div>
-      <div class="vplabel" style="left:10px;top:10px"><b>3D</b> · ЛКМ вращать · колесо зум · ПКМ сдвиг</div>
+      <div class="vplabel" style="left:10px;top:10px"><b>3D</b> · ЛКМ вращать · клик по ребру — точка · колесо зум · ПКМ сдвиг</div>
       <div class="vplabel" style="left:calc(50% + 10px);top:10px">Вид <b>+X</b> (сбоку)</div>
       <div class="vplabel" style="left:10px;top:calc(50% + 10px)">Вид <b>+Y</b> (сбоку)</div>
       <div class="vplabel" style="left:calc(50% + 10px);top:calc(50% + 10px)">Вид <b>+Z</b> (в плане)</div>
     </div>
     <div id="hud"><b id="fps"></b></div>
+    <div id="popup" hidden>
+      <div class="prow">Ребро: <b id="p_len">–</b> мм</div>
+      <div class="prow">Отступ: <input id="p_off" type="number" step="0.1" min="0"> мм</div>
+      <div class="pbtns">
+        <button id="p_center">Центр</button>
+        <button id="p_ok" class="primary">Поставить</button>
+      </div>
+    </div>
   </div>
   <div id="panel">
     <h1>🦀 ZeroCAD · колесо-дозатор</h1>
@@ -91,15 +109,18 @@
     <div class="stat">Шаг между карманами<b id="s_pitch">–</b></div>
     <div class="stat">Треугольников в STL<b id="s_tris">–</b></div>
     <div class="stat">Генерация на Rust<b id="s_gen">–</b></div>
+    <div class="stat">Правка мышью<b id="s_mod">нет</b></div>
 
     <div class="btns">
       <button id="reset">Сброс</button>
       <button id="stl" class="primary">⬇ Скачать STL</button>
     </div>
 
-    <p class="hint">Четыре окна как в настоящем CAD: слева-сверху 3D (орбита камеры),
-    остальные — жёсткие ортогональные проекции вдоль осей. Деталь неподвижна,
-    двигаются только камеры.</p>
+    <p class="hint">Наведи курсор на ребро в 3D-окне — оно подсветится, по нему
+    побежит точка. Клик — точка фиксируется, в окошке можно задать отступ от
+    начала ребра или нажать «Центр». Поставленную точку тяни мышью — грани
+    вытянутся следом. После ручной правки кнопка STL отдаёт изменённый меш
+    из браузера, а не серверный.</p>
   </div>
 </div>
 
@@ -114,6 +135,7 @@ const renderer = new THREE.WebGLRenderer({antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.setScissorTest(true);
 view.appendChild(renderer.domElement);
+const canvas = renderer.domElement;
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.55));
 const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(1,1,1.5); scene.add(key);
@@ -121,13 +143,14 @@ const fill = new THREE.DirectionalLight(0x88aaff, 0.35); fill.position.set(-1,-1
 
 scene.add(new THREE.AxesHelper(50));
 let mesh = null;
-const mat = new THREE.MeshStandardMaterial({color:0xff8a3d, metalness:0.15, roughness:0.55, flatShading:true});
+// polygonOffset отодвигает грани, чтобы линии рёбер не мерцали поверх них
+const mat = new THREE.MeshStandardMaterial({color:0xff8a3d, metalness:0.15, roughness:0.55,
+  flatShading:true, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1});
 
 // ---------- камеры: 1 перспективная (орбита) + 3 ортогональные ----------
-// Колесо лежит в плоскости XY, толщина вдоль Z. Мировой «верх» = +Z.
 const persp = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
 persp.up.set(0,0,1);
-let camDist = 160, yaw = -1.1, pitch = 0.55; // орбита вокруг цели
+let camDist = 160, yaw = -1.1, pitch = 0.55;
 const camTarget = new THREE.Vector3(0,0,0);
 
 function makeOrtho(pos, up){
@@ -139,7 +162,7 @@ const D = 1000;
 const orthoX = makeOrtho(new THREE.Vector3(D,0,0), new THREE.Vector3(0,0,1));
 const orthoY = makeOrtho(new THREE.Vector3(0,D,0), new THREE.Vector3(0,0,1));
 const orthoZ = makeOrtho(new THREE.Vector3(0,0,D), new THREE.Vector3(0,1,0));
-let orthoFit = 70; // полувысота кадра орто-видов, мм (авто от диаметра)
+let orthoFit = 70;
 
 function updateOrthoFrusta(){
   const w=view.clientWidth/2, h=view.clientHeight/2, aspect=w/h;
@@ -147,6 +170,178 @@ function updateOrthoFrusta(){
     c.left=-orthoFit*aspect; c.right=orthoFit*aspect; c.top=orthoFit; c.bottom=-orthoFit;
     c.updateProjectionMatrix();
   }
+}
+
+// ---------- рёбра модели: извлечение и сшивка в цепочки ----------
+// «Ребро» = цепочка отрезков между резкими углами (как в SketchUp).
+const FEATURE_COS = Math.cos(15*Math.PI/180); // двугранный угол >15° => видимое ребро
+const CHAIN_COS   = Math.cos(25*Math.PI/180); // поворот >25° => конец цепочки («угол»)
+const QP = 1000;                              // квантование координат, 0.001 мм
+
+let chains = [];     // {pts:[Vector3], cum:[мм], total, closed}
+let edgeLines = null;   // все рёбра (тонкие тёмные)
+let hiLine = null;      // подсвеченная цепочка
+let hover = null;       // {chain, s}
+let placing = null;     // {chain, s} — открыта всплывашка
+let anchors = [];       // поставленные точки {pos, marker}
+let dragAnchor = null;  // {anchor, plane, indices}
+let modified = false;
+
+const kf = v => Math.round(v*QP);
+const keyOf = (x,y,z) => kf(x)+','+kf(y)+','+kf(z);
+
+function extractEdges(){
+  chains = [];
+  if(edgeLines){ scene.remove(edgeLines); edgeLines.geometry.dispose(); edgeLines = null; }
+  setHover(null);
+  if(!mesh) return;
+  const pos = mesh.geometry.attributes.position.array;
+  const eMap = new Map(); // "ka|kb" -> {ka,kb,A,B,normals:[]}
+  const a=new THREE.Vector3(), b=new THREE.Vector3(), c=new THREE.Vector3(),
+        ab=new THREE.Vector3(), ac=new THREE.Vector3();
+  for(let i=0;i<pos.length;i+=9){
+    a.fromArray(pos,i); b.fromArray(pos,i+3); c.fromArray(pos,i+6);
+    ab.subVectors(b,a); ac.subVectors(c,a);
+    const n = new THREE.Vector3().crossVectors(ab,ac).normalize();
+    const vs=[a,b,c];
+    for(let e=0;e<3;e++){
+      const P=vs[e], Q=vs[(e+1)%3];
+      const kp=keyOf(P.x,P.y,P.z), kq=keyOf(Q.x,Q.y,Q.z);
+      if(kp===kq) continue;
+      const ek = kp<kq ? kp+'|'+kq : kq+'|'+kp;
+      let ent = eMap.get(ek);
+      if(!ent){ ent={ka:kp,kb:kq,A:P.clone(),B:Q.clone(),normals:[]}; eMap.set(ek,ent); }
+      ent.normals.push(n.clone());
+    }
+  }
+  // видимые рёбра: граница или излом
+  const feats=[];
+  for(const ent of eMap.values()){
+    if(ent.normals.length!==2 || ent.normals[0].dot(ent.normals[1]) < FEATURE_COS) feats.push(ent);
+  }
+  // смежность по вершинам
+  const vMap = new Map();
+  for(const f of feats){
+    for(const k of [f.ka,f.kb]){
+      if(!vMap.has(k)) vMap.set(k,[]);
+      vMap.get(k).push(f);
+    }
+  }
+  const other = (f,k) => f.ka===k ? {k:f.kb,v:f.B,from:f.A} : {k:f.ka,v:f.A,from:f.B};
+  const used = new Set();
+  const dir = (p,q) => new THREE.Vector3().subVectors(q,p).normalize();
+  for(const f0 of feats){
+    if(used.has(f0)) continue;
+    used.add(f0);
+    let keys=[f0.ka,f0.kb], pts=[f0.A.clone(),f0.B.clone()], closed=false;
+    for(const side of [1,0]){ // 1 — растим хвост, 0 — голову
+      while(true){
+        const endK = side ? keys[keys.length-1] : keys[0];
+        const adj = vMap.get(endK)||[];
+        if(adj.length!==2) break;               // развилка или обрыв — «угол» модели
+        const nxt = adj.find(x=>!used.has(x));
+        if(!nxt) break;
+        const o = other(nxt,endK);
+        const endP  = side ? pts[pts.length-1] : pts[0];
+        const prevP = side ? pts[pts.length-2] : pts[1];
+        if(dir(prevP,endP).dot(dir(endP,o.v)) < CHAIN_COS) break; // резкий поворот
+        used.add(nxt);
+        if(side){ keys.push(o.k); pts.push(o.v.clone()); }
+        else    { keys.unshift(o.k); pts.unshift(o.v.clone()); }
+        if(o.k === (side?keys[0]:keys[keys.length-1])){ closed=true; break; }
+      }
+      if(closed) break;
+    }
+    const cum=[0];
+    for(let i=1;i<pts.length;i++) cum.push(cum[i-1]+pts[i].distanceTo(pts[i-1]));
+    chains.push({pts, cum, total:cum[cum.length-1], closed});
+  }
+  // тонкий оверлей всех рёбер
+  const lp=[];
+  for(const f of feats){ lp.push(f.A.x,f.A.y,f.A.z, f.B.x,f.B.y,f.B.z); }
+  const lg = new THREE.BufferGeometry();
+  lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lp),3));
+  edgeLines = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({color:0x3a2c1c}));
+  scene.add(edgeLines);
+}
+
+function chainPointAt(chain, s){
+  s = Math.max(0, Math.min(chain.total, s));
+  let i=1;
+  while(i<chain.cum.length-1 && chain.cum[i]<s) i++;
+  const t=(s-chain.cum[i-1])/Math.max(1e-9, chain.cum[i]-chain.cum[i-1]);
+  return new THREE.Vector3().lerpVectors(chain.pts[i-1], chain.pts[i], t);
+}
+
+// ---------- маркеры ----------
+const sphereGeo = new THREE.SphereGeometry(1, 16, 12);
+const ghost = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x4da3ff}));
+ghost.visible = false; scene.add(ghost);
+function makeAnchor(p){
+  const m = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0xff8a3d}));
+  m.position.copy(p); scene.add(m);
+  const a = {pos:p.clone(), marker:m};
+  anchors.push(a);
+  return a;
+}
+function clearAnchors(){
+  for(const a of anchors){ scene.remove(a.marker); }
+  anchors = [];
+}
+
+// ---------- подсветка наведённой цепочки ----------
+function setHover(h){
+  hover = h;
+  if(hiLine){ scene.remove(hiLine); hiLine.geometry.dispose(); hiLine=null; }
+  if(h){
+    const g = new THREE.BufferGeometry().setFromPoints(h.chain.pts);
+    hiLine = new THREE.Line(g, new THREE.LineBasicMaterial({color:0x4da3ff}));
+    scene.add(hiLine);
+    ghost.position.copy(chainPointAt(h.chain, h.s));
+    ghost.visible = true;
+  } else if(!placing){
+    ghost.visible = false;
+  }
+}
+
+// ---------- геометрия меша ----------
+function setMeshFromArray(f32){
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(f32, 3));
+  geo.computeVertexNormals();
+  if(mesh){ scene.remove(mesh); mesh.geometry.dispose(); }
+  mesh = new THREE.Mesh(geo, mat);
+  scene.add(mesh);
+  s_tris.textContent = f32.length/9;
+}
+
+// врезаем точку P в рёбра (ka-kb): каждый треугольник с таким ребром делим надвое
+function splitEdgeAt(chain, s){
+  const P = chainPointAt(chain, Math.max(0.1, Math.min(chain.total-0.1, s)));
+  let i=1;
+  while(i<chain.cum.length-1 && chain.cum[i]<s) i++;
+  const A=chain.pts[i-1], B=chain.pts[i];
+  const ka=keyOf(A.x,A.y,A.z), kb=keyOf(B.x,B.y,B.z), kp=keyOf(P.x,P.y,P.z);
+  if(kp===ka || kp===kb) return null; // попали в существующую вершину — просто ставим точку
+  const pos = mesh.geometry.attributes.position.array;
+  const out = [];
+  const V=[new THREE.Vector3(),new THREE.Vector3(),new THREE.Vector3()];
+  for(let o=0;o<pos.length;o+=9){
+    for(let v=0;v<3;v++) V[v].fromArray(pos,o+v*3);
+    const K=V.map(v=>keyOf(v.x,v.y,v.z));
+    let done=false;
+    for(let e=0;e<3 && !done;e++){
+      const p=e, q=(e+1)%3, r=(e+2)%3;
+      if((K[p]===ka&&K[q]===kb)||(K[p]===kb&&K[q]===ka)){
+        out.push(V[p].x,V[p].y,V[p].z, P.x,P.y,P.z, V[r].x,V[r].y,V[r].z);
+        out.push(P.x,P.y,P.z, V[q].x,V[q].y,V[q].z, V[r].x,V[r].y,V[r].z);
+        done=true;
+      }
+    }
+    if(!done) for(let v=0;v<3;v++) out.push(V[v].x,V[v].y,V[v].z);
+  }
+  setMeshFromArray(new Float32Array(out));
+  return P;
 }
 
 // ---------- параметры и запрос к Rust ----------
@@ -159,16 +354,15 @@ function queryString(p){
   return `dia=${p.dia}&thk=${p.thk}&shaft=${p.shaft}&n=${p.n}&depth=${p.depth}&mouth=${p.mouth}&engine=${engine}`;
 }
 
-// бинарный STL -> Float32Array позиций (нормали Three пересчитает сам)
 function parseSTL(buf){
   const dv = new DataView(buf);
   const count = dv.getUint32(80, true);
   const pos = new Float32Array(count*9);
   let off = 84;
   for(let i=0;i<count;i++){
-    off += 12; // нормаль пропускаем
+    off += 12;
     for(let j=0;j<9;j++){ pos[i*9+j] = dv.getFloat32(off, true); off += 4; }
-    off += 2;  // атрибут
+    off += 2;
   }
   return pos;
 }
@@ -185,64 +379,196 @@ async function rebuild(){
   let res;
   try{
     res = await fetch('/api/wheel.stl?'+queryString(p), {signal: inflight.signal});
-  }catch(e){ return; } // отменили — придёт новый запрос
+  }catch(e){ return; }
   const buf = await res.arrayBuffer();
-  const pos = parseSTL(buf);
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.computeVertexNormals();
-  if(mesh){ scene.remove(mesh); mesh.geometry.dispose(); }
-  mesh = new THREE.Mesh(geo, mat);
-  scene.add(mesh);
+  setMeshFromArray(parseSTL(buf));
+  closePopup(); clearAnchors();
+  modified = false; s_mod.textContent = 'нет';
+  extractEdges();
 
   camDist = Math.max(p.dia*1.9, 60);
   orthoFit = p.dia*0.62;
   updateOrthoFrusta();
   s_apex.textContent = res.headers.get('X-Apex-Mm')+' мм';
   s_pitch.textContent = res.headers.get('X-Pitch-Mm')+' мм';
-  s_tris.textContent = pos.length/9;
   const us = +res.headers.get('X-Gen-Us');
   s_gen.textContent = us >= 1000 ? (us/1000).toFixed(1)+' мс' : us+' мкс';
 }
 
+// экспорт ИЗМЕНЁННОГО меша из браузера (binary STL)
+function exportLocalSTL(){
+  const pos = mesh.geometry.attributes.position.array;
+  const n = pos.length/9;
+  const buf = new ArrayBuffer(84 + n*50);
+  const dv = new DataView(buf);
+  dv.setUint32(80, n, true);
+  const A=new THREE.Vector3(),B=new THREE.Vector3(),C=new THREE.Vector3(),
+        e1=new THREE.Vector3(),e2=new THREE.Vector3(),N=new THREE.Vector3();
+  let off=84;
+  for(let i=0;i<pos.length;i+=9){
+    A.fromArray(pos,i); B.fromArray(pos,i+3); C.fromArray(pos,i+6);
+    N.crossVectors(e1.subVectors(B,A), e2.subVectors(C,A)).normalize();
+    for(const v of [N,A,B,C]){ dv.setFloat32(off,v.x,true); dv.setFloat32(off+4,v.y,true); dv.setFloat32(off+8,v.z,true); off+=12; }
+    dv.setUint16(off,0,true); off+=2;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([buf],{type:'model/stl'}));
+  a.download = 'wheel_edited.stl';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
 function downloadSTL(){
+  if(modified){ exportLocalSTL(); return; }
   const a = document.createElement('a');
   a.href = '/api/wheel.stl?'+queryString(readParams());
   a.download = 'wheel.stl';
   a.click();
 }
 
-// ---------- мышь: работает только в 3D-окне (левый верхний квадрант) ----------
-function in3D(e){
-  const r = renderer.domElement.getBoundingClientRect();
-  return (e.clientX - r.left) < r.width/2 && (e.clientY - r.top) < r.height/2;
+// ---------- мышь ----------
+function quadPos(e){
+  const r = canvas.getBoundingClientRect();
+  const mx=e.clientX-r.left, my=e.clientY-r.top, w=r.width/2, h=r.height/2;
+  return {mx,my,w,h, inside: mx<w && my<h};
 }
-let drag=null;
-renderer.domElement.addEventListener('pointerdown', e=>{
-  if(!in3D(e)) return;
-  drag={x:e.clientX,y:e.clientY,b:e.button};
-  renderer.domElement.setPointerCapture(e.pointerId);
-});
-renderer.domElement.addEventListener('pointerup', ()=>drag=null);
-renderer.domElement.addEventListener('pointermove', e=>{
-  if(!drag) return;
-  const dx=e.clientX-drag.x, dy=e.clientY-drag.y; drag.x=e.clientX; drag.y=e.clientY;
-  if(drag.b===2){
-    // сдвиг цели в плоскости экрана
-    const dir = new THREE.Vector3().subVectors(camTarget, persp.position).normalize();
-    const right = new THREE.Vector3().crossVectors(dir, persp.up).normalize();
-    const upv = new THREE.Vector3().crossVectors(right, dir);
-    camTarget.addScaledVector(right, -dx*camDist*0.0015);
-    camTarget.addScaledVector(upv, dy*camDist*0.0015);
-  } else {
-    yaw -= dx*0.01;
-    pitch = Math.max(-1.5, Math.min(1.5, pitch + dy*0.01));
+function projTo3DQuad(v, w, h, out){
+  const p = v.clone().project(persp);
+  out.x=(p.x+1)/2*w; out.y=(1-p.y)/2*h; out.z=p.z;
+  return out;
+}
+// ближайшее ребро к курсору (в пикселях 3D-окна)
+function pickEdge(q){
+  const P1={x:0,y:0,z:0}, P2={x:0,y:0,z:0};
+  let best=null, bestD=8; // порог 8px
+  for(const ch of chains){
+    for(let i=1;i<ch.pts.length;i++){
+      projTo3DQuad(ch.pts[i-1], q.w, q.h, P1);
+      projTo3DQuad(ch.pts[i],   q.w, q.h, P2);
+      if(P1.z>1||P2.z>1||P1.z<-1||P2.z<-1) continue;
+      const dx=P2.x-P1.x, dy=P2.y-P1.y;
+      const L2=dx*dx+dy*dy; if(L2<1e-9) continue;
+      let t=((q.mx-P1.x)*dx+(q.my-P1.y)*dy)/L2;
+      t=Math.max(0,Math.min(1,t));
+      const ex=P1.x+t*dx-q.mx, ey=P1.y+t*dy-q.my;
+      const d=Math.hypot(ex,ey);
+      if(d<bestD){ bestD=d; best={chain:ch, s: ch.cum[i-1]+t*(ch.cum[i]-ch.cum[i-1])}; }
+    }
   }
+  return best;
+}
+function anchorAt(q){
+  const P={x:0,y:0,z:0};
+  for(const a of anchors){
+    projTo3DQuad(a.marker.position, q.w, q.h, P);
+    if(Math.hypot(P.x-q.mx, P.y-q.my)<10) return a;
+  }
+  return null;
+}
+
+// всплывашка
+const popup=document.getElementById('popup'), p_len=document.getElementById('p_len'),
+      p_off=document.getElementById('p_off');
+function openPopup(e, q){
+  placing = {chain:hover.chain, s:hover.s};
+  p_len.textContent = placing.chain.total.toFixed(1);
+  p_off.value = placing.s.toFixed(1);
+  p_off.max = placing.chain.total.toFixed(1);
+  const vr = view.getBoundingClientRect();
+  popup.style.left = Math.min(e.clientX-vr.left+14, vr.width-190)+'px';
+  popup.style.top  = Math.min(e.clientY-vr.top+8, vr.height-120)+'px';
+  popup.hidden = false;
+  ghost.position.copy(chainPointAt(placing.chain, placing.s));
+  ghost.visible = true;
+  p_off.focus(); p_off.select();
+}
+function closePopup(){
+  placing = null; popup.hidden = true;
+  if(!hover) ghost.visible = false;
+}
+p_off.addEventListener('input', ()=>{
+  if(!placing) return;
+  placing.s = Math.max(0, Math.min(placing.chain.total, +p_off.value||0));
+  ghost.position.copy(chainPointAt(placing.chain, placing.s));
 });
-renderer.domElement.addEventListener('contextmenu', e=>e.preventDefault());
-renderer.domElement.addEventListener('wheel', e=>{
-  if(!in3D(e)) return;
+document.getElementById('p_center').addEventListener('click', ()=>{
+  if(!placing) return;
+  placing.s = placing.chain.total/2;
+  p_off.value = placing.s.toFixed(1);
+  ghost.position.copy(chainPointAt(placing.chain, placing.s));
+});
+document.getElementById('p_ok').addEventListener('click', ()=>{
+  if(!placing) return;
+  const P = splitEdgeAt(placing.chain, placing.s) || chainPointAt(placing.chain, placing.s);
+  makeAnchor(P);
+  closePopup(); setHover(null); extractEdges();
+});
+window.addEventListener('keydown', e=>{ if(e.key==='Escape') closePopup(); });
+
+let drag=null;
+canvas.addEventListener('pointerdown', e=>{
+  const q = quadPos(e);
+  if(!q.inside) return;
+  if(placing){ closePopup(); return; }
+  if(e.button===0){
+    const a = anchorAt(q);
+    if(a){ // начало перетаскивания точки: плоскость параллельна экрану
+      const nrm = new THREE.Vector3().subVectors(persp.position, camTarget).normalize();
+      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(nrm, a.marker.position);
+      // какие вершины буфера двигаем
+      const pos = mesh.geometry.attributes.position.array;
+      const k0 = keyOf(a.marker.position.x, a.marker.position.y, a.marker.position.z);
+      const idx=[];
+      for(let i=0;i<pos.length;i+=3) if(keyOf(pos[i],pos[i+1],pos[i+2])===k0) idx.push(i);
+      dragAnchor = {a, plane, idx};
+      canvas.setPointerCapture(e.pointerId);
+      return;
+    }
+    if(hover){ openPopup(e, q); return; } // клик по ребру
+  }
+  drag={x:e.clientX,y:e.clientY,b:e.button};
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointerup', ()=>{
+  if(dragAnchor){ dragAnchor=null; extractEdges(); }
+  drag=null;
+});
+const raycaster = new THREE.Raycaster();
+canvas.addEventListener('pointermove', e=>{
+  const q = quadPos(e);
+  if(dragAnchor){
+    if(!q.inside) return;
+    raycaster.setFromCamera({x:q.mx/q.w*2-1, y:-(q.my/q.h*2-1)}, persp);
+    const hit = new THREE.Vector3();
+    if(!raycaster.ray.intersectPlane(dragAnchor.plane, hit)) return;
+    const pos = mesh.geometry.attributes.position.array;
+    for(const i of dragAnchor.idx){ pos[i]=hit.x; pos[i+1]=hit.y; pos[i+2]=hit.z; }
+    mesh.geometry.attributes.position.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
+    dragAnchor.a.marker.position.copy(hit);
+    dragAnchor.a.pos.copy(hit);
+    if(!modified){ modified=true; s_mod.textContent='да'; }
+    return;
+  }
+  if(drag){
+    const dx=e.clientX-drag.x, dy=e.clientY-drag.y; drag.x=e.clientX; drag.y=e.clientY;
+    if(drag.b===2){
+      const dir = new THREE.Vector3().subVectors(camTarget, persp.position).normalize();
+      const right = new THREE.Vector3().crossVectors(dir, persp.up).normalize();
+      const upv = new THREE.Vector3().crossVectors(right, dir);
+      camTarget.addScaledVector(right, -dx*camDist*0.0015);
+      camTarget.addScaledVector(upv, dy*camDist*0.0015);
+    } else {
+      yaw -= dx*0.01;
+      pitch = Math.max(-1.5, Math.min(1.5, pitch + dy*0.01));
+    }
+    return;
+  }
+  if(placing) return;               // пока открыта всплывашка — наведение заморожено
+  setHover(q.inside ? pickEdge(q) : null);
+});
+canvas.addEventListener('contextmenu', e=>e.preventDefault());
+canvas.addEventListener('wheel', e=>{
+  if(!quadPos(e).inside) return;
   e.preventDefault();
   camDist *= (1+Math.sign(e.deltaY)*0.1);
   camDist = Math.max(20, Math.min(1200, camDist));
@@ -264,7 +590,6 @@ function renderViewport(cam, x, y, w, h){
 let last=performance.now(), frames=0, fpsT=0;
 function loop(t){
   const w=view.clientWidth, h=view.clientHeight, hw=w/2, hh=h/2;
-  // перспективная камера по орбите
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   persp.position.set(
     camTarget.x + camDist*cp*Math.cos(yaw),
@@ -273,7 +598,10 @@ function loop(t){
   persp.lookAt(camTarget);
   persp.aspect = hw/hh; persp.updateProjectionMatrix();
 
-  // setViewport меряет от НИЖНЕГО левого угла: верхний ряд имеет y=hh
+  // маркеры постоянного экранного размера
+  ghost.scale.setScalar(camDist*0.008);
+  for(const a of anchors) a.marker.scale.setScalar(camDist*0.011);
+
   renderViewport(persp,  0,  hh, hw, hh); // 3D — слева сверху
   renderViewport(orthoX, hw, hh, hw, hh); // +X — справа сверху
   renderViewport(orthoY, 0,  0,  hw, hh); // +Y — слева снизу
