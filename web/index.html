@@ -1468,8 +1468,18 @@ function hideChordHint(){ chordHint.hidden = true; clearTimeout(showChordHint._t
 // палитра операций для выбранной грани
 function showFacePalette(){
   if(!hintsChk.checked) return;
+  tipHide(); // информация объекта переезжает в шапку палитры
+  let info = 'Face';
+  if(ppPatch && ppPatch.rectDims){
+    const [a, b] = ppPatch.rectDims;
+    const area = (Math.round(a*b*10)/10).toString();
+    info = Math.abs(a - b) < 0.05
+      ? 'Square · side ' + a.toFixed(1) + ' mm · ' + area + ' mm²'
+      : 'Rectangle · ' + area + ' mm²';
+  }
   const vr = view.getBoundingClientRect();
   chordHint.innerHTML =
+    '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     '<div><span class="key">P</span> — Push/Pull (drag)</div>' +
     '<div><span class="key">E</span> — Extrude by value</div>' +
     '<div><span class="key">Del</span> — Delete face</div>' +
@@ -1847,6 +1857,7 @@ function selectAnchor(a){
 }
 function showPointPalette(){
   if(!hintsChk.checked) return;
+  tipHide();
   const vr = view.getBoundingClientRect();
   chordHint.innerHTML =
     '<div><span class="key">Drag</span> — move point</div>' +
@@ -1859,13 +1870,21 @@ function showPointPalette(){
   clearTimeout(showChordHint._t);
   showChordHint._t = setTimeout(hideChordHint, 4000);
 }
-// палитра операций для выбранного ребра — как у грани и точки
-function showEdgePalette(){
+// палитра операций для выбранного ребра — как у грани и точки;
+// в шапке данные объекта, F не упоминаем — подскажем при замкнутом контуре
+function showEdgePalette(ch){
   if(!hintsChk.checked) return;
+  tipHide();
+  const arc = ch && fitArc(ch);
+  const info = ch
+    ? (ch.isGuide ? 'Line' : 'Edge') + ' · ' + ch.total.toFixed(1) + ' mm'
+      + (arc ? ' · R ' + arc.R.toFixed(1) + ' mm' : '')
+    : 'Edge';
   const vr = view.getBoundingClientRect();
   chordHint.innerHTML =
+    '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     '<div><span class="key">G,Y</span> — point / divide</div>' +
-    '<div><span class="key">Ctrl+click</span> — add edges · <span class="key">F</span> — fill loop</div>' +
+    '<div><span class="key">Ctrl+click</span> — multi-select</div>' +
     '<div style="opacity:.55">Esc — deselect</div>';
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
@@ -2787,8 +2806,9 @@ canvas.addEventListener('pointerdown', e=>{
     }
     if(hover){
       if(hover.chain.isGuide){ // клик по линии — выбор, как у рёбер
-        clearEdgeSel(); toggleEdgeSel(hover.chain);
-        showEdgePalette();
+        const ch = hover.chain;
+        clearEdgeSel(); toggleEdgeSel(ch);
+        showEdgePalette(ch);
         return;
       }
       // решение клик/драг откладываем до движения мыши
@@ -2815,7 +2835,7 @@ canvas.addEventListener('pointerup', e=>{
     const pe = pendingEdge; pendingEdge = null;
     clearEdgeSel();
     toggleEdgeSel(pe.chain);
-    showEdgePalette();
+    showEdgePalette(pe.chain);
   }
   if(drag && drag.click && !pointMode && !lineMode && !circleMode && !ppMode && !divCtx
      && Math.hypot(e.clientX-drag.click.x, e.clientY-drag.click.y) < 3){
@@ -2824,7 +2844,7 @@ canvas.addEventListener('pointerup', e=>{
     const f = q.inside ? raycastFace(q) : null;
     if(f){
       clearEdgeSel(); deselect(); // грань снимает выбор рёбер и точки
-      ppPatch = facePatchAt(f.faceIndex);
+      ppPatch = facePatchCached(f.faceIndex); // кэш знает и размеры (rectDims)
       showPatch(ppPatch, C_SEL);
       showFacePalette();
     } else {
@@ -3206,7 +3226,7 @@ canvas.addEventListener('dblclick', e=>{
   const hf = raycastFace(q);
   if(hf){
     clearEdgeSel(); deselect();
-    ppPatch = facePatchAt(hf.faceIndex);
+    ppPatch = facePatchCached(hf.faceIndex);
     showPatch(ppPatch, C_SEL); // выбранная грань — зелёная
     showFacePalette();         // список доступных операций (P / E / Esc)
   }
