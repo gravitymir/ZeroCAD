@@ -129,7 +129,7 @@
 
     <div class="sec">V-pockets</div>
     <div class="row"><label>Pocket count <span id="v_n">12</span></label>
-      <input type="range" id="n" min="3" max="30" step="1" value="12"></div>
+      <input type="range" id="n" min="0" max="30" step="1" value="12"></div>
     <div class="row"><label>Pocket depth <span id="v_dep">6 mm</span></label>
       <input type="range" id="dep" min="1" max="20" step="0.1" value="6"></div>
     <div class="row"><label>Mouth width <span id="v_w">11°</span></label>
@@ -1744,8 +1744,16 @@ function loop(t){
   selMarker.scale.setScalar(camDist*0.011);
   snapDot.scale.setScalar(camDist*0.012);
   for(const m of ringMarkers) m.scale.setScalar(camDist*0.009);
-  for(const sp of axisLabels) sp.scale.setScalar(camDist*0.045);
-  buildSprite.scale.set(camDist*0.14, camDist*0.026, 1);
+  // билборды масштабируются от реального расстояния до камеры —
+  // постоянный экранный размер при любом зуме
+  for(const sp of axisLabels){
+    const d = persp.position.distanceTo(sp.position);
+    sp.scale.setScalar(d*0.05);
+  }
+  {
+    const d = persp.position.length(); // надпись версии в начале координат
+    buildSprite.scale.set(d*0.19, d*0.036, 1);
+  }
   for(const a of anchors) a.marker.scale.setScalar(camDist*0.011);
 
   if(quadChk.checked){

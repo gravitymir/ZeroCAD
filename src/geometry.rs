@@ -25,8 +25,10 @@ impl WheelParams {
     pub fn clamped(mut self) -> Self {
         self.dia = self.dia.clamp(10.0, 400.0);
         self.thk = self.thk.clamp(1.0, 100.0);
-        self.n = self.n.clamp(1, 90);
-        self.mouth_deg = self.mouth_deg.clamp(1.0, 360.0 / self.n as f64 - 1.0);
+        self.n = self.n.min(90); // 0 допустим — гладкая заготовка без карманов
+        if self.n > 0 {
+            self.mouth_deg = self.mouth_deg.clamp(1.0, 360.0 / self.n as f64 - 1.0);
+        }
         self.shaft = self.shaft.clamp(0.5, self.dia - 4.0);
         self.depth = self.depth.clamp(0.0, self.dia / 2.0);
         self
@@ -37,8 +39,11 @@ impl WheelParams {
         (self.dia / 2.0 - self.depth).max(self.shaft / 2.0 + 1.0)
     }
 
-    /// Шаг между карманами по ободу, мм.
+    /// Шаг между карманами по ободу, мм (0 — карманов нет).
     pub fn pitch(&self) -> f64 {
+        if self.n == 0 {
+            return 0.0;
+        }
         std::f64::consts::TAU * (self.dia / 2.0) / self.n as f64
     }
 }
@@ -48,6 +53,9 @@ pub type Tri = [[f32; 3]; 3];
 /// Радиус контура на угле `a`: снаружи R, внутри устья кармана — V-провал к апексу.
 fn contour_r(p: &WheelParams, a: f64) -> f64 {
     let r_out = p.dia / 2.0;
+    if p.n == 0 {
+        return r_out; // без карманов — гладкий диск
+    }
     let apex = p.apex();
     let hw = p.mouth_deg.to_radians() / 2.0; // угловой полу-размер устья
     let sector = std::f64::consts::TAU / p.n as f64;
