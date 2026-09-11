@@ -737,6 +737,18 @@ selMarker.visible = false; scene.add(selMarker);
 // маркер цели магнита при перетаскивании (зелёный — вершина, красный — ребро)
 const snapDot = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x52c752})));
 snapDot.visible = false; scene.add(snapDot);
+// точка-кандидат: заранее подсвечивает середину ребра / центр грани
+const hintDot = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x3fd9c9})));
+hintDot.visible = false; scene.add(hintDot);
+function showHintFor(pt){
+  if(pt.chain && !pt.chain.closed && pt.kind !== 'midpoint'){
+    hintDot.position.copy(chainPointAt(pt.chain, pt.chain.total/2));
+    hintDot.visible = true;
+  } else if(pt.kind === 'on face' && pt.centroid){
+    hintDot.position.copy(pt.centroid);
+    hintDot.visible = true;
+  }
+}
 
 // ---------- «Тяни-толкай» (клавиша P, как Push/Pull в SketchUp) ----------
 let ppMode=false, ppPatch=null, ppHi=null, ppDrag=null;
@@ -781,6 +793,7 @@ function restoreGuides(list){
 }
 // точка для рисования: вершина > точка на ребре (0.1 мм) > точка на грани
 function linePickPoint(q){
+  linePickPoint._faceCentroid = null;
   const c = pickCorner(q);
   if(c) return {pos:c.pos.clone(), kind:'vertex'};
   // центры дуг/окружностей и центр плоской грани (Snap Center)
@@ -798,6 +811,8 @@ function linePickPoint(q){
         projToQuad(patch.centroid, q.cam, q.w, q.h, P);
         if(Math.hypot(P.x-q.mx, P.y-q.my) < 12)
           return {pos: patch.centroid.clone(), kind:'center'};
+        // центр грани как подсказка-кандидат для hintDot
+        linePickPoint._faceCentroid = patch.centroid;
       }
     }
   }
@@ -811,7 +826,11 @@ function linePickPoint(q){
     return {pos:chainPointAt(h.chain, snapMM(h.s)), kind:'on edge', chain: h.chain, s: snapMM(h.s)};
   }
   const f = raycastFace(q);
-  if(f){ const p=f.point.clone(); p.set(snapMM(p.x),snapMM(p.y),snapMM(p.z)); return {pos:p, kind:'on face'}; }
+  if(f){
+    const p = f.point.clone();
+    p.set(snapMM(p.x), snapMM(p.y), snapMM(p.z));
+    return {pos:p, kind:'on face', centroid: linePickPoint._faceCentroid || null};
+  }
   return null;
 }
 // Shift как в Draft (FreeCAD): отрезок жёстко вдоль ближайшей мировой оси
@@ -1922,7 +1941,8 @@ window.addEventListener('keydown', e=>{
     lineChain = true; setLineMode(true); // G,M — полилиния
     return;
   }
-  if((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase()==='z'){
+  if((e.ctrlKey || e.metaKey) && !e.shiftKey
+     && (e.code==='KeyZ' || e.key.toLowerCase()==='z')){ // e.code — работает и в русской раскладке
     e.preventDefault(); undo(); return;
   }
   if(e.ctrlKey && e.altKey && e.code==='KeyQ'){ // как в Blender: Toggle Quad View
@@ -2159,6 +2179,7 @@ const raycaster = new THREE.Raycaster();
 canvas.addEventListener('pointermove', e=>{
   const q = quadPos(e);
   lastMX = e.clientX; lastMY = e.clientY;
+  hintDot.visible = false; // кандидаты пересчитываются каждым движением
   if(!toolTag.hidden){ // бейдж инструмента следует за курсором
     const vr = view.getBoundingClientRect();
     toolTag.style.left = (e.clientX - vr.left + 14)+'px';
@@ -2370,6 +2391,7 @@ canvas.addEventListener('pointermove', e=>{
     if(pt){
       ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
       ghost.position.copy(pt.pos); ghost.visible = true;
+      showHintFor(pt);
       tipAt(e, 'Point · ' + pt.kind);
     } else { ghost.visible = false; tipHide(); }
     return;
@@ -2381,6 +2403,7 @@ canvas.addEventListener('pointermove', e=>{
       if(pt){
         ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
         ghost.position.copy(pt.pos); ghost.visible = true;
+        showHintFor(pt);
         tipAt(e, 'Circle · center: ' + pt.kind);
       } else { ghost.visible = false; tipHide(); }
       return;
@@ -2416,6 +2439,7 @@ canvas.addEventListener('pointermove', e=>{
       lastLinePt = pos.clone();
       ghost.material.color.setHex(pt.kind==='vertex' ? C_VERT : C_EDGE);
       ghost.position.copy(pos); ghost.visible = true;
+      showHintFor(pt);
       let msg = 'Line · ' + note;
       if(lineStart){
         killRubber();
@@ -2460,6 +2484,10 @@ canvas.addEventListener('pointermove', e=>{
       h.s = h.chain.total/2; isMid = true;
     }
     setHover(h, isMid);
+    if(!h.chain.closed && !isMid){ // кандидат-середина видна заранее
+      hintDot.position.copy(chainPointAt(h.chain, h.chain.total/2));
+      hintDot.visible = true;
+    }
     const arc = fitArc(h.chain);
     tipAt(e, (isMid ? 'Midpoint' : 'On edge · '+h.s.toFixed(1)+' mm')
              + (arc ? '<br>Arc R '+arc.R.toFixed(1)+' mm' : ''));
@@ -2550,6 +2578,7 @@ function loop(t){
   for(const m of ringMarkers) dot(m);
   for(const m of divDots) dot(m);
   for(const a of anchors) dot(a.marker);
+  dot(hintDot, 0.0035);
   // билборды масштабируются от реального расстояния до камеры —
   // постоянный экранный размер при любом зуме
   for(const sp of axisLabels){
