@@ -1060,8 +1060,13 @@ function commitLinePoint(pos){
     addGuide(lineStart, pos);
     splitMeshByChord(lineStart, pos); // врезаем хорду в сетку — как режет линия в SketchUp
     extractEdges();
-    // полилиния продолжает цепочку; одиночный режим ждёт новый первый клик
-    lineStart = lineChain ? pos.clone() : null;
+    if(lineChain){
+      lineStart = pos.clone(); // полилиния продолжает цепочку
+    } else {
+      lineLenStr = '';
+      setLineMode(false); // одиночный отрезок нарисован — инструмент выключается
+      return;
+    }
   }
   lineLenStr = '';
 }
@@ -2777,9 +2782,11 @@ window.addEventListener('keydown', e=>{
     e.preventDefault();
     if(chordG && performance.now() - chordG < 3000){
       chordG = 0; hideChordHint();
-      lineChain = false; setLineMode(true); // G,L — одиночные отрезки
+      lineChain = false; setLineMode(true); // G,L — одиночный отрезок
     } else {
-      lineChain = true; setLineMode(!lineMode); // одиночная L — полилиния
+      // L — тоже одиночный отрезок (нарисовал — инструмент выключился);
+      // непрерывная цепочка — это G,M (полилиния)
+      lineChain = false; setLineMode(!lineMode);
     }
     return;
   }
