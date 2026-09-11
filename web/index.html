@@ -3391,9 +3391,19 @@ canvas.addEventListener('pointerdown', e=>{
         const wasFirst = !lineStart;
         commitLinePoint(pos);
         // стартовали с ребра/линии — запоминаем его направление для
-        // перпендикуляра/параллели (инференс SketchUp)
-        if(wasFirst)
-          lineHostDir = (pt.chain && pt.s !== undefined) ? chainDirAt(pt.chain, pt.s) : null;
+        // угловых магнитов; точка/вершина тоже знает своё ребро-хозяина
+        if(wasFirst){
+          if(pt.chain && pt.s !== undefined){
+            lineHostDir = chainDirAt(pt.chain, pt.s);
+          } else {
+            lineHostDir = null;
+            for(const ch of chains){
+              if(ch.closed) continue;
+              const s = chainParamOf(ch, pos);
+              if(s !== null){ lineHostDir = chainDirAt(ch, s); break; }
+            }
+          }
+        }
         lineDirLock = null;
         killRubber();
       }
@@ -3728,7 +3738,12 @@ canvas.addEventListener('pointermove', e=>{
       ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
       ghost.position.copy(pt.pos); ghost.visible = true;
       showHintFor(pt);
-      tipAt(e, 'Point · ' + pt.kind);
+      let msg = 'Point · ' + pt.kind;
+      if(pt.chain && pt.s !== undefined){ // расстояния до концов ребра (AutoCAD)
+        msg += '<br>◀ ' + pt.s.toFixed(1) + ' mm · '
+             + (pt.chain.total - pt.s).toFixed(1) + ' mm ▶';
+      }
+      tipAt(e, msg);
     } else { ghost.visible = false; tipHide(); }
     return;
   }
