@@ -838,16 +838,19 @@ function subChain(ch, s0, s1){
   if(ch.isGuide) sc.isGuide = true;
   return sc;
 }
-// поставленные точки режут цепочки: 3 точки на ребре -> 4 выбираемых куска,
-// у каждого своё наведение, выбор, длина и магнит середины (как во FreeCAD)
+// поставленные точки И концы линий/рёбер режут цепочки: точка на ребре или
+// линия, упёршаяся в ребро, делит его на выбираемые куски (как во FreeCAD)
 function splitChainsByAnchors(){
-  if(!anchors.length) return;
+  const cuts = anchors.map(a=>a.pos);
+  for(const ch of chains) // конец одной цепочки — резак для других
+    if(!ch.closed){ cuts.push(ch.pts[0]); cuts.push(ch.pts[ch.pts.length-1]); }
+  if(!cuts.length) return;
   const out = [];
   for(const ch of chains){
     if(ch.closed){ out.push(ch); continue; } // замкнутые (окружности) не трогаем
     const ss = [];
-    for(const a of anchors){
-      const s = chainParamOf(ch, a.pos);
+    for(const c of cuts){
+      const s = chainParamOf(ch, c);
       if(s !== null && s > 0.05 && s < ch.total - 0.05) ss.push(s);
     }
     if(!ss.length){ out.push(ch); continue; }
@@ -3839,9 +3842,12 @@ canvas.addEventListener('pointermove', e=>{
           const len = d.length();
           if(len > 0.1){
             const deg = Math.round(Math.acos(Math.min(1, Math.abs(d.dot(lineHostDir))/len))*180/Math.PI);
-            msg += perpSnap
-              ? ' · <span style="color:'+(ANGLE_CSS[perpSnap.deg]||'#e040e0')
-                +';font-weight:700">∠ '+deg+'°</span>'
+            // точный угол из таблицы красится всегда — даже если привязку
+            // перехватили ось или магнит ребра (например, ∠ 0° вдоль хозяина)
+            const degCss = perpSnap ? (ANGLE_CSS[perpSnap.deg] || '#e040e0')
+                                    : (ANGLE_CSS[deg] || null);
+            msg += degCss
+              ? ' · <span style="color:'+degCss+';font-weight:700">∠ '+deg+'°</span>'
               : ' · ∠ '+deg+'°';
           }
         }
