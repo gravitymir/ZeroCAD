@@ -805,11 +805,15 @@ function patchCenters(patch){
       patch.rectDims = [w, h];
   }
   rects.sort((a,b)=>(b.x1-b.x0)*(b.y1-b.y0)-(a.x1-a.x0)*(a.y1-a.y0));
-  return rects.slice(0, HINT_MAX).map(r=>{
-    const cx = (r.x0+r.x1)/2, cy = (r.y0+r.y1)/2;
-    const X = cx*ex - cy*ey, Y = cx*ey + cy*ex; // поворот обратно
+  const un = (cx, cy) => { // поворот обратно + в 3D
+    const X = cx*ex - cy*ey, Y = cx*ey + cy*ex;
     return new THREE.Vector3()
       .addScaledVector(u, X).addScaledVector(v, Y).addScaledVector(n0, d0);
+  };
+  patch.centerRects = []; // углы прямоугольника каждого центра — для «скотча»
+  return rects.slice(0, HINT_MAX).map(r=>{
+    patch.centerRects.push([un(r.x0,r.y0), un(r.x1,r.y0), un(r.x1,r.y1), un(r.x0,r.y1)]);
+    return un((r.x0+r.x1)/2, (r.y0+r.y1)/2);
   });
 }
 
@@ -913,16 +917,36 @@ for(let i=0;i<HINT_MAX;i++){
   d.visible = false; scene.add(d);
   hintDots.push(d);
 }
-function hideHints(){ for(const d of hintDots) d.visible = false; }
+let hintLines = []; // пунктирные диагонали-«скотч» у центров-кандидатов
+function hideHints(){
+  for(const d of hintDots) d.visible = false;
+  for(const l of hintLines){ scene.remove(l); l.geometry.dispose(); }
+  hintLines = [];
+}
 function showHintAt(p){
   const d = hintDots.find(x=>!x.visible);
   if(d){ d.position.copy(p); d.visible = true; }
+}
+// крест по диагоналям прямоугольника: видно, из чего рассчитан центр
+function showHintCross(corners, n){
+  const lift = c => c.clone().addScaledVector(n, 0.08);
+  const g = new THREE.BufferGeometry().setFromPoints([
+    lift(corners[0]), lift(corners[2]), lift(corners[1]), lift(corners[3])]);
+  const l = new THREE.LineSegments(g, new THREE.LineDashedMaterial(
+    {color:0x3fd9c9, dashSize:1.2, gapSize:0.9, transparent:true, opacity:0.55}));
+  l.computeLineDistances();
+  scene.add(l);
+  hintLines.push(l);
 }
 function showHintFor(pt){
   if(pt.chain && !pt.chain.closed && pt.kind !== 'midpoint'){
     showHintAt(chainPointAt(pt.chain, pt.chain.total/2));
   } else if(pt.kind === 'on face' && pt.centers){
-    for(const c of pt.centers) showHintAt(c);
+    pt.centers.forEach((c, i)=>{
+      showHintAt(c);
+      const r = pt.centerRects && pt.centerRects[i];
+      if(r && pt.faceN) showHintCross(r, pt.faceN);
+    });
   }
 }
 
@@ -1006,6 +1030,8 @@ function restoreGuides(list){
 // точка для рисования: вершина > точка на ребре (0.1 мм) > точка на грани
 function linePickPoint(q){
   linePickPoint._faceCenters = null;
+  linePickPoint._faceRects = null;
+  linePickPoint._faceN = null;
   // поставленная точка — одна на своём месте, ей высший приоритет:
   // грань можно взять где угодно, а точку — только тут
   const an = anchorAt(q);
@@ -1030,8 +1056,10 @@ function linePickPoint(q){
             return {pos: cs.clone(), kind:'center'};
         }
         // центры (грань может состоять из нескольких прямоугольников) —
-        // подсказки-кандидаты для hintDots
+        // подсказки-кандидаты для hintDots, с их прямоугольниками для «скотча»
         linePickPoint._faceCenters = patch.centers;
+        linePickPoint._faceRects = patch.centerRects || null;
+        linePickPoint._faceN = patch.normal;
       }
     }
   }
@@ -1048,7 +1076,8 @@ function linePickPoint(q){
   if(f){
     const p = f.point.clone();
     p.set(snapMM(p.x), snapMM(p.y), snapMM(p.z));
-    return {pos:p, kind:'on face', centers: linePickPoint._faceCenters || null};
+    return {pos:p, kind:'on face', centers: linePickPoint._faceCenters || null,
+            centerRects: linePickPoint._faceRects, faceN: linePickPoint._faceN};
   }
   return null;
 }
@@ -3334,16 +3363,13 @@ canvas.addEventListener('pointerdown', e=>{
   if(!q.inside) return;
   hideChordHint(); chordG = 0;
   if(e.button===0 && gizmoClick(e)) return; // клик по ViewCube
-  // окно выдавливания привязано к выбранной грани: Ctrl+ЛКМ — временная
-  // орбита (окно живёт), обычный ЛКМ — человек пошёл к другим объектам,
-  // инструмент закрывается и клик обрабатывается как обычно
-  if(exLive && e.button === 0){
-    if(e.ctrlKey && q.is3D){
-      drag = {x: e.clientX, y: e.clientY, b: 1};
-      try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
-      return;
-    }
-    closeExtrude();
+  // окно выдавливания живёт при вращении и пустых кликах; закрывается оно
+  // только когда кликом ВЫБРАН другой объект (см. развязки кликов ниже).
+  // Ctrl+ЛКМ — временная орбита.
+  if(exLive && e.button === 0 && e.ctrlKey && q.is3D){
+    drag = {x: e.clientX, y: e.clientY, b: 1};
+    try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+    return;
   }
   if(divCtx){ // окно деления открыто: камера свободна, инструменты — на паузе
     tipHide();
@@ -3475,10 +3501,12 @@ canvas.addEventListener('pointerdown', e=>{
     // точки тянутся сразу; вершины — только с модификатором (кольцо/колонна),
     // обычный клик по вершине лишь выбирает, а драг остаётся камерой
     if(a || (c && (e.altKey || e.ctrlKey || e.shiftKey))){
+      if(exLive) closeExtrude(); // взялся за другой объект — окно закрывается
       beginDrag(a, c, q, e.altKey, e.pointerId, e.ctrlKey, e.shiftKey);
       return;
     }
     if(c){
+      if(exLive) closeExtrude();
       pendingVertex = {pos: c.pos.clone(), x: e.clientX, y: e.clientY};
       try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
       return;
@@ -3516,6 +3544,7 @@ canvas.addEventListener('pointerup', e=>{
   } else if(pendingEdge){
     // без движения — это клик по ребру: зелёный выбор (как во FreeCAD)
     const pe = pendingEdge; pendingEdge = null;
+    if(exLive) closeExtrude(); // выбран другой объект — окно инструмента прочь
     clearEdgeSel();
     toggleEdgeSel(pe.chain);
     showEdgePalette(pe.chain);
@@ -3523,6 +3552,7 @@ canvas.addEventListener('pointerup', e=>{
   if(pendingVertex){
     // без движения — клик по вершине: зелёный выбор + панель X/Y/Z
     const pv = pendingVertex; pendingVertex = null;
+    if(exLive) closeExtrude();
     selectVertex(pv.pos);
     showVertexPalette();
   }
@@ -3532,11 +3562,12 @@ canvas.addEventListener('pointerup', e=>{
     const q = quadPos(e);
     const f = q.inside ? raycastFace(q) : null;
     if(f){
+      if(exLive) closeExtrude(); // выбрана другая грань — окно закрывается
       clearEdgeSel(); deselect(); // грань снимает выбор рёбер и точки
       ppPatch = facePatchCached(f.faceIndex); // кэш знает и размеры (rectDims)
       showPatch(ppPatch, C_SEL);
       showFacePalette();
-    } else {
+    } else if(!exLive){ // пустой клик при открытом окне ничего не трогает
       deselect(); clearEdgeSel(); hideChordHint();
       hidePatch(); ppPatch = null;
     }
