@@ -87,6 +87,12 @@
     background:var(--accent2);color:#10131a;padding:2px 7px;border-radius:6px;
     letter-spacing:.04em;white-space:nowrap}
   #toolTag[hidden]{display:none}
+  /* палитра продолжений аккорда (после G) */
+  #chordHint{position:absolute;z-index:7;background:rgba(30,33,40,.72);
+    border:1px solid var(--line);border-radius:8px;padding:6px 10px;
+    font-size:11px;line-height:1.6;color:var(--muted);pointer-events:none}
+  #chordHint[hidden]{display:none}
+  #chordHint .key{color:var(--accent2);font-weight:700}
   /* кнопки вокруг ViewCube: стрелки поворота и «домой» */
   #vcnav button{position:absolute;z-index:4;width:20px;height:20px;padding:0;
     background:rgba(38,42,51,.75);color:var(--muted);border:1px solid var(--line);
@@ -119,6 +125,7 @@
     </div>
     <div id="dragTip" hidden></div>
     <div id="toolTag" hidden></div>
+    <div id="chordHint" hidden></div>
     <div id="vcnav">
       <button data-act="home" title="Home view">⌂</button>
       <button data-act="left" title="Rotate left">◀</button>
@@ -162,6 +169,10 @@
       <span style="font-size:12px;color:var(--muted)">X/Y/Z views (quad) · <b style="color:var(--text);font-weight:400">Ctrl+Alt+Q</b></span>
       <label class="switch"><input type="checkbox" id="quadview"><span class="knob"></span></label>
     </div>
+    <div class="row" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+      <span style="font-size:12px;color:var(--muted)">Hints for beginners</span>
+      <label class="switch"><input type="checkbox" id="hintsChk" checked><span class="knob"></span></label>
+    </div>
 
     <div class="sec">Geometry engine</div>
     <div class="row" style="display:flex;gap:14px">
@@ -185,7 +196,9 @@
 
     <p class="hint"><b>L</b> — Line (SketchUp pencil): click a vertex, edge or
     face to place a point; the second click draws a dashed guide chord (it is
-    also cut into the mesh, but never exported to STL). A chord lying on a flat
+    also cut into the mesh,
+    invoked with <b>L</b> or the FreeCAD Sketcher chord <b>G, L</b>;
+    hold <b>Shift</b> to constrain strictly to the nearest axis (90°, Draft-style); but never exported to STL). A chord lying on a flat
     face becomes a boundary for Push/Pull. Hold <b>Shift</b> to lock direction;
     type a length + <b>Enter</b> for an exact point.
     <b>P</b> — Push/Pull: hover a flat face, drag with LMB to extrude along its
@@ -593,6 +606,14 @@ function extractEdges(){
       if(!cmap.has(k)) cmap.set(k, P.clone());
     }
   }
+  // концы нарисованных линий — тоже снап-вершины (Endpoint, как во FreeCAD):
+  // узел «линия упёрлась в ребро» магнитится, хотя излома там нет
+  for(const gd of guides){
+    for(const P of [gd.a, gd.b]){
+      const k = keyOf(P.x, P.y, P.z);
+      if(!cmap.has(k)) cmap.set(k, P.clone());
+    }
+  }
   corners = [...cmap.entries()].map(([key,pos])=>({key,pos}));
   cornerHover = null;
   if(typeof vGhost !== 'undefined') vGhost.visible = false;
@@ -608,7 +629,15 @@ function chainPointAt(chain, s){
 
 // ---------- маркеры ----------
 const sphereGeo = new THREE.SphereGeometry(1, 16, 12);
-const ghost = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x4da3ff}));
+// тёмная обводка вокруг точки (сфера чуть больше, BackSide) — как маркеры FreeCAD
+function addOutline(m){
+  const o = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial(
+    {color: 0x23262c, side: THREE.BackSide}));
+  o.scale.setScalar(1.45);
+  m.add(o);
+  return m;
+}
+const ghost = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x4da3ff})));
 ghost.visible = false; scene.add(ghost);
 
 // цвета как во FreeCAD: жёлтый — preselect (наведение), зелёный — selection
@@ -618,12 +647,12 @@ const C_EDGE = 0xffcc00, C_MID = 0xffcc00, C_VERT = 0xffcc00, C_SEL = 0x2ecc40;
 let corners = [];       // [{key, pos:Vector3}]
 let cornerHover = null;
 let sel = null;         // {pos:Vector3}
-const vGhost = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VERT}));
+const vGhost = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VERT})));
 vGhost.visible = false; scene.add(vGhost);
-const selMarker = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_SEL}));
+const selMarker = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_SEL})));
 selMarker.visible = false; scene.add(selMarker);
 // маркер цели магнита при перетаскивании (зелёный — вершина, красный — ребро)
-const snapDot = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x52c752}));
+const snapDot = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x52c752})));
 snapDot.visible = false; scene.add(snapDot);
 
 // ---------- «Тяни-толкай» (клавиша P, как Push/Pull в SketchUp) ----------
@@ -639,7 +668,8 @@ function setPPMode(on){
 }
 
 // ---------- «Линия» (L — карандаш SketchUp): чертёжные хорды-направляющие ----------
-let lineMode=false, lineStart=null, lastLinePt=null, lineLenStr='', lineDirLock=null;
+let lineMode=false, lineStart=null, lastLinePt=null, lineLenStr='', lineDirLock=null, chordG=0;
+let lineChain=true; // true — полилиния (G,M / L), false — одиночные отрезки (G,L)
 let guides=[], rubber=null;
 const lnb = document.getElementById('lnb');
 function setLineMode(on){
@@ -676,6 +706,16 @@ function linePickPoint(q){
   if(f){ const p=f.point.clone(); p.set(snapMM(p.x),snapMM(p.y),snapMM(p.z)); return {pos:p, kind:'on face'}; }
   return null;
 }
+// Shift как в Draft (FreeCAD): отрезок жёстко вдоль ближайшей мировой оси
+function shiftOrtho(from, to){
+  const d = new THREE.Vector3().subVectors(to, from);
+  const ax = (Math.abs(d.x) >= Math.abs(d.y) && Math.abs(d.x) >= Math.abs(d.z)) ? 'x'
+           : (Math.abs(d.y) >= Math.abs(d.z) ? 'y' : 'z');
+  const p = from.clone();
+  p[ax] += snapMM(d[ax]);
+  return {p, ax};
+}
+
 function commitLinePoint(pos){
   if(!lineStart){ lineStart = pos.clone(); }
   else {
@@ -683,7 +723,8 @@ function commitLinePoint(pos){
     addGuide(lineStart, pos);
     splitMeshByChord(lineStart, pos); // врезаем хорду в сетку — как режет линия в SketchUp
     extractEdges();
-    lineStart = pos.clone(); // цепочка отрезков, как в SketchUp
+    // полилиния продолжает цепочку; одиночный режим ждёт новый первый клик
+    lineStart = lineChain ? pos.clone() : null;
   }
   lineLenStr = '';
 }
@@ -937,10 +978,30 @@ function rayLineParam(ray, P, dir){
 const dragTip = document.getElementById('dragTip');
 const toolTag = document.getElementById('toolTag');
 function updateToolTag(){
-  if(lineMode){ toolTag.textContent = 'L · LINE'; toolTag.hidden = false; }
+  if(lineMode){
+    toolTag.textContent = lineChain ? 'G,M · POLYLINE' : 'G,L · LINE';
+    toolTag.hidden = false;
+  }
   else if(ppMode){ toolTag.textContent = 'P · PUSH/PULL'; toolTag.hidden = false; }
   else toolTag.hidden = true;
 }
+// палитра продолжений после G — полупрозрачный список у курсора
+const chordHint = document.getElementById('chordHint');
+let lastMX = 0, lastMY = 0;
+function showChordHint(){
+  if(!hintsChk.checked) return; // профи подсказки не нужны
+  const vr = view.getBoundingClientRect();
+  chordHint.innerHTML =
+    '<div><span class="key">L</span> — Line (single segments)</div>' +
+    '<div><span class="key">M</span> — Polyline (chained)</div>' +
+    '<div style="opacity:.55">Esc — cancel</div>';
+  chordHint.style.left = Math.min(lastMX - vr.left + 16, vr.width - 190) + 'px';
+  chordHint.style.top  = Math.min(lastMY - vr.top + 16, vr.height - 80) + 'px';
+  chordHint.hidden = false;
+  clearTimeout(showChordHint._t);
+  showChordHint._t = setTimeout(()=>{ hideChordHint(); chordG = 0; }, 3000);
+}
+function hideChordHint(){ chordHint.hidden = true; clearTimeout(showChordHint._t); }
 const vpanel = document.getElementById('vpanel'),
       vx=document.getElementById('vx'), vy=document.getElementById('vy'), vz=document.getElementById('vz');
 
@@ -985,7 +1046,8 @@ for(const inp of [vx,vy,vz]) inp.addEventListener('change', ()=>{
   updateVPanel(); extractEdges();
 });
 function makeAnchor(p){
-  const m = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0xff8a3d}));
+  // поставленная точка — белая с обводкой, как вершина эскиза FreeCAD
+  const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0xf7f9fc})));
   m.position.copy(p); scene.add(m);
   const a = {pos:p.clone(), marker:m};
   anchors.push(a);
@@ -1441,9 +1503,30 @@ window.addEventListener('keydown', e=>{
       e.preventDefault(); return;
     }
   }
+  // аккорд G,… как в Sketcher (FreeCAD): G — «geometry», затем L или M
+  if((e.code==='KeyG' || e.key.toLowerCase()==='g') && !e.ctrlKey && !e.altKey && !e.metaKey
+     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); chordG = performance.now();
+    showChordHint();
+    return;
+  }
   if((e.code==='KeyL' || e.key.toLowerCase()==='l') && !e.ctrlKey && !e.altKey && !e.metaKey
      && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
-    e.preventDefault(); setLineMode(!lineMode); return; // L — Линия, как в SketchUp
+    e.preventDefault();
+    if(chordG && performance.now() - chordG < 3000){
+      chordG = 0; hideChordHint();
+      lineChain = false; setLineMode(true); // G,L — одиночные отрезки
+    } else {
+      lineChain = true; setLineMode(!lineMode); // одиночная L — полилиния
+    }
+    return;
+  }
+  if((e.code==='KeyM' || e.key.toLowerCase()==='m') && !e.ctrlKey && !e.altKey && !e.metaKey
+     && chordG && performance.now() - chordG < 3000
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    lineChain = true; setLineMode(true); // G,M — полилиния
+    return;
   }
   if((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase()==='z'){
     e.preventDefault(); undo(); return;
@@ -1456,6 +1539,7 @@ window.addEventListener('keydown', e=>{
   }
   if(e.key==='Escape'){
     closePopup(); deselect(); tipHide();
+    hideChordHint(); chordG = 0;
     if(!ppMode){ hidePatch(); ppPatch=null; } // снять выбор плоскости
     if(lineMode){
       if(lineStart){ lineStart=null; lastLinePt=null; lineLenStr=''; lineDirLock=null; killRubber(); }
@@ -1529,6 +1613,7 @@ function beginDrag(a, c, q, altKey, pointerId, ctrlKey, shiftKey){
 canvas.addEventListener('pointerdown', e=>{
   const q = quadPos(e);
   if(!q.inside) return;
+  hideChordHint(); chordG = 0;
   if(e.button===0 && gizmoClick(e)) return; // клик по ViewCube
   if(placing){
     // клик по бегунку-точке — поставить её и сразу тянуть
@@ -1547,10 +1632,7 @@ canvas.addEventListener('pointerdown', e=>{
       const pt = linePickPoint(q);
       if(pt){
         let pos = pt.pos;
-        if(lineStart && lineDirLock){ // Shift: проекция на зафиксированное направление
-          const t = new THREE.Vector3().subVectors(pos, lineStart).dot(lineDirLock);
-          pos = lineStart.clone().addScaledVector(lineDirLock, snapMM(t));
-        }
+        if(lineStart && e.shiftKey) pos = shiftOrtho(lineStart, pos).p; // 90°, как в Draft
         commitLinePoint(pos);
         lineDirLock = null;
         killRubber();
@@ -1609,6 +1691,7 @@ canvas.addEventListener('pointerup', ()=>{
 const raycaster = new THREE.Raycaster();
 canvas.addEventListener('pointermove', e=>{
   const q = quadPos(e);
+  lastMX = e.clientX; lastMY = e.clientY;
   if(!toolTag.hidden){ // бейдж инструмента следует за курсором
     const vr = view.getBoundingClientRect();
     toolTag.style.left = (e.clientX - vr.left + 14)+'px';
@@ -1774,16 +1857,10 @@ canvas.addEventListener('pointermove', e=>{
     const pt = linePickPoint(q);
     if(pt){
       let pos = pt.pos, note = pt.kind;
-      if(lineStart){
-        if(e.shiftKey){ // Shift зажат — фиксируем текущее направление (SketchUp)
-          if(!lineDirLock && lastLinePt && lastLinePt.distanceTo(lineStart)>0.05)
-            lineDirLock = new THREE.Vector3().subVectors(lastLinePt, lineStart).normalize();
-        } else lineDirLock = null;
-        if(lineDirLock){
-          const t = new THREE.Vector3().subVectors(pos, lineStart).dot(lineDirLock);
-          pos = lineStart.clone().addScaledVector(lineDirLock, snapMM(t));
-          note += ' · Shift: direction locked';
-        }
+      if(lineStart && e.shiftKey){ // Shift: строго 90° вдоль ближайшей оси (Draft)
+        const o = shiftOrtho(lineStart, pos);
+        pos = o.p;
+        note += ' · 90° axis ' + o.ax.toUpperCase();
       }
       lastLinePt = pos.clone();
       ghost.material.color.setHex(pt.kind==='vertex' ? C_VERT : C_EDGE);
@@ -1851,7 +1928,7 @@ canvas.addEventListener('dblclick', e=>{
     sel.ring = true;
     clearRingMarkers();
     for(const cc of ringCornersAt(c.pos)){
-      const m = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_SEL}));
+      const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_SEL})));
       m.position.copy(cc.pos);
       scene.add(m);
       ringMarkers.push(m);
@@ -1913,12 +1990,13 @@ function loop(t){
     camTarget.z + camDist*sp);
   persp.lookAt(camTarget);
 
-  // маркеры постоянного экранного размера
-  ghost.scale.setScalar(camDist*0.008);
-  vGhost.scale.setScalar(camDist*0.012);
-  selMarker.scale.setScalar(camDist*0.011);
-  snapDot.scale.setScalar(camDist*0.012);
-  for(const m of ringMarkers) m.scale.setScalar(camDist*0.009);
+  // маркеры-точки: постоянный экранный размер ~7px, масштаб от реального
+  // расстояния до камеры (не «раздуваются» при приближении)
+  const dot = (m, k) => { if(m.visible !== false) m.scale.setScalar(
+    persp.position.distanceTo(m.position) * (k || 0.0045)); };
+  dot(ghost); dot(vGhost, 0.005); dot(selMarker); dot(snapDot, 0.005);
+  for(const m of ringMarkers) dot(m);
+  for(const a of anchors) dot(a.marker);
   // билборды масштабируются от реального расстояния до камеры —
   // постоянный экранный размер при любом зуме
   for(const sp of axisLabels){
@@ -1929,7 +2007,6 @@ function loop(t){
     const d = persp.position.length(); // надпись версии в начале координат
     buildSprite.scale.set(d*0.19, d*0.036, 1);
   }
-  for(const a of anchors) a.marker.scale.setScalar(camDist*0.011);
 
   if(quadChk.checked){
     persp.aspect = hw/hh; persp.updateProjectionMatrix();
@@ -1971,6 +2048,16 @@ document.querySelectorAll('input[name=shape]').forEach(r=>r.addEventListener('ch
   applyShapeUI(); rebuild();
 }));
 applyShapeUI();
+// флаг подсказок: палитра аккордов и обучающий текст; состояние запоминается
+const hintsChk = document.getElementById('hintsChk');
+try{ hintsChk.checked = localStorage.getItem('zc_hints') !== '0'; }catch(_){}
+function applyHints(){
+  const on = hintsChk.checked;
+  document.querySelectorAll('.hint').forEach(el => el.hidden = !on);
+  try{ localStorage.setItem('zc_hints', on ? '1' : '0'); }catch(_){}
+}
+hintsChk.addEventListener('change', applyHints);
+applyHints();
 document.getElementById('stl').addEventListener('click', downloadSTL);
 document.getElementById('reset').addEventListener('click', ()=>{
   const d={dia:70,thk:11,sh:5,n:12,dep:6,w:11};
