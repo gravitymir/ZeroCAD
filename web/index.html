@@ -357,8 +357,11 @@ const backMat = new THREE.MeshStandardMaterial({color:0xa9b7c6, metalness:0.0, r
 // ---------- камеры: 1 перспективная (орбита) + 3 ортогональные ----------
 const persp = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
 persp.up.set(0,0,1);
-let camDist = 160, yaw = -1.1, pitch = 0.55;
-const camTarget = new THREE.Vector3(0,0,0);
+// старт: камера внутри рабочего октанта (+X+Y+Z), смотрит на начало
+// координат «с внутренней стороны»: X уходит влево-вниз, Y вправо-вниз
+const HOME_YAW = Math.PI/4, HOME_PITCH = 0.55;
+let camDist = 190, yaw = HOME_YAW, pitch = HOME_PITCH;
+const camTarget = new THREE.Vector3(20,20,15);
 
 function makeOrtho(pos, up){
   const c = new THREE.OrthographicCamera(-1,1,1,-1,1,3000);
@@ -1557,6 +1560,9 @@ function clearEdgeSel(){
   killSelPreview();
 }
 function toggleEdgeSel(ch){
+  // выбор взаимоисключающий: рёбра снимают выбор грани и точки
+  deselect();
+  if(!ppMode){ hidePatch(); ppPatch = null; }
   const key = edgeSelKey(ch);
   const i = edgeSel.findIndex(s=>s.key===key);
   if(i>=0){
@@ -1782,6 +1788,8 @@ function selectVertex(pos){
 let selAnchor = null;
 function selectAnchor(a){
   deselect();
+  clearEdgeSel();
+  if(!ppMode){ hidePatch(); ppPatch = null; }
   selAnchor = a;
   selMarker.position.copy(a.pos); selMarker.visible = true;
   updateVPanel(); vpanel.hidden = false;
@@ -1806,7 +1814,6 @@ function showEdgePalette(){
   if(!hintsChk.checked) return;
   const vr = view.getBoundingClientRect();
   chordHint.innerHTML =
-    '<div><span class="key">Drag</span> — move edge</div>' +
     '<div><span class="key">G,Y</span> — point / divide</div>' +
     '<div><span class="key">Ctrl+click</span> — add edges · <span class="key">F</span> — fill loop</div>' +
     '<div style="opacity:.55">Esc — deselect</div>';
@@ -2766,6 +2773,7 @@ canvas.addEventListener('pointerup', e=>{
     const q = quadPos(e);
     const f = q.inside ? raycastFace(q) : null;
     if(f){
+      clearEdgeSel(); deselect(); // грань снимает выбор рёбер и точки
       ppPatch = facePatchAt(f.faceIndex);
       showPatch(ppPatch, C_SEL);
       showFacePalette();
@@ -2802,21 +2810,11 @@ canvas.addEventListener('pointermove', e=>{
   }
   if(pendingEdge && !edgeDrag){
     if(Math.hypot(e.clientX-pendingEdge.x, e.clientY-pendingEdge.y) > 4){
-      // потащили: двигаем всё ребро целиком (как линию в Sketcher)
-      const ch = pendingEdge.chain;
-      const grab0 = chainPointAt(ch, pendingEdge.s);
-      const nrm = pendingEdge.is3D
-        ? new THREE.Vector3().subVectors(persp.position, camTarget).normalize()
-        : pendingEdge.q0.cam.position.clone().normalize();
-      const im = buildIndexMap(ch.pts);
-      edgeDrag = {
-        pts0: ch.pts.map(p=>p.clone()),
-        idx: ch.pts.map(p=>im.get(keyOf(p.x,p.y,p.z))||[]),
-        grab0, q0: pendingEdge.q0,
-        plane: new THREE.Plane().setFromNormalAndCoplanarPoint(nrm, grab0),
-        snap: takeSnapshot(), snapPushed: false
-      };
-      setHover(null);
+      // прямое перетаскивание ребра отключено: потащили — значит крутим
+      // камеру; двигать геометрию — только через инструменты
+      const pe = pendingEdge; pendingEdge = null;
+      setHover(null); tipHide();
+      if(!drag) drag = {x: pe.x, y: pe.y, b: 0}; // орбита с точки нажатия
     }
   }
   if(edgeDrag){
@@ -3157,6 +3155,7 @@ canvas.addEventListener('dblclick', e=>{
   }
   const hf = raycastFace(q);
   if(hf){
+    clearEdgeSel(); deselect();
     ppPatch = facePatchAt(hf.faceIndex);
     showPatch(ppPatch, C_SEL); // выбранная грань — зелёная
     showFacePalette();         // список доступных операций (P / E / Esc)
@@ -3306,7 +3305,7 @@ vcnav.addEventListener('click', e=>{
   const act = e.target.dataset && e.target.dataset.act;
   if(!act) return;
   const Q = Math.PI/4;
-  if(act==='home') animateView(-1.1, 0.55);
+  if(act==='home') animateView(HOME_YAW, HOME_PITCH);
   else if(act==='left') animateView(yaw + Q, pitch);
   else if(act==='right') animateView(yaw - Q, pitch);
   else if(act==='up') animateView(yaw, Math.min(1.5, pitch + Q));
