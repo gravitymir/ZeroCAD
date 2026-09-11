@@ -142,6 +142,7 @@
     <div id="toolTag" hidden></div>
     <div id="chordHint" hidden></div>
     <div id="divPopup" hidden>
+      <div class="prow" id="dv_len" style="color:var(--text);font-weight:600"></div>
       <div class="prow" id="dv_info"></div>
       <div class="prow" id="dv_sugg" style="flex-wrap:wrap"></div>
       <div class="prow" style="gap:10px;margin-top:8px">
@@ -1752,6 +1753,12 @@ function renderDividePreview(){
   clearDivDots();
   if(!divCtx) return;
   const ch = divCtx.chain, L = ch.total;
+  // первая строка — что делим: длина ребра/линии, радиус и длина дуги/окружности
+  const arc = fitArc(ch);
+  document.getElementById('dv_len').textContent =
+    ch.closed && arc ? 'Circle R ' + arc.R.toFixed(1) + ' mm · length ' + L.toFixed(1) + ' mm'
+    : arc            ? 'Arc R '    + arc.R.toFixed(1) + ' mm · length ' + L.toFixed(1) + ' mm'
+    : (ch.isGuide ? 'Line' : 'Edge') + ' · length ' + L.toFixed(1) + ' mm';
   const spacing = L/(divN+1);
   const aligned = Math.abs(spacing*10 - Math.round(spacing*10)) < 1e-6;
   dv_info.innerHTML = divN + ' point' + (divN>1?'s':'') + ' · ' + (divN+1)
