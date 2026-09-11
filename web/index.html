@@ -3851,6 +3851,12 @@ canvas.addEventListener('pointermove', e=>{
               : ' · ∠ '+deg+'°';
           }
         }
+        // финиш ляжет на ребро/линию — расстояния до его концов (как у точки);
+        // при активной угловой/осевой привязке конец уже не на ребре — молчим
+        if(pt.chain && pt.s !== undefined && !axSnap && !perpSnap && !e.shiftKey){
+          msg += '<br>◀ ' + pt.s.toFixed(1) + ' mm · '
+               + (pt.chain.total - pt.s).toFixed(1) + ' mm ▶';
+        }
         if(lineLenStr) msg += '<br>typed: '+lineLenStr+' mm (Enter)';
       }
       tipAt(e, msg);
