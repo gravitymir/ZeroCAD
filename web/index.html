@@ -93,13 +93,17 @@
     font-size:22px;line-height:1.6;color:var(--muted);pointer-events:none}
   #chordHint[hidden]{display:none}
   #chordHint .key{color:var(--accent2);font-weight:700}
-  /* окно точного выдавливания выбранной грани (E) */
-  #exPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
+  /* окна точного выдавливания (E) и деления ребра точками */
+  #exPopup,#divPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
     border-radius:10px;padding:10px 12px;font-size:12px}
-  #exPopup[hidden]{display:none}
-  #exPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
-  #exPopup input{width:80px;background:var(--panel2);color:var(--text);
+  #exPopup[hidden],#divPopup[hidden]{display:none}
+  #exPopup .prow,#divPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
+  #exPopup input,#divPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
+  #divPopup .dvs{padding:2px 8px;font-size:11px;flex:none;
+    background:var(--panel2);color:var(--accent2);border:1px solid var(--line);
+    border-radius:5px;cursor:pointer}
+  #divPopup .dvs:hover{border-color:var(--accent2)}
   /* кнопки вокруг ViewCube: стрелки поворота и «домой» */
   #vcnav button{position:absolute;z-index:4;width:20px;height:20px;padding:0;
     background:rgba(38,42,51,.75);color:var(--muted);border:1px solid var(--line);
@@ -122,7 +126,6 @@
       <div class="prow">Edge: <b id="p_len">–</b> mm</div>
       <div class="prow">Offset: <input id="p_off" type="number" step="0.1" min="0"> mm</div>
       <div class="prow" id="p_radrow" hidden>Radius: <input id="p_rad" type="number" step="0.1"> mm</div>
-      <div class="prow">Divide: <input id="p_div" type="number" min="2" max="20" step="1" value="2"> parts ↵</div>
       <div class="prow" style="font-size:10px;color:var(--muted)">click the dot — place &amp; drag · Alt — bend as arc</div>
     </div>
     <div id="vpanel" hidden>
@@ -134,6 +137,12 @@
     <div id="dragTip" hidden></div>
     <div id="toolTag" hidden></div>
     <div id="chordHint" hidden></div>
+    <div id="divPopup" hidden>
+      <div class="prow">Points: <input id="dv_n" type="number" min="1" max="19" step="1" value="1"></div>
+      <div class="prow" id="dv_info" style="font-size:10px;color:var(--muted)"></div>
+      <div class="prow" id="dv_sugg" style="font-size:10px;color:var(--muted);flex-wrap:wrap"></div>
+      <div class="prow" style="font-size:10px;color:var(--muted)">Enter — place · Esc — cancel</div>
+    </div>
     <div id="exPopup" hidden>
       <div class="prow">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
       <div class="prow" style="font-size:10px;color:var(--muted)">+ out (pad) · − in (pocket) · Enter — apply</div>
@@ -786,7 +795,14 @@ function linePickPoint(q){
     }
   }
   const h = pickEdge(q);
-  if(h) return {pos:chainPointAt(h.chain, snapMM(h.s)), kind:'on edge'};
+  if(h){
+    // магнит середины ребра/линии — во всех инструментах рисования
+    const midP = chainPointAt(h.chain, h.chain.total/2);
+    const scr = projToQuad(midP, q.cam, q.w, q.h, {x:0,y:0,z:0});
+    if(!h.chain.closed && Math.hypot(scr.x-q.mx, scr.y-q.my) < 8)
+      return {pos: midP, kind:'midpoint', chain: h.chain, s: h.chain.total/2};
+    return {pos:chainPointAt(h.chain, snapMM(h.s)), kind:'on edge', chain: h.chain, s: snapMM(h.s)};
+  }
   const f = raycastFace(q);
   if(f){ const p=f.point.clone(); p.set(snapMM(p.x),snapMM(p.y),snapMM(p.z)); return {pos:p, kind:'on face'}; }
   return null;
@@ -1689,25 +1705,72 @@ function chainAtPoint(P){
   }
   return null;
 }
-// Divide (как DIVIDE в AutoCAD): N равных частей = N-1 точек на ребре
-const p_div = document.getElementById('p_div');
-p_div.addEventListener('keydown', ev=>{
-  if(ev.key === 'Enter'){
-    ev.preventDefault();
-    if(!placing) return;
-    const n = Math.max(2, Math.min(20, Math.round(+p_div.value || 2)));
-    const ch0 = placing.chain, total = ch0.total;
-    const targets = [];
-    for(let i=1;i<n;i++) targets.push(chainPointAt(ch0, total*i/n));
-    pushUndo();
-    closePopup(); setHover(null);
-    for(const P of targets){
-      const loc = chainAtPoint(P); // цепочки пересобираются после каждого сплита
-      const Q = loc ? (splitEdgeAt(loc.chain, loc.s) || P) : P;
-      makeAnchor(Q);
-      extractEdges();
-    }
+// Divide через точку в центре: окошко с количеством точек и живым превью
+const divPopup = document.getElementById('divPopup');
+const dv_n = document.getElementById('dv_n');
+const dv_info = document.getElementById('dv_info');
+const dv_sugg = document.getElementById('dv_sugg');
+let divCtx = null;   // {chain}
+let divDots = [];    // превью-точки
+function clearDivDots(){ for(const m of divDots) scene.remove(m); divDots = []; }
+function openDivide(ch){
+  divCtx = {chain: ch};
+  dv_n.value = 1;
+  const vr = view.getBoundingClientRect();
+  divPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 240) + 'px';
+  divPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 140) + 'px';
+  divPopup.hidden = false;
+  renderDividePreview();
+  dv_n.focus(); dv_n.select();
+}
+function renderDividePreview(){
+  clearDivDots();
+  if(!divCtx) return;
+  const ch = divCtx.chain, L = ch.total;
+  const n = Math.max(1, Math.min(19, Math.round(+dv_n.value || 1)));
+  const spacing = L/(n+1);
+  const aligned = Math.abs(spacing*10 - Math.round(spacing*10)) < 1e-6;
+  dv_info.innerHTML = n + ' point' + (n>1?'s':'') + ' · ' + (n+1) + ' parts · spacing '
+    + spacing.toFixed(2) + ' mm'
+    + (aligned ? '' : ' · <span style="color:#ffcc00">⚠ off 0.1 mm grid</span>');
+  for(let i=1;i<=n;i++){
+    const m = addOutline(new THREE.Mesh(sphereGeo,
+      new THREE.MeshBasicMaterial({color:C_EDGE})));
+    m.position.copy(chainPointAt(ch, L*i/(n+1)));
+    scene.add(m); divDots.push(m);
   }
+  // количества, дающие «ровный» шаг на сетке 0.1 мм
+  let html = '';
+  for(let k=1;k<=19;k++){
+    const s = L/(k+1);
+    if(Math.abs(s*10 - Math.round(s*10)) < 1e-6) html += '<button class="dvs" data-n="'+k+'">'+k+'</button>';
+  }
+  dv_sugg.innerHTML = html ? 'even: ' + html : '';
+}
+dv_n.addEventListener('input', renderDividePreview);
+dv_sugg.addEventListener('click', ev=>{
+  const n = ev.target.dataset && ev.target.dataset.n;
+  if(n){ dv_n.value = n; renderDividePreview(); dv_n.focus(); }
+});
+function commitDivide(){
+  if(!divCtx) return;
+  const ch0 = divCtx.chain, L = ch0.total;
+  const n = Math.max(1, Math.min(19, Math.round(+dv_n.value || 1)));
+  const targets = [];
+  for(let i=1;i<=n;i++) targets.push(chainPointAt(ch0, L*i/(n+1)));
+  cancelDivide();
+  pushUndo();
+  for(const P of targets){
+    const loc = chainAtPoint(P); // цепочки пересобираются после каждого сплита
+    const Q = loc ? (splitEdgeAt(loc.chain, loc.s) || P) : P;
+    makeAnchor(Q);
+    extractEdges();
+  }
+}
+function cancelDivide(){ divCtx = null; clearDivDots(); divPopup.hidden = true; }
+dv_n.addEventListener('keydown', ev=>{
+  if(ev.key === 'Enter'){ ev.preventDefault(); commitDivide(); }
+  if(ev.key === 'Escape'){ cancelDivide(); }
   ev.stopPropagation();
 });
 
@@ -1834,7 +1897,7 @@ window.addEventListener('keydown', e=>{
   }
   if(e.key==='Escape'){
     closePopup(); deselect(); tipHide();
-    hideChordHint(); chordG = 0; closeExtrude();
+    hideChordHint(); chordG = 0; closeExtrude(); cancelDivide();
     if(!ppMode){ hidePatch(); ppPatch=null; } // снять выбор плоскости
     if(pointMode) setPointMode(false);
     if(circleMode){
@@ -1929,19 +1992,20 @@ canvas.addEventListener('pointerdown', e=>{
   }
   if(pointMode){ // режим «Точка»: клик ставит точку с привязками
     if(e.button===0 && q.inside){
-      const c = pickCorner(q);
-      if(c){ pushUndo(); makeAnchor(c.pos); extractEdges(); return; }
-      const h = pickEdge(q);
-      if(h && !h.chain.isGuide){
+      const pt = linePickPoint(q);
+      if(!pt) return;
+      if(pt.kind === 'midpoint' && pt.chain){
+        openDivide(pt.chain); // центр -> окошко деления с превью
+        return;
+      }
+      if((pt.kind === 'on edge') && pt.chain && !pt.chain.isGuide){
         pushUndo();
-        const s = snapMM(h.s);
-        const P = splitEdgeAt(h.chain, s) || chainPointAt(h.chain, s);
+        const P = splitEdgeAt(pt.chain, pt.s) || pt.pos;
         makeAnchor(P);
         extractEdges();
         return;
       }
-      const pt = linePickPoint(q);
-      if(pt){ pushUndo(); makeAnchor(pt.pos); extractEdges(); }
+      pushUndo(); makeAnchor(pt.pos); extractEdges();
     }
     return;
   }
@@ -2432,6 +2496,7 @@ function loop(t){
     persp.position.distanceTo(m.position) * (k || 0.0045)); };
   dot(ghost); dot(vGhost, 0.005); dot(selMarker); dot(snapDot, 0.005);
   for(const m of ringMarkers) dot(m);
+  for(const m of divDots) dot(m);
   for(const a of anchors) dot(a.marker);
   // билборды масштабируются от реального расстояния до камеры —
   // постоянный экранный размер при любом зуме
