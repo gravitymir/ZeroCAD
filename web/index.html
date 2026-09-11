@@ -293,6 +293,66 @@ const D = 1000;
 const orthoX = makeOrtho(new THREE.Vector3(D,0,0), new THREE.Vector3(0,0,1));
 const orthoY = makeOrtho(new THREE.Vector3(0,D,0), new THREE.Vector3(0,0,1));
 const orthoZ = makeOrtho(new THREE.Vector3(0,0,D), new THREE.Vector3(0,1,0));
+
+// ---------- ViewCube: навигационный куб в углу 3D-окна ----------
+const GIZMO_SIZE = 92;
+const gizmoScene = new THREE.Scene();
+const gizmoCam = new THREE.OrthographicCamera(-1.75, 1.75, 1.75, -1.75, 0.1, 10);
+// грани: порядок материалов BoxGeometry: +X,-X,+Y,-Y,+Z,-Z
+const GIZMO_VIEWS = [
+  {label:'X',  color:'#d9534f', yaw:0,           pitch:0},
+  {label:'-X', color:'#d9534f', yaw:Math.PI,     pitch:0},
+  {label:'Y',  color:'#4cbb5c', yaw:Math.PI/2,   pitch:0},
+  {label:'-Y', color:'#4cbb5c', yaw:-Math.PI/2,  pitch:0},
+  {label:'Z',  color:'#4d7dff', yaw:null,        pitch:1.5},  // сверху (yaw сохраняется)
+  {label:'-Z', color:'#4d7dff', yaw:null,        pitch:-1.5}, // снизу
+];
+const gizmoCube = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), GIZMO_VIEWS.map(f=>{
+  const cv = document.createElement('canvas'); cv.width = 96; cv.height = 96;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#262a33'; ctx.fillRect(0,0,96,96);
+  ctx.strokeStyle = '#3a3f4b'; ctx.lineWidth = 4; ctx.strokeRect(2,2,92,92);
+  ctx.font = 'bold 34px system-ui, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = f.color;
+  ctx.fillText(f.label, 48, 50);
+  return new THREE.MeshBasicMaterial({map: new THREE.CanvasTexture(cv)});
+}));
+gizmoScene.add(gizmoCube);
+// плавный перелёт камеры к выбранному виду
+let viewAnim = null;
+function animateView(yaw1, pitch1){
+  viewAnim = {y0:yaw, p0:pitch, y1:(yaw1===null?yaw:yaw1), p1:pitch1, t0:performance.now()};
+}
+// прямоугольник куба в CSS-координатах canvas (верхний правый угол 3D-окна)
+function gizmoCssRect(){
+  const r = canvas.getBoundingClientRect();
+  const inQuad = quadChk.checked;
+  const wq = inQuad ? r.width/2 : r.width;
+  return {x: wq - GIZMO_SIZE - 10, y: 36, s: GIZMO_SIZE, canvasH: r.height};
+}
+function gizmoPose(){
+  const dir = new THREE.Vector3().subVectors(persp.position, camTarget).normalize();
+  gizmoCam.position.copy(dir).multiplyScalar(4);
+  gizmoCam.up.set(0,0,1);
+  gizmoCam.lookAt(0,0,0);
+  gizmoCam.updateMatrixWorld(true);
+}
+// клик по грани куба -> перелёт к виду; true, если клик съеден кубом
+function gizmoClick(e){
+  const g = gizmoCssRect();
+  const r = canvas.getBoundingClientRect();
+  const px = e.clientX - r.left, py = e.clientY - r.top;
+  if(px < g.x || px > g.x + g.s || py < g.y || py > g.y + g.s) return false;
+  gizmoPose();
+  raycaster.setFromCamera({x:(px-g.x)/g.s*2-1, y:-((py-g.y)/g.s*2-1)}, gizmoCam);
+  const hits = raycaster.intersectObject(gizmoCube);
+  if(hits.length){
+    const f = GIZMO_VIEWS[hits[0].face.materialIndex];
+    animateView(f.yaw, f.pitch);
+  }
+  return true;
+}
 let orthoFit = 70;
 
 function updateOrthoFrusta(){
@@ -1370,6 +1430,7 @@ function beginDrag(a, c, q, altKey, pointerId, ctrlKey, shiftKey){
 canvas.addEventListener('pointerdown', e=>{
   const q = quadPos(e);
   if(!q.inside) return;
+  if(e.button===0 && gizmoClick(e)) return; // клик по ViewCube
   if(placing){
     // клик по бегунку-точке — поставить её и сразу тянуть
     const gp = {x:0,y:0,z:0};
@@ -1736,6 +1797,15 @@ function renderViewport(cam, x, y, w, h, grids){
 let last=performance.now(), frames=0, fpsT=0;
 function loop(t){
   const w=view.clientWidth, h=view.clientHeight, hw=w/2, hh=h/2;
+  if(viewAnim){ // перелёт к виду, выбранному на ViewCube
+    const k = Math.min(1, (performance.now()-viewAnim.t0)/250);
+    const ease = k*(2-k);
+    let dy = viewAnim.y1 - viewAnim.y0;
+    dy = ((dy+Math.PI)%(2*Math.PI)+2*Math.PI)%(2*Math.PI)-Math.PI;
+    yaw = viewAnim.y0 + dy*ease;
+    pitch = viewAnim.p0 + (viewAnim.p1-viewAnim.p0)*ease;
+    if(k>=1) viewAnim = null;
+  }
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   persp.position.set(
     camTarget.x + camDist*cp*Math.cos(yaw),
@@ -1770,6 +1840,16 @@ function loop(t){
   } else {
     persp.aspect = w/h; persp.updateProjectionMatrix();
     renderViewport(persp, 0, 0, w, h, VIEW_GRIDS.persp);      // одно 3D на всё
+  }
+  { // ViewCube поверх 3D-окна
+    const g = gizmoCssRect();
+    gizmoPose();
+    renderer.setViewport(g.x, g.canvasH - g.y - g.s, g.s, g.s);
+    renderer.setScissor(g.x, g.canvasH - g.y - g.s, g.s, g.s);
+    renderer.autoClear = false;
+    renderer.clearDepth();
+    renderer.render(gizmoScene, gizmoCam);
+    renderer.autoClear = true;
   }
 
   frames++; fpsT+=t-last; last=t;
