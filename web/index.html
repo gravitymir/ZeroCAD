@@ -100,10 +100,14 @@
   #exPopup .prow,#divPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
   #exPopup input,#divPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
-  #divPopup .dvs{padding:2px 8px;font-size:11px;flex:none;
+  #divPopup{cursor:move;padding:14px 16px}
+  #divPopup .prow{font-size:19px}
+  #divPopup .dvs{padding:6px 16px;font-size:19px;flex:none;
     background:var(--panel2);color:var(--accent2);border:1px solid var(--line);
-    border-radius:5px;cursor:pointer}
+    border-radius:6px;cursor:pointer}
+  #divPopup #dv_ok,#divPopup #dv_cancel{font-size:17px;padding:8px 12px}
   #divPopup .dvs:hover{border-color:var(--accent2)}
+  #divPopup .dvs.sel{background:var(--accent2);color:#10131a;border-color:var(--accent2)}
   /* кнопки вокруг ViewCube: стрелки поворота и «домой» */
   #vcnav button{position:absolute;z-index:4;width:20px;height:20px;padding:0;
     background:rgba(38,42,51,.75);color:var(--muted);border:1px solid var(--line);
@@ -138,10 +142,12 @@
     <div id="toolTag" hidden></div>
     <div id="chordHint" hidden></div>
     <div id="divPopup" hidden>
-      <div class="prow">Points: <input id="dv_n" type="number" min="1" max="19" step="1" value="1"></div>
-      <div class="prow" id="dv_info" style="font-size:10px;color:var(--muted)"></div>
-      <div class="prow" id="dv_sugg" style="font-size:10px;color:var(--muted);flex-wrap:wrap"></div>
-      <div class="prow" style="font-size:10px;color:var(--muted)">Enter — place · Esc — cancel</div>
+      <div class="prow" id="dv_info"></div>
+      <div class="prow" id="dv_sugg" style="flex-wrap:wrap"></div>
+      <div class="prow" style="gap:10px;margin-top:8px">
+        <button id="dv_ok" class="primary" style="flex:1">OK</button>
+        <button id="dv_cancel" style="flex:1">Cancel</button>
+      </div>
     </div>
     <div id="exPopup" hidden>
       <div class="prow">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
@@ -1705,57 +1711,57 @@ function chainAtPoint(P){
   }
   return null;
 }
-// Divide через точку в центре: окошко с количеством точек и живым превью
+// Divide через точку в центре: окошко (перетаскиваемое) с выбором из «ровных»
+// количеств, живым превью; камера остаётся свободной, пока окно открыто
 const divPopup = document.getElementById('divPopup');
-const dv_n = document.getElementById('dv_n');
 const dv_info = document.getElementById('dv_info');
 const dv_sugg = document.getElementById('dv_sugg');
 let divCtx = null;   // {chain}
+let divN = 1;
 let divDots = [];    // превью-точки
 function clearDivDots(){ for(const m of divDots) scene.remove(m); divDots = []; }
+function divideCounts(L){
+  const counts = [];
+  for(let k=1;k<=19;k++){
+    const s = L/(k+1);
+    if(Math.abs(s*10 - Math.round(s*10)) < 1e-6) counts.push(k);
+  }
+  return counts.length ? counts : [1,2,3,4,9]; // редкая длина без ровных вариантов
+}
 function openDivide(ch){
   divCtx = {chain: ch};
-  dv_n.value = 1;
+  divN = divideCounts(ch.total)[0];
   const vr = view.getBoundingClientRect();
-  divPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 240) + 'px';
-  divPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 140) + 'px';
+  divPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 260) + 'px';
+  divPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 160) + 'px';
   divPopup.hidden = false;
   renderDividePreview();
-  dv_n.focus(); dv_n.select();
 }
 function renderDividePreview(){
   clearDivDots();
   if(!divCtx) return;
   const ch = divCtx.chain, L = ch.total;
-  const n = Math.max(1, Math.min(19, Math.round(+dv_n.value || 1)));
-  const spacing = L/(n+1);
+  const spacing = L/(divN+1);
   const aligned = Math.abs(spacing*10 - Math.round(spacing*10)) < 1e-6;
-  dv_info.innerHTML = n + ' point' + (n>1?'s':'') + ' · ' + (n+1) + ' parts · spacing '
-    + spacing.toFixed(2) + ' mm'
+  dv_info.innerHTML = divN + ' point' + (divN>1?'s':'') + ' · ' + (divN+1)
+    + ' parts · spacing ' + spacing.toFixed(2) + ' mm'
     + (aligned ? '' : ' · <span style="color:#ffcc00">⚠ off 0.1 mm grid</span>');
-  for(let i=1;i<=n;i++){
+  for(let i=1;i<=divN;i++){
     const m = addOutline(new THREE.Mesh(sphereGeo,
       new THREE.MeshBasicMaterial({color:C_EDGE})));
-    m.position.copy(chainPointAt(ch, L*i/(n+1)));
+    m.position.copy(chainPointAt(ch, L*i/(divN+1)));
     scene.add(m); divDots.push(m);
   }
-  // количества, дающие «ровный» шаг на сетке 0.1 мм
-  let html = '';
-  for(let k=1;k<=19;k++){
-    const s = L/(k+1);
-    if(Math.abs(s*10 - Math.round(s*10)) < 1e-6) html += '<button class="dvs" data-n="'+k+'">'+k+'</button>';
-  }
-  dv_sugg.innerHTML = html ? 'even: ' + html : '';
+  dv_sugg.innerHTML = divideCounts(L)
+    .map(k => '<button class="dvs'+(k===divN?' sel':'')+'" data-n="'+k+'">'+k+'</button>').join('');
 }
-dv_n.addEventListener('input', renderDividePreview);
 dv_sugg.addEventListener('click', ev=>{
   const n = ev.target.dataset && ev.target.dataset.n;
-  if(n){ dv_n.value = n; renderDividePreview(); dv_n.focus(); }
+  if(n){ divN = +n; renderDividePreview(); }
 });
 function commitDivide(){
   if(!divCtx) return;
-  const ch0 = divCtx.chain, L = ch0.total;
-  const n = Math.max(1, Math.min(19, Math.round(+dv_n.value || 1)));
+  const ch0 = divCtx.chain, L = ch0.total, n = divN;
   const targets = [];
   for(let i=1;i<=n;i++) targets.push(chainPointAt(ch0, L*i/(n+1)));
   cancelDivide();
@@ -1768,11 +1774,22 @@ function commitDivide(){
   }
 }
 function cancelDivide(){ divCtx = null; clearDivDots(); divPopup.hidden = true; }
-dv_n.addEventListener('keydown', ev=>{
-  if(ev.key === 'Enter'){ ev.preventDefault(); commitDivide(); }
-  if(ev.key === 'Escape'){ cancelDivide(); }
-  ev.stopPropagation();
+document.getElementById('dv_ok').addEventListener('click', commitDivide);
+document.getElementById('dv_cancel').addEventListener('click', cancelDivide);
+// окно можно перетаскивать за любое пустое место
+let dvDrag = null;
+divPopup.addEventListener('pointerdown', ev=>{
+  if(ev.target.tagName === 'BUTTON') return;
+  dvDrag = {x: ev.clientX, y: ev.clientY,
+            left: parseFloat(divPopup.style.left)||0, top: parseFloat(divPopup.style.top)||0};
+  try{ divPopup.setPointerCapture(ev.pointerId); }catch(_){}
 });
+divPopup.addEventListener('pointermove', ev=>{
+  if(!dvDrag) return;
+  divPopup.style.left = (dvDrag.left + ev.clientX - dvDrag.x) + 'px';
+  divPopup.style.top  = (dvDrag.top  + ev.clientY - dvDrag.y) + 'px';
+});
+divPopup.addEventListener('pointerup', ()=>{ dvDrag = null; });
 
 // точка ставится кликом по призраку (и сразу тянется) — кнопки не нужны
 function placePlacingPoint(){
@@ -1793,6 +1810,7 @@ function placePlacingPoint(){
   return a;
 }
 window.addEventListener('keydown', e=>{
+  if(divCtx && e.key === 'Enter'){ e.preventDefault(); commitDivide(); return; }
   if(dragPt && !e.ctrlKey && !e.altKey && !e.metaKey){
     const ax = {KeyX:'x', KeyY:'y', KeyZ:'z'}[e.code]
              || {x:'x', y:'y', z:'z'}[e.key.toLowerCase()]; // как в Blender
@@ -1978,6 +1996,14 @@ canvas.addEventListener('pointerdown', e=>{
   if(!q.inside) return;
   hideChordHint(); chordG = 0;
   if(e.button===0 && gizmoClick(e)) return; // клик по ViewCube
+  if(divCtx){ // окно деления открыто: камера свободна, инструменты — на паузе
+    tipHide();
+    if(q.is3D){
+      drag = {x: e.clientX, y: e.clientY, b: e.button};
+      try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+    }
+    return;
+  }
   if(placing){
     // клик по бегунку-точке — поставить её и сразу тянуть
     const gp = {x:0,y:0,z:0};
@@ -2311,6 +2337,7 @@ canvas.addEventListener('pointermove', e=>{
     }
     return;
   }
+  if(divCtx) return;                // окно деления: только камера, наведение молчит
   if(placing) return;               // пока открыта всплывашка — наведение заморожено
   if(pointMode){ // призрак точки с привязками
     if(!q.inside){ ghost.visible=false; tipHide(); return; }
