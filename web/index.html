@@ -58,7 +58,7 @@
   #view.single #hud{bottom:10px}
   #view.single #vpanel{bottom:56px}
   /* всплывашка постановки точки на ребро */
-  #popup{position:absolute;z-index:5;background:var(--panel);border:1px solid var(--accent2);
+  #popup{position:absolute;z-index:5;background:var(--panel);border:1px solid #2ecc40;
     border-radius:10px;padding:10px 12px;font-size:12px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
   #popup[hidden]{display:none}
   #popup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
@@ -69,13 +69,13 @@
   #popup .pbtns button{padding:5px 10px;font-size:12px;flex:1}
   /* панель координат выбранной вершины (в 3D-окне) */
   #vpanel{position:absolute;z-index:5;left:10px;bottom:calc(50% + 40px);
-    background:var(--panel);border:1px solid #ffd84d;border-radius:10px;
+    background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
     padding:8px 12px;font-size:12px}
   #vpanel[hidden]{display:none}
   #vpanel .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
   #vpanel input{width:76px;background:var(--panel2);color:var(--text);border:1px solid var(--line);
     border-radius:6px;padding:3px 6px;font-size:12px;font-variant-numeric:tabular-nums}
-  #vpanel b{color:#ffd84d}
+  #vpanel b{color:#2ecc40}
   /* полупрозрачный тултип при перетаскивании */
   #dragTip{position:absolute;z-index:6;background:rgba(30,33,40,.78);border:1px solid var(--line);
     border-radius:8px;padding:6px 9px;font-size:11px;line-height:1.5;color:var(--text);
@@ -131,9 +131,18 @@
     <h1>🦀 ZeroCAD · peanut wheel</h1>
     <p class="sub">Geometry &amp; STL computed by the Rust server · browser only renders</p>
 
-    <div class="sec">Wheel</div>
-    <div class="row"><label>Diameter <span id="v_dia">70 mm</span></label>
-      <input type="range" id="dia" min="30" max="160" step="1" value="70"></div>
+    <div class="sec">Shape</div>
+    <div class="row" style="display:flex;gap:14px">
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="radio" name="shape" value="cube" checked> cube</label>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="radio" name="shape" value="wheel"> wheel</label>
+    </div>
+
+    <div class="sec">Dimensions</div>
+    <div class="row"><label id="dia_label">Size <span id="v_dia">40 mm</span></label>
+      <input type="range" id="dia" min="10" max="160" step="1" value="40"></div>
+    <div id="wheelOnly">
     <div class="row"><label>Thickness (= nut width) <span id="v_thk">11 mm</span></label>
       <input type="range" id="thk" min="4" max="30" step="0.1" value="11"></div>
     <div class="row"><label>Shaft bore <span id="v_sh">5 mm</span></label>
@@ -146,6 +155,7 @@
       <input type="range" id="dep" min="1" max="20" step="0.1" value="6"></div>
     <div class="row"><label>Mouth width <span id="v_w">11°</span></label>
       <input type="range" id="w" min="4" max="40" step="1" value="11"></div>
+    </div>
 
     <div class="sec">Views</div>
     <div class="row" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
@@ -544,8 +554,8 @@ const sphereGeo = new THREE.SphereGeometry(1, 16, 12);
 const ghost = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x4da3ff}));
 ghost.visible = false; scene.add(ghost);
 
-// цвета привязок (inference, как в SketchUp: точка меняет цвет по типу)
-const C_EDGE = 0x4da3ff, C_MID = 0x3fd9c9, C_VERT = 0xffd84d;
+// цвета как во FreeCAD: жёлтый — preselect (наведение), зелёный — selection
+const C_EDGE = 0xffcc00, C_MID = 0xffcc00, C_VERT = 0xffcc00, C_SEL = 0x2ecc40;
 
 // вершины модели (углы, где сходятся рёбра) и выбранная вершина
 let corners = [];       // [{key, pos:Vector3}]
@@ -553,7 +563,7 @@ let cornerHover = null;
 let sel = null;         // {pos:Vector3}
 const vGhost = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VERT}));
 vGhost.visible = false; scene.add(vGhost);
-const selMarker = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VERT}));
+const selMarker = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_SEL}));
 selMarker.visible = false; scene.add(selMarker);
 // маркер цели магнита при перетаскивании (зелёный — вершина, красный — ребро)
 const snapDot = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x52c752}));
@@ -837,7 +847,7 @@ function facePatchAt(triIdx){
   }
   return {set, tris:[...set], keys, normal:n0};
 }
-function showPatch(patch){
+function showPatch(patch, color){
   hidePatch();
   if(!patch) return;
   const pos = mesh.geometry.attributes.position.array;
@@ -847,7 +857,7 @@ function showPatch(patch){
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(arr,3));
   ppHi = new THREE.Mesh(g, new THREE.MeshBasicMaterial(
-    {color:0x4da3ff, transparent:true, opacity:0.35, side:THREE.DoubleSide}));
+    {color: color || C_EDGE, transparent:true, opacity:0.35, side:THREE.DoubleSide}));
   ppHi.position.copy(patch.normal).multiplyScalar(0.05); // чуть над гранью
   scene.add(ppHi);
 }
@@ -959,7 +969,7 @@ function setHover(h, isMid){
   if(hiLine){ scene.remove(hiLine); hiLine.geometry.dispose(); hiLine=null; }
   if(h){
     const g = new THREE.BufferGeometry().setFromPoints(h.chain.pts);
-    hiLine = new THREE.Line(g, new THREE.LineBasicMaterial({color:0x4da3ff}));
+    hiLine = new THREE.Line(g, new THREE.LineBasicMaterial({color:C_EDGE}));
     scene.add(hiLine);
     ghost.material.color.setHex(isMid ? C_MID : C_EDGE);
     ghost.position.copy(chainPointAt(h.chain, h.s));
@@ -1127,7 +1137,8 @@ function readParams(){
 }
 function queryString(p){
   const engine = document.querySelector('input[name=engine]:checked').value;
-  return `dia=${p.dia}&thk=${p.thk}&shaft=${p.shaft}&n=${p.n}&depth=${p.depth}&mouth=${p.mouth}&engine=${engine}`;
+  const shape = document.querySelector('input[name=shape]:checked').value;
+  return `shape=${shape}&size=${p.dia}&dia=${p.dia}&thk=${p.thk}&shaft=${p.shaft}&n=${p.n}&depth=${p.depth}&mouth=${p.mouth}&engine=${engine}`;
 }
 
 function parseSTL(buf){
@@ -1286,6 +1297,9 @@ function openPopup(e, q){
   p_off.value = placing.s.toFixed(1);
   p_off.max = placing.chain.total.toFixed(1);
   tipHide(); // подсказка у курсора не должна перекрывать окошко
+  // выбранное ребро и точка — зелёные (selection, как во FreeCAD)
+  if(hiLine) hiLine.material.color.setHex(C_SEL);
+  ghost.material.color.setHex(C_SEL);
   radiusEdited = false;
   const arc = fitArc(placing.chain);
   p_radrow.hidden = !arc;
@@ -1780,7 +1794,7 @@ canvas.addEventListener('dblclick', e=>{
     sel.ring = true;
     clearRingMarkers();
     for(const cc of ringCornersAt(c.pos)){
-      const m = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_VERT}));
+      const m = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_SEL}));
       m.position.copy(cc.pos);
       scene.add(m);
       ringMarkers.push(m);
@@ -1790,7 +1804,7 @@ canvas.addEventListener('dblclick', e=>{
   const hf = raycastFace(q);
   if(hf){
     ppPatch = facePatchAt(hf.faceIndex);
-    showPatch(ppPatch);
+    showPatch(ppPatch, C_SEL); // выбранная грань — зелёная
     tipAt(e, 'Face selected · '+ppPatch.tris.length+' tris · P to push/pull · Esc');
   }
 });
@@ -1891,6 +1905,15 @@ function loop(t){
   document.getElementById(id).addEventListener('input', rebuild);
 });
 document.querySelectorAll('input[name=engine]').forEach(r=>r.addEventListener('change', rebuild));
+function applyShapeUI(){
+  const cube = document.querySelector('input[name=shape]:checked').value === 'cube';
+  document.getElementById('wheelOnly').hidden = cube;
+  document.getElementById('dia_label').childNodes[0].nodeValue = cube ? 'Size ' : 'Diameter ';
+}
+document.querySelectorAll('input[name=shape]').forEach(r=>r.addEventListener('change', ()=>{
+  applyShapeUI(); rebuild();
+}));
+applyShapeUI();
 document.getElementById('stl').addEventListener('click', downloadSTL);
 document.getElementById('reset').addEventListener('click', ()=>{
   const d={dia:70,thk:11,sh:5,n:12,dep:6,w:11};

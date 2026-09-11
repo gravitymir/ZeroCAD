@@ -68,8 +68,19 @@ fn handle(stream: TcpStream) {
         "/api/wheel.stl" => {
             let p = params_from_query(query);
             let use_csg = query.split('&').any(|kv| kv == "engine=csg");
+            let cube = query.split('&').any(|kv| kv == "shape=cube");
+            let mut size = 40.0f64;
+            for pair in query.split('&') {
+                if let Some(v) = pair.strip_prefix("size=") {
+                    if let Ok(x) = v.parse::<f64>() {
+                        size = x.clamp(2.0, 400.0);
+                    }
+                }
+            }
             let started = std::time::Instant::now();
-            let tris = if use_csg {
+            let tris = if cube {
+                geometry::build_cube(size)
+            } else if use_csg {
                 csg::build_wheel_csg(&p)
             } else {
                 geometry::build_wheel(&p)
