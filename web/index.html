@@ -274,7 +274,7 @@ for(const ax of ['x','y','z']){
   ctx.fillStyle = AXIS_CSS[ax];
   ctx.fillText(ax.toUpperCase(), 32, 34);
   const sp = new THREE.Sprite(new THREE.SpriteMaterial(
-    {map: new THREE.CanvasTexture(cv), transparent:true, depthTest:false}));
+    {map: new THREE.CanvasTexture(cv), transparent:true})); // за моделью — прячется
   sp.userData.dir = v;
   scene.add(sp); axisLabels.push(sp);
 }
@@ -647,6 +647,12 @@ function extractEdges(){
                  closed:false, isGuide:true});
   }
   cornerHover = null;
+  // оси всегда выходят за габарит модели (буквы не «поглощаются» фигурой)
+  {
+    let ext = 10;
+    for(let i=0;i<pos.length;i++) if(pos[i] > ext) ext = pos[i];
+    updateAxesSize(ext * 1.25);
+  }
   // центры дуг и окружностей — снап-цели
   auxSnaps = [];
   for(const ch of chains){
@@ -1488,7 +1494,6 @@ async function rebuild(){
   orthoFit = p.dia*0.62;
   updateOrthoFrusta();
   bedGrid.position.z = -0.05; // рабочая плоскость z=0, сетка и оси лежат на ней
-  updateAxesSize(p.dia*0.8);
   // орбита и орто-виды смотрят на центр модели (куб растёт из начала координат)
   const isCube = document.querySelector('input[name=shape]:checked').value === 'cube';
   if(isCube) camTarget.set(p.dia/2, p.dia/2, p.dia/2);
