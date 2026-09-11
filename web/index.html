@@ -320,29 +320,86 @@ const orthoZ = makeOrtho(new THREE.Vector3(0,0,D), new THREE.Vector3(0,1,0));
 const GIZMO_SIZE = 120;
 const gizmoScene = new THREE.Scene();
 const gizmoCam = new THREE.OrthographicCamera(-1.75, 1.75, 1.75, -1.75, 0.1, 10);
-// грани (порядок материалов BoxGeometry: +X,-X,+Y,-Y,+Z,-Z), имена как во FreeCAD
-const GIZMO_FACES = [
-  {label:'RIGHT',  edge:'#d9534f'},
-  {label:'LEFT',   edge:'#d9534f'},
-  {label:'BACK',   edge:'#4cbb5c'},
-  {label:'FRONT',  edge:'#4cbb5c'},
-  {label:'TOP',    edge:'#4d7dff'},
-  {label:'BOTTOM', edge:'#4d7dff'},
-];
-const gizmoCube = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), GIZMO_FACES.map(f=>{
-  const cv = document.createElement('canvas'); cv.width = 128; cv.height = 128;
-  const ctx = cv.getContext('2d');
-  ctx.fillStyle = '#e8eaee'; ctx.fillRect(0,0,128,128);
-  // широкая цветная кромка = зона клика по ребру/углу
-  ctx.strokeStyle = f.edge; ctx.lineWidth = 18; ctx.strokeRect(9,9,110,110);
-  ctx.font = 'bold 26px system-ui, sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#2b2e35';
-  ctx.fillText(f.label, 64, 66);
-  return new THREE.MeshBasicMaterial({map: new THREE.CanvasTexture(cv),
-    transparent: true, opacity: 0.5, depthWrite: false});
-}));
+// куб с фасками как Navigation Cube во FreeCAD: 6 граней-табличек,
+// 12 скосов-прямоугольников (цвет по направлению: X-красный, Y-зелёный,
+// Z-синий) и 8 треугольных углов
+const gizmoCube = (()=>{
+  const A = 1, CH = 0.42, S = A - CH;
+  const P = [], UV = [], G = [];
+  let vc = 0;
+  const push = (mi, pts, uvs) => {
+    G.push({start: vc, count: pts.length/3, mi});
+    P.push(...pts); UV.push(...uvs); vc += pts.length/3;
+  };
+  const quad = (mi, p1, p2, p3, p4, flipU) => {
+    const uv = flipU ? [[1,0],[0,0],[0,1],[1,1]] : [[0,0],[1,0],[1,1],[0,1]];
+    push(mi, [...p1,...p2,...p3, ...p1,...p3,...p4],
+             [...uv[0],...uv[1],...uv[2], ...uv[0],...uv[2],...uv[3]]);
+  };
+  const quadAuto = (mi, p1, p2, p3, p4) => { // ориентация наружу автоматически
+    const c0 = [(p1[0]+p3[0])/2, (p1[1]+p3[1])/2, (p1[2]+p3[2])/2];
+    const u = [p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2]];
+    const v = [p3[0]-p2[0], p3[1]-p2[1], p3[2]-p2[2]];
+    const n = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+    if(n[0]*c0[0] + n[1]*c0[1] + n[2]*c0[2] < 0) quad(mi, p1, p4, p3, p2, false);
+    else quad(mi, p1, p2, p3, p4, false);
+  };
+  const triAuto = (mi, p1, p2, p3) => {
+    const c0 = [(p1[0]+p2[0]+p3[0])/3, (p1[1]+p2[1]+p3[1])/3, (p1[2]+p2[2]+p3[2])/3];
+    const u = [p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2]];
+    const v = [p3[0]-p1[0], p3[1]-p1[1], p3[2]-p1[2]];
+    const n = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+    const pts = (n[0]*c0[0]+n[1]*c0[1]+n[2]*c0[2] < 0)
+      ? [...p1,...p3,...p2] : [...p1,...p2,...p3];
+    push(mi, pts, [0,0, 1,0, 0.5,1]);
+  };
+  // грани-таблички (порядок материалов: RIGHT,LEFT,BACK,FRONT,TOP,BOTTOM)
+  quad(0, [A,-S,-S],[A, S,-S],[A, S, S],[A,-S, S], true);   // +X RIGHT
+  quad(1, [-A, S,-S],[-A,-S,-S],[-A,-S, S],[-A, S, S], true); // -X LEFT
+  quad(2, [ S, A,-S],[-S, A,-S],[-S, A, S],[ S, A, S], true); // +Y BACK
+  quad(3, [-S,-A,-S],[ S,-A,-S],[ S,-A, S],[-S,-A, S], false); // -Y FRONT
+  quad(4, [-S,-S, A],[ S,-S, A],[ S, S, A],[-S, S, A], false); // +Z TOP
+  quad(5, [-S, S,-A],[ S, S,-A],[ S,-S,-A],[-S,-S,-A], true);  // -Z BOTTOM
+  // 12 фасок: свободная ось k = направление скоса -> материал 6+k
+  for(let i=0;i<3;i++) for(let j=i+1;j<3;j++){
+    const k = 3 - i - j;
+    const pt = (iv, jv, kv) => { const p=[0,0,0]; p[i]=iv; p[j]=jv; p[k]=kv; return p; };
+    for(const si of [1,-1]) for(const sj of [1,-1]){
+      quadAuto(6+k,
+        pt(A*si, S*sj, -S), pt(A*si, S*sj, S),
+        pt(S*si, A*sj,  S), pt(S*si, A*sj, -S));
+    }
+  }
+  // 8 треугольных углов
+  for(const sx of [1,-1]) for(const sy of [1,-1]) for(const sz of [1,-1])
+    triAuto(9, [A*sx, S*sy, S*sz], [S*sx, A*sy, S*sz], [S*sx, S*sy, A*sz]);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(P), 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(UV), 2));
+  for(const g of G) geo.addGroup(g.start, g.count, g.mi);
+
+  const faceMat = label => {
+    const cv = document.createElement('canvas'); cv.width = 128; cv.height = 128;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#e8eaee'; ctx.fillRect(0,0,128,128);
+    ctx.font = 'bold 30px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#2b2e35';
+    ctx.fillText(label, 64, 66);
+    return new THREE.MeshBasicMaterial({map: new THREE.CanvasTexture(cv),
+      transparent: true, opacity: 0.55, depthWrite: false});
+  };
+  const solid = hex => new THREE.MeshBasicMaterial(
+    {color: hex, transparent: true, opacity: 0.55, depthWrite: false});
+  const mats = ['RIGHT','LEFT','BACK','FRONT','TOP','BOTTOM'].map(faceMat);
+  mats.push(solid(0xd9534f), solid(0x4cbb5c), solid(0x4d7dff), solid(0xcfd4de));
+  return new THREE.Mesh(geo, mats);
+})();
 gizmoScene.add(gizmoCube);
+gizmoScene.add(new THREE.LineSegments(
+  new THREE.EdgesGeometry(gizmoCube.geometry, 25),
+  new THREE.LineBasicMaterial({color: 0x596070})));
 // плавный перелёт камеры к выбранному виду
 let viewAnim = null;
 function animateView(yaw1, pitch1){
@@ -374,7 +431,7 @@ function gizmoClick(e){
   if(hits.length){
     // грань / ребро / угол — по точке попадания (как Navigation Cube во FreeCAD)
     const p = hits[0].point;
-    const t = 0.45; // широкие зоны рёбер и углов — легче прицелиться
+    const t = 0.56; // граница фасок: |коорд| > t — скос/угол, меньше — грань
     const sx = Math.abs(p.x)>t ? Math.sign(p.x) : 0;
     const sy = Math.abs(p.y)>t ? Math.sign(p.y) : 0;
     const sz = Math.abs(p.z)>t ? Math.sign(p.z) : 0;
