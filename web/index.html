@@ -966,9 +966,9 @@ function setLineMode(on){
 function killRubber(){ if(rubber){ scene.remove(rubber); rubber.geometry.dispose(); rubber=null; } }
 function addGuide(A, B){
   const g = new THREE.BufferGeometry().setFromPoints([A, B]);
-  const l = new THREE.Line(g, new THREE.LineDashedMaterial(
-    {color:0xb9c2d4, dashSize:1.6, gapSize:1.1})); // пунктир — как направляющие SketchUp
-  l.computeLineDistances();
+  // сплошная, как обычные рёбра: нарисованная линия — настоящая геометрия
+  // (пунктир и в SketchUp, и во FreeCAD — только у вспомогательных построений)
+  const l = new THREE.Line(g, new THREE.LineBasicMaterial({color:0x23262c}));
   scene.add(l);
   guides.push({a:A.clone(), b:B.clone(), line:l});
 }
