@@ -1794,6 +1794,21 @@ function showPointPalette(){
   clearTimeout(showChordHint._t);
   showChordHint._t = setTimeout(hideChordHint, 4000);
 }
+// палитра операций для выбранного ребра — как у грани и точки
+function showEdgePalette(){
+  if(!hintsChk.checked) return;
+  const vr = view.getBoundingClientRect();
+  chordHint.innerHTML =
+    '<div><span class="key">Drag</span> — move edge</div>' +
+    '<div><span class="key">G,Y</span> — point / divide</div>' +
+    '<div><span class="key">Ctrl+click</span> — add edges · <span class="key">F</span> — fill loop</div>' +
+    '<div style="opacity:.55">Esc — deselect</div>';
+  chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
+  chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
+  chordHint.hidden = false;
+  clearTimeout(showChordHint._t);
+  showChordHint._t = setTimeout(hideChordHint, 4000);
+}
 function deleteSelAnchor(){
   if(!selAnchor) return;
   pushUndo(); // снимок хранит и точки — Ctrl+Z вернёт
@@ -2709,6 +2724,7 @@ canvas.addEventListener('pointerdown', e=>{
     if(hover){
       if(hover.chain.isGuide){ // клик по линии — выбор, как у рёбер
         clearEdgeSel(); toggleEdgeSel(hover.chain);
+        showEdgePalette();
         return;
       }
       // решение клик/драг откладываем до движения мыши
@@ -2735,6 +2751,7 @@ canvas.addEventListener('pointerup', e=>{
     const pe = pendingEdge; pendingEdge = null;
     clearEdgeSel();
     toggleEdgeSel(pe.chain);
+    showEdgePalette();
   }
   if(drag && drag.click && !pointMode && !lineMode && !circleMode && !ppMode && !divCtx
      && Math.hypot(e.clientX-drag.click.x, e.clientY-drag.click.y) < 3){
