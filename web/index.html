@@ -2016,6 +2016,13 @@ canvas.addEventListener('pointerdown', e=>{
     closePopup();
     return;
   }
+  // в режимах инструментов ПКМ/СКМ остаются камерой: сдвиг / вращение
+  if((e.button === 2 || e.button === 1)
+     && (pointMode || circleMode || lineMode || ppMode) && q.is3D){
+    drag = {x: e.clientX, y: e.clientY, b: e.button};
+    try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+    return;
+  }
   if(pointMode){ // режим «Точка»: клик ставит точку с привязками
     if(e.button===0 && q.inside){
       const pt = linePickPoint(q);
