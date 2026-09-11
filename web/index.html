@@ -1776,33 +1776,82 @@ function beginPatchExtrude(patch){
     }
   }
   const walls = [...cnt.values()].filter(r=>r.n===1);
-  const arr = new Float32Array(pos.length + walls.length*18);
+  const arr = new Float32Array(pos.length + walls.length*36);
   arr.set(pos);
-  const idx = [];
-  for(const t of patch.tris) for(let k=0;k<9;k+=3) idx.push(t*9+k);
+  const idx = [], fac = [];
+  for(const t of patch.tris) for(let k=0;k<9;k+=3){ idx.push(t*9+k); fac.push(1); }
   let o = pos.length;
+  const put = (x,y,z,f)=>{ arr[o]=x; arr[o+1]=y; arr[o+2]=z;
+    if(f){ idx.push(o); fac.push(f); } o += 3; };
   for(const w of walls){
+    // стенка-квад веером через центр (центр едет на полдистанции): прямое
+    // и обратное выдавливание дают совпадающие треугольники противоположной
+    // ориентации — cleanupMesh их схлопнет, как «заживление» в SketchUp
     const [ax,ay,az] = w.a, [bx,by,bz] = w.b;
-    // (a, b, b1) и (a, b1, a1): нижняя кромка остаётся, верхние копии едут
-    arr[o]=ax; arr[o+1]=ay; arr[o+2]=az;
-    arr[o+3]=bx; arr[o+4]=by; arr[o+5]=bz;
-    arr[o+6]=bx; arr[o+7]=by; arr[o+8]=bz; idx.push(o+6);
-    o += 9;
-    arr[o]=ax; arr[o+1]=ay; arr[o+2]=az;
-    arr[o+3]=bx; arr[o+4]=by; arr[o+5]=bz; idx.push(o+3);
-    arr[o+6]=ax; arr[o+7]=ay; arr[o+8]=az; idx.push(o+6);
-    o += 9;
+    const mx=(ax+bx)/2, my=(ay+by)/2, mz=(az+bz)/2;
+    put(ax,ay,az,0); put(bx,by,bz,0); put(mx,my,mz,0.5);
+    put(bx,by,bz,0); put(bx,by,bz,1); put(mx,my,mz,0.5);
+    put(bx,by,bz,1); put(ax,ay,az,1); put(mx,my,mz,0.5);
+    put(ax,ay,az,1); put(ax,ay,az,0); put(mx,my,mz,0.5);
   }
   setMeshFromArray(arr); // треугольники лоскута остались на своих индексах
-  return idx;
+  return {idx, fac};
+}
+
+// уборка после выдавливания: вырожденные треугольники и «нулевые пары»
+// (совпадающие треугольники противоположной ориентации — внутренние
+// перегородки от выдавливания туда-обратно) удаляются
+function cleanupMesh(){
+  const pos = mesh.geometry.attributes.position.array;
+  const nT = pos.length/9;
+  const drop = new Uint8Array(nT);
+  const byKeys = new Map();
+  for(let t=0;t<nT;t++){
+    const o=t*9;
+    const k = [keyOf(pos[o],pos[o+1],pos[o+2]),
+               keyOf(pos[o+3],pos[o+4],pos[o+5]),
+               keyOf(pos[o+6],pos[o+7],pos[o+8])];
+    const ux=pos[o+3]-pos[o], uy=pos[o+4]-pos[o+1], uz=pos[o+5]-pos[o+2];
+    const vx=pos[o+6]-pos[o], vy=pos[o+7]-pos[o+1], vz=pos[o+8]-pos[o+2];
+    const ar = Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx);
+    if(ar < 1e-6 || k[0]===k[1] || k[1]===k[2] || k[0]===k[2]){ drop[t]=1; continue; }
+    const sk = [...k].sort().join('#');
+    let a = byKeys.get(sk); if(!a){ a=[]; byKeys.set(sk, a); }
+    a.push({t, k});
+  }
+  const opposite = (a,b)=>{ // b — та же тройка в обратном обходе?
+    const r = [b[2],b[1],b[0]];
+    for(let s=0;s<3;s++)
+      if(r[s]===a[0] && r[(s+1)%3]===a[1] && r[(s+2)%3]===a[2]) return true;
+    return false;
+  };
+  for(const a of byKeys.values()){
+    if(a.length < 2) continue;
+    for(let i=0;i<a.length;i++){
+      if(drop[a[i].t]) continue;
+      for(let j=i+1;j<a.length;j++){
+        if(drop[a[j].t]) continue;
+        if(opposite(a[i].k, a[j].k)){ drop[a[i].t]=1; drop[a[j].t]=1; break; }
+      }
+    }
+  }
+  let removed = 0; for(const d of drop) removed += d;
+  if(!removed) return;
+  const out = new Float32Array(pos.length - removed*9);
+  let o = 0;
+  for(let t=0;t<nT;t++){
+    if(drop[t]) continue;
+    for(let j=0;j<9;j++) out[o++] = pos[t*9+j];
+  }
+  setMeshFromArray(out);
 }
 
 let exLive = null; // живой предпросмотр: {idx, n, applied}
 function openExtrude(){
   if(!ppPatch) return;
   pushUndo(); // снимок ДО дублирования контура: Esc вернёт всё как было
-  const idx = beginPatchExtrude(ppPatch);
-  exLive = {idx, n: ppPatch.normal.clone(), applied: 0};
+  const ex = beginPatchExtrude(ppPatch);
+  exLive = {idx: ex.idx, fac: ex.fac, n: ppPatch.normal.clone(), applied: 0};
   const vr = view.getBoundingClientRect();
   exPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 220) + 'px';
   exPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 90) + 'px';
@@ -1822,9 +1871,10 @@ function applyExtrudeLive(v){
   const d = v - exLive.applied;
   if(d){
     const pos = mesh.geometry.attributes.position.array;
-    for(const i of exLive.idx){
-      pos[i] += exLive.n.x*d; pos[i+1] += exLive.n.y*d; pos[i+2] += exLive.n.z*d;
-    }
+    exLive.idx.forEach((i,k)=>{
+      const f = exLive.fac[k];
+      pos[i] += exLive.n.x*d*f; pos[i+1] += exLive.n.y*d*f; pos[i+2] += exLive.n.z*d*f;
+    });
     mesh.geometry.attributes.position.needsUpdate = true;
     mesh.geometry.computeVertexNormals();
     if(ppHi) ppHi.position.addScaledVector(exLive.n, d); // зелёная подсветка едет с гранью
@@ -1839,7 +1889,7 @@ function commitExtrude(){
   const applied = exLive.applied;
   exLive = null;
   exPopup.hidden = true;
-  if(applied){ hidePatch(); ppPatch = null; extractEdges(); }
+  if(applied){ hidePatch(); ppPatch = null; cleanupMesh(); extractEdges(); }
   else undo(); // нулевая высота: убираем врезанные стенки снимком
 }
 function closeExtrude(){ // Esc: стенки уже врезаны — откат всей сессии окна
@@ -2818,11 +2868,12 @@ canvas.addEventListener('pointerdown', e=>{
       if(hf){
         const patch = facePatchAt(hf.faceIndex);
         const snap = takeSnapshot(); // до дублирования контура
-        const idx = beginPatchExtrude(patch); // соседи и линии не поедут
+        const ex = beginPatchExtrude(patch); // соседи и линии не поедут
         const pos = mesh.geometry.attributes.position.array;
-        const orig = new Float32Array(idx.length*3);
-        idx.forEach((bi,k)=>{ orig[k*3]=pos[bi]; orig[k*3+1]=pos[bi+1]; orig[k*3+2]=pos[bi+2]; });
-        ppDrag = {normal: patch.normal.clone(), base: hf.point.clone(), idx, orig,
+        const orig = new Float32Array(ex.idx.length*3);
+        ex.idx.forEach((bi,k)=>{ orig[k*3]=pos[bi]; orig[k*3+1]=pos[bi+1]; orig[k*3+2]=pos[bi+2]; });
+        ppDrag = {normal: patch.normal.clone(), base: hf.point.clone(),
+                  idx: ex.idx, fac: ex.fac, orig,
                   q0:{cam:q.cam, ox:q.ox, oy:q.oy, w:q.w, h:q.h},
                   snap, snapPushed:false};
         ppPatch = patch; showPatch(patch);
@@ -2894,7 +2945,7 @@ canvas.addEventListener('pointerup', e=>{
     const revert = !ppDrag.snapPushed, snap = ppDrag.snap;
     ppDrag=null; tipHide(); hidePatch(); ppPatch=null;
     if(revert) applySnapshot(snap); // не тянули: убрать стенки нулевой высоты
-    else { normalsFlush(); extractEdges(); }
+    else { normalsFlush(); cleanupMesh(); extractEdges(); }
   }
   if(dragPt){
     normalsFlush();
@@ -2969,9 +3020,10 @@ canvas.addEventListener('pointermove', e=>{
     const pos = mesh.geometry.attributes.position.array;
     const n = ppDrag.normal;
     ppDrag.idx.forEach((bi,k)=>{
-      pos[bi]   = ppDrag.orig[k*3]   + n.x*t;
-      pos[bi+1] = ppDrag.orig[k*3+1] + n.y*t;
-      pos[bi+2] = ppDrag.orig[k*3+2] + n.z*t;
+      const f = ppDrag.fac[k];
+      pos[bi]   = ppDrag.orig[k*3]   + n.x*t*f;
+      pos[bi+1] = ppDrag.orig[k*3+1] + n.y*t*f;
+      pos[bi+2] = ppDrag.orig[k*3+2] + n.z*t*f;
     });
     mesh.geometry.attributes.position.needsUpdate = true;
     normalsThrottled();
