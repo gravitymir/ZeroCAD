@@ -216,7 +216,10 @@
     normal (0.1 mm steps); walls follow. P or Esc exits any tool.
     Hover an edge — it highlights and a point runs along it; click to open the
     popup (offset / radius, scroll wheel over the fields edits live), click the
-    dot to place it and drag. Yellow — vertices: drag them or type exact X/Y/Z.
+    dot to place it and drag. Drag an edge body to move the whole edge
+    (Sketcher-style). Drawn lines are hoverable too: the point runs along
+    them and magnetizes to their midpoint — start a new line there to split
+    a region in half. Yellow — vertices: drag them or type exact X/Y/Z.
     Cyan — edge midpoint. Alt while dragging an edge point bends the whole edge
     as an arc (radius in the tooltip); without Alt it folds.
     Ring of identical vertices (all teeth at once): <b>Alt+grab</b> a vertex
@@ -488,6 +491,7 @@ const CHAIN_COS   = Math.cos(25*Math.PI/180); // поворот >25° => кон�
 const QP = 1000;                              // квантование координат, 0.001 мм
 
 let chains = [];     // {pts:[Vector3], cum:[мм], total, closed}
+let auxSnaps = [];   // центры дуг/окружностей (Snap Center, как во FreeCAD)
 let vertTris = new Map(); // ключ вершины -> [индексы треугольников] (для граней)
 let edgeLines = null;   // все рёбра (тонкие тёмные)
 let hiLine = null;      // подсвеченная цепочка
@@ -495,6 +499,8 @@ let hover = null;       // {chain, s}
 let placing = null;     // {chain, s} — открыта всплывашка
 let anchors = [];       // поставленные точки {pos, marker, bend?}
 let dragPt = null;      // текущее перетаскивание {a?, isSel, start, plane, idx|bendRun, markers}
+let pendingEdge = null; // нажатие на ребро: клик => попап, движение => драг ребра
+let edgeDrag = null;    // перенос целого ребра (как перетаскивание линии в Sketcher)
 let modified = false;
 // нормали при драге пересчитываем не чаще раза в 120 мс (иначе fps проседает)
 let normalsDirty = false, lastNormalsAt = 0;
@@ -628,8 +634,44 @@ function extractEdges(){
     }
   }
   corners = [...cmap.entries()].map(([key,pos])=>({key,pos}));
+  // нарисованные линии — псевдо-рёбра: наведение, бег точки, магнит середины
+  for(const gd of guides){
+    const len = gd.a.distanceTo(gd.b);
+    if(len < 1e-6) continue;
+    chains.push({pts:[gd.a.clone(), gd.b.clone()], cum:[0,len], total:len,
+                 closed:false, isGuide:true});
+  }
   cornerHover = null;
+  // центры дуг и окружностей — снап-цели
+  auxSnaps = [];
+  for(const ch of chains){
+    const a = fitArc(ch);
+    if(a) auxSnaps.push(a.center.clone());
+  }
+  cachedPatch = null; // меш изменился — кэш грани недействителен
   if(typeof vGhost !== 'undefined') vGhost.visible = false;
+}
+
+// кэш плоской грани с площадным центроидом (для магнита «центр грани»)
+let cachedPatch = null;
+function facePatchCached(fi){
+  if(cachedPatch && cachedPatch.set.has(fi)) return cachedPatch;
+  cachedPatch = facePatchAt(fi);
+  const pos = mesh.geometry.attributes.position.array;
+  const c = new THREE.Vector3();
+  let aSum = 0;
+  for(const t of cachedPatch.tris){
+    const o = t*9;
+    const ux=pos[o+3]-pos[o], uy=pos[o+4]-pos[o+1], uz=pos[o+5]-pos[o+2];
+    const vx=pos[o+6]-pos[o], vy=pos[o+7]-pos[o+1], vz=pos[o+8]-pos[o+2];
+    const ar = Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx) / 2;
+    c.x += ar*(pos[o]+pos[o+3]+pos[o+6])/3;
+    c.y += ar*(pos[o+1]+pos[o+4]+pos[o+7])/3;
+    c.z += ar*(pos[o+2]+pos[o+5]+pos[o+8])/3;
+    aSum += ar;
+  }
+  cachedPatch.centroid = c.divideScalar(aSum || 1);
+  return cachedPatch;
 }
 
 function chainPointAt(chain, s){
@@ -713,6 +755,24 @@ function restoreGuides(list){
 function linePickPoint(q){
   const c = pickCorner(q);
   if(c) return {pos:c.pos.clone(), kind:'vertex'};
+  // центры дуг/окружностей и центр плоской грани (Snap Center)
+  {
+    const P = {x:0,y:0,z:0};
+    for(const cs of auxSnaps){
+      projToQuad(cs, q.cam, q.w, q.h, P);
+      if(P.z < 1 && P.z > -1 && Math.hypot(P.x-q.mx, P.y-q.my) < 10)
+        return {pos: cs.clone(), kind:'center'};
+    }
+    const f = raycastFace(q);
+    if(f){
+      const patch = facePatchCached(f.faceIndex);
+      if(patch && patch.centroid){
+        projToQuad(patch.centroid, q.cam, q.w, q.h, P);
+        if(Math.hypot(P.x-q.mx, P.y-q.my) < 12)
+          return {pos: patch.centroid.clone(), kind:'center'};
+      }
+    }
+  }
   const h = pickEdge(q);
   if(h) return {pos:chainPointAt(h.chain, snapMM(h.s)), kind:'on edge'};
   const f = raycastFace(q);
@@ -742,10 +802,54 @@ function commitLinePoint(pos){
   lineLenStr = '';
 }
 
+// ---------- «Окружность» (G,C — круг в Sketcher FreeCAD) ----------
+// центр (с магнитами) -> радиус мышью или цифрами+Enter -> врезка 48 хордами
+let circleMode = false, circleCenter = null, circlePlane = null, circleR = 0, circleRStr = '';
+let circleRing = null;
+function killRing(){ if(circleRing){ scene.remove(circleRing); circleRing.geometry.dispose(); circleRing = null; } }
+function setCircleMode(on){
+  circleMode = on;
+  circleCenter = null; circlePlane = null; circleRStr = '';
+  killRing();
+  if(on){ setLineMode(false); if(ppMode) setPPMode(false); setHover(null); tipHide(); }
+  else { ghost.visible = false; tipHide(); }
+  updateToolTag();
+}
+function circlePoints(center, normal, R, n){
+  n = n || 48;
+  const u = (Math.abs(normal.z) < 0.9
+    ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(normal).normalize();
+  const v = normal.clone().cross(u);
+  const pts = [];
+  for(let i=0;i<n;i++){
+    const a = i/n*Math.PI*2;
+    pts.push(center.clone().addScaledVector(u, Math.cos(a)*R).addScaledVector(v, Math.sin(a)*R));
+  }
+  return pts;
+}
+function commitCircle(){
+  if(!circleCenter || circleR < 0.3) return;
+  pushUndo();
+  const pts = circlePoints(circleCenter, circlePlane, snapMM(circleR));
+  for(let i=0;i<pts.length;i++){
+    const a = pts[i], b = pts[(i+1)%pts.length];
+    addGuide(a, b);
+    splitMeshByChord(a, b, true); // замкнутый контур: рез по всей линии хорды
+  }
+  extractEdges();
+  killRing();
+  circleCenter = null; circleRStr = '';
+  tipHide();
+}
+
 // Врезка отрезка A-B в копланарные треугольники меша: каждый пересечённый
 // треугольник делится по линии хорды на 2-3. После этого вдоль хорды есть
 // настоящие рёбра сетки, и заливка граней режется по ней точно.
-function splitMeshByChord(A, B){
+// wholeLine=true (для замкнутых контуров — окружность): режем по всей линии
+// хорды без правила «середина внутри отрезка», но только треугольники,
+// которые сегмент реально пересекает. Линии хорд выпуклого контура не
+// заходят внутрь него, лишние резы — снаружи и копланарны (невидимы).
+function splitMeshByChord(A, B, wholeLine){
   const posArr = mesh.geometry.attributes.position.array;
   const dir = new THREE.Vector3().subVectors(B, A);
   const chordLen = dir.length();
@@ -775,6 +879,22 @@ function splitMeshByChord(A, B){
     const EPS = 1e-3;
     const s = d.map(x => x > EPS ? 1 : (x < -EPS ? -1 : 0));
     if(!(s.includes(1) && s.includes(-1))) continue;
+    if(wholeLine){
+      // сегмент обязан пересекать треугольник (2D в плоскости грани)
+      const nA=[Math.abs(n.x),Math.abs(n.y),Math.abs(n.z)];
+      const drop = nA[0]>=nA[1]&&nA[0]>=nA[2] ? 0 : (nA[1]>=nA[2] ? 1 : 2);
+      const to2p = p => drop===0 ? [p.y,p.z] : (drop===1 ? [p.x,p.z] : [p.x,p.y]);
+      const t2 = V.map(to2p), a2 = to2p(A), b2 = to2p(B);
+      const orr=(p,q,r)=>(q[0]-p[0])*(r[1]-p[1])-(q[1]-p[1])*(r[0]-p[0]);
+      const inTri = p => {
+        const s1=orr(t2[0],t2[1],p), s2=orr(t2[1],t2[2],p), s3=orr(t2[2],t2[0],p);
+        return (s1>=0&&s2>=0&&s3>=0)||(s1<=0&&s2<=0&&s3<=0);
+      };
+      let ok = inTri(a2) || inTri(b2);
+      if(!ok) for(let e2=0;e2<3;e2++)
+        if(segCross2(a2,b2,t2[e2],t2[(e2+1)%3])){ ok=true; break; }
+      if(!ok) continue;
+    }
     const snapV = P => { for(const v of V) if(P.distanceTo(v) < 0.02) return v.clone(); return P; };
     const isVert = P => { for(let i=0;i<3;i++) if(P.distanceTo(V[i]) < 1e-6) return i; return -1; };
     // середина линии реза должна лежать внутри отрезка хорды — иначе это
@@ -788,7 +908,7 @@ function splitMeshByChord(A, B){
       if(Math.min(Math.abs(d[b0]), Math.abs(d[c0])) < 0.04) continue;
       const P = snapV(new THREE.Vector3().lerpVectors(V[b0], V[c0], d[b0]/(d[b0]-d[c0])));
       if(isVert(P) >= 0) continue; // рез совпал с существующим ребром
-      if(!inChord(tOf(V[a0]), tOf(P))) continue;
+      if(!wholeLine && !inChord(tOf(V[a0]), tOf(P))) continue;
       splitTris.set(ti, [[V[a0].clone(), V[b0].clone(), P], [V[a0].clone(), P.clone(), V[c0].clone()]]);
       edgeCuts.set(ekey(V[b0], V[c0]), P.clone());
     } else {
@@ -800,7 +920,7 @@ function splitMeshByChord(A, B){
       if(Math.abs(d[a0]) < 0.04) continue;
       const Pab = snapV(new THREE.Vector3().lerpVectors(V[a0], V[b0], d[a0]/(d[a0]-d[b0])));
       const Pca = snapV(new THREE.Vector3().lerpVectors(V[c0], V[a0], d[c0]/(d[c0]-d[a0])));
-      if(!inChord(tOf(Pab), tOf(Pca))) continue;
+      if(!wholeLine && !inChord(tOf(Pab), tOf(Pca))) continue;
       const va = isVert(Pab), vb = isVert(Pca);
       if(va >= 0 && vb >= 0) continue; // рез вдоль существующего ребра
       if(va >= 0){ // реальный рез только Pca: линия через вершину va
@@ -991,7 +1111,8 @@ function rayLineParam(ray, P, dir){
 const dragTip = document.getElementById('dragTip');
 const toolTag = document.getElementById('toolTag');
 function updateToolTag(){
-  if(lineMode){
+  if(circleMode){ toolTag.textContent = 'G,C · CIRCLE'; toolTag.hidden = false; }
+  else if(lineMode){
     toolTag.textContent = lineChain ? 'G,M · POLYLINE' : 'G,L · LINE';
     toolTag.hidden = false;
   }
@@ -1010,6 +1131,7 @@ function showChordHint(){
   chordHint.innerHTML =
     row('L', 'Line (single segments)', true) +
     row('M', 'Polyline (chained)', true) +
+    row('C', 'Circle on face', true) +
     row('P', 'Push/Pull mode', true) +
     row('E', 'Extrude face ±mm', !!ppPatch) +
     row('V', 'Vertex X/Y/Z', !!sel) +
@@ -1595,6 +1717,25 @@ window.addEventListener('keydown', e=>{
     }
     return;
   }
+  // ввод радиуса окружности цифрами
+  if(circleMode && circleCenter){
+    if(/^[0-9]$/.test(e.key) || e.key==='.' || e.key===','){
+      circleRStr += (e.key===',' ? '.' : e.key); e.preventDefault(); return;
+    }
+    if(e.key==='Backspace'){ circleRStr = circleRStr.slice(0,-1); e.preventDefault(); return; }
+    if(e.key==='Enter'){
+      const r = parseFloat(circleRStr);
+      if(r > 0.2) circleR = r;
+      commitCircle(); e.preventDefault(); return;
+    }
+  }
+  // G,C — окружность
+  if((e.code==='KeyC' || e.key.toLowerCase()==='c') && chordG
+     && performance.now() - chordG < 4000 && !e.ctrlKey && !e.altKey && !e.metaKey
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    setCircleMode(true); return;
+  }
   // E — точное выдавливание выбранной грани (Extrude, как E в Blender)
   if((e.code==='KeyE' || e.key.toLowerCase()==='e') && !e.ctrlKey && !e.altKey && !e.metaKey
      && ppPatch && !ppMode && !lineMode && !dragPt && !ppDrag
@@ -1621,6 +1762,10 @@ window.addEventListener('keydown', e=>{
     closePopup(); deselect(); tipHide();
     hideChordHint(); chordG = 0; closeExtrude();
     if(!ppMode){ hidePatch(); ppPatch=null; } // снять выбор плоскости
+    if(circleMode){
+      if(circleCenter){ circleCenter=null; circleRStr=''; killRing(); }
+      else setCircleMode(false);
+    }
     if(lineMode){
       if(lineStart){ lineStart=null; lastLinePt=null; lineLenStr=''; lineDirLock=null; killRubber(); }
       else setLineMode(false);
@@ -1707,6 +1852,24 @@ canvas.addEventListener('pointerdown', e=>{
     closePopup();
     return;
   }
+  if(circleMode){ // режим «Окружность»: центр, затем радиус
+    if(e.button===0 && q.inside){
+      if(!circleCenter){
+        const f = raycastFace(q);
+        const pt = linePickPoint(q);
+        if(f && pt){
+          circlePlane = triNormalAt(f.faceIndex);
+          // центр строго в плоскости грани
+          const off = new THREE.Vector3().subVectors(pt.pos, f.point).dot(circlePlane);
+          circleCenter = pt.pos.clone().addScaledVector(circlePlane, -off);
+          circleR = 0;
+        }
+      } else {
+        commitCircle();
+      }
+    }
+    return;
+  }
   if(lineMode){ // режим «Линия»: клики ставят точки хорды
     if(e.button===0 && q.inside){
       const pt = linePickPoint(q);
@@ -1747,7 +1910,14 @@ canvas.addEventListener('pointerdown', e=>{
       beginDrag(a, c, q, e.altKey, e.pointerId, e.ctrlKey, e.shiftKey);
       return;
     }
-    if(hover){ openPopup(e, q); return; } // клик по ребру
+    if(hover){
+      if(hover.chain.isGuide){ openPopup(e, q); return; } // линии: только попап
+      // решение клик/драг откладываем до движения мыши
+      pendingEdge = {chain: hover.chain, s: hover.s, x: e.clientX, y: e.clientY,
+                     q0: {cam:q.cam, ox:q.ox, oy:q.oy, w:q.w, h:q.h}, is3D: q.is3D};
+      try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+      return;
+    }
   }
   tipHide();
   if(q.is3D){ // орбита/сдвиг — только в 3D-окне
@@ -1756,6 +1926,15 @@ canvas.addEventListener('pointerdown', e=>{
   }
 });
 canvas.addEventListener('pointerup', ()=>{
+  if(edgeDrag){
+    edgeDrag = null; pendingEdge = null;
+    tipHide(); normalsFlush(); extractEdges();
+  } else if(pendingEdge){
+    // без движения — это был клик по ребру: открываем попап
+    const pe = pendingEdge; pendingEdge = null;
+    setHover({chain: pe.chain, s: pe.s});
+    openPopup({clientX: pe.x, clientY: pe.y}, null);
+  }
   if(ppDrag){ ppDrag=null; tipHide(); hidePatch(); ppPatch=null; normalsFlush(); extractEdges(); }
   if(dragPt){
     normalsFlush();
@@ -1776,6 +1955,50 @@ canvas.addEventListener('pointermove', e=>{
     const vr = view.getBoundingClientRect();
     toolTag.style.left = (e.clientX - vr.left + 14)+'px';
     toolTag.style.top  = (e.clientY - vr.top - 20)+'px';
+  }
+  if(pendingEdge && !edgeDrag){
+    if(Math.hypot(e.clientX-pendingEdge.x, e.clientY-pendingEdge.y) > 4){
+      // потащили: двигаем всё ребро целиком (как линию в Sketcher)
+      const ch = pendingEdge.chain;
+      const grab0 = chainPointAt(ch, pendingEdge.s);
+      const nrm = pendingEdge.is3D
+        ? new THREE.Vector3().subVectors(persp.position, camTarget).normalize()
+        : pendingEdge.q0.cam.position.clone().normalize();
+      const im = buildIndexMap(ch.pts);
+      edgeDrag = {
+        pts0: ch.pts.map(p=>p.clone()),
+        idx: ch.pts.map(p=>im.get(keyOf(p.x,p.y,p.z))||[]),
+        grab0, q0: pendingEdge.q0,
+        plane: new THREE.Plane().setFromNormalAndCoplanarPoint(nrm, grab0),
+        snap: takeSnapshot(), snapPushed: false
+      };
+      setHover(null);
+    }
+  }
+  if(edgeDrag){
+    const rc = canvas.getBoundingClientRect();
+    const q0 = edgeDrag.q0;
+    const lx=(e.clientX-rc.left)-q0.ox, ly=(e.clientY-rc.top)-q0.oy;
+    raycaster.setFromCamera({x:lx/q0.w*2-1, y:-(ly/q0.h*2-1)}, q0.cam);
+    const hit = new THREE.Vector3();
+    if(!raycaster.ray.intersectPlane(edgeDrag.plane, hit)) return;
+    const d = new THREE.Vector3(snapMM(hit.x-edgeDrag.grab0.x),
+      snapMM(hit.y-edgeDrag.grab0.y), snapMM(hit.z-edgeDrag.grab0.z));
+    if(!edgeDrag.snapPushed){
+      undoStack.push(edgeDrag.snap);
+      if(undoStack.length>30) undoStack.shift();
+      edgeDrag.snapPushed = true;
+    }
+    const posE = mesh.geometry.attributes.position.array;
+    for(let i=0;i<edgeDrag.pts0.length;i++){
+      const np = edgeDrag.pts0[i].clone().add(d);
+      for(const bi of edgeDrag.idx[i]){ posE[bi]=np.x; posE[bi+1]=np.y; posE[bi+2]=np.z; }
+    }
+    mesh.geometry.attributes.position.needsUpdate = true;
+    normalsThrottled();
+    tipAt(e, 'edge Δ X '+d.x.toFixed(1)+' · Y '+d.y.toFixed(1)+' · Z '+d.z.toFixed(1));
+    if(!modified){ modified=true; s_mod.textContent='yes'; }
+    return;
   }
   if(ppDrag){ // выдавливание: смещение вдоль нормали грани
     const rc = canvas.getBoundingClientRect();
@@ -1932,6 +2155,35 @@ canvas.addEventListener('pointermove', e=>{
     return;
   }
   if(placing) return;               // пока открыта всплывашка — наведение заморожено
+  if(circleMode){ // превью окружности за курсором
+    if(!q.inside){ ghost.visible=false; killRing(); tipHide(); return; }
+    if(!circleCenter){
+      const pt = linePickPoint(q);
+      if(pt){
+        ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
+        ghost.position.copy(pt.pos); ghost.visible = true;
+        tipAt(e, 'Circle · center: ' + pt.kind);
+      } else { ghost.visible = false; tipHide(); }
+      return;
+    }
+    const f = raycastFace(q);
+    if(f){
+      const p = f.point.clone();
+      const off = new THREE.Vector3().subVectors(p, circleCenter).dot(circlePlane);
+      p.addScaledVector(circlePlane, -off);
+      circleR = Math.max(0.1, snapMM(p.distanceTo(circleCenter)));
+    }
+    killRing();
+    if(circleR > 0.1){
+      const cps = circlePoints(circleCenter, circlePlane, circleR);
+      const rg = new THREE.BufferGeometry().setFromPoints([...cps, cps[0]]);
+      circleRing = new THREE.Line(rg, new THREE.LineBasicMaterial({color:C_EDGE}));
+      scene.add(circleRing);
+    }
+    tipAt(e, 'Circle R ' + circleR.toFixed(1) + ' mm'
+             + (circleRStr ? ' · typed: ' + circleRStr + ' (Enter)' : ''));
+    return;
+  }
   if(lineMode){ // резинка и привязки в режиме «Линия»
     if(!q.inside){ ghost.visible=false; killRubber(); tipHide(); return; }
     const pt = linePickPoint(q);
