@@ -396,16 +396,18 @@ const gizmoCube = (()=>{
     const cv = document.createElement('canvas'); cv.width = 128; cv.height = 128;
     const ctx = cv.getContext('2d');
     ctx.fillStyle = '#e8eaee'; ctx.fillRect(0,0,128,128);
-    ctx.font = 'bold 30px system-ui, sans-serif';
+    // одна большая буква во всю грань — читается издалека
+    ctx.font = 'bold 96px system-ui, sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = '#2b2e35';
-    ctx.fillText(label, 64, 66);
+    ctx.fillText(label, 64, 70);
     return new THREE.MeshBasicMaterial({map: new THREE.CanvasTexture(cv),
       transparent: true, opacity: 0.55, depthWrite: false});
   };
   const solid = hex => new THREE.MeshBasicMaterial(
     {color: hex, transparent: true, opacity: 0.55, depthWrite: false});
-  const mats = ['RIGHT','LEFT','BACK','FRONT','TOP','BOTTOM'].map(faceMat);
+  // R/L/B/F/T/D — как в нотации кубика Рубика (D = down, без коллизии B)
+  const mats = ['R','L','B','F','T','D'].map(faceMat);
   mats.push(solid(0xd9534f), solid(0x4cbb5c), solid(0x4d7dff), solid(0xcfd4de));
   return new THREE.Mesh(geo, mats);
 })();
