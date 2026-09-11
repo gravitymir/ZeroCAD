@@ -1127,9 +1127,28 @@ function axisInfer(from, to){
   return {p, ax: bestAx};
 }
 
+// отрезок лежит в плоскости какой-нибудь грани? Линия у нас — режущая
+// хорда, «сквозь материю» ей ходить незачем (в отличие от SketchUp)
+function segmentOnSomeFace(A, B){
+  const pos = mesh.geometry.attributes.position.array;
+  for(let t=0;t<pos.length/9;t++){
+    const n = triNormalAt(t);
+    const d0 = n.x*pos[t*9] + n.y*pos[t*9+1] + n.z*pos[t*9+2];
+    if(Math.abs(n.dot(A) - d0) < 0.05 && Math.abs(n.dot(B) - d0) < 0.05) return true;
+  }
+  return false;
+}
 function commitLinePoint(pos){
   if(!lineStart){ lineStart = pos.clone(); }
   else {
+    if(!segmentOnSomeFace(lineStart, pos)){
+      // линия ушла бы сквозь тело — не ставим, объясняем и ждём другой конец
+      tipAt({clientX: lastMX, clientY: lastMY},
+        '<span style="color:#d9534f;font-weight:700">Line must lie on a face</span>');
+      clearTimeout(commitLinePoint._warnT);
+      commitLinePoint._warnT = setTimeout(tipHide, 1600);
+      return;
+    }
     pushUndo();
     addGuide(lineStart, pos);
     splitMeshByChord(lineStart, pos); // врезаем хорду в сетку — как режет линия в SketchUp
