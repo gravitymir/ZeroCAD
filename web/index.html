@@ -101,9 +101,12 @@
   #exPopup .prow,#divPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
   #exPopup input,#divPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
-  /* поле выдавливания: цифры крупнее; целые мм — зелёные, дробные — белые */
-  #exPopup input{width:96px;font-size:17px;font-variant-numeric:tabular-nums}
+  /* окно выдавливания: крупные надпись и цифры — читается без очков;
+     целые мм — зелёные, дробные — белые */
+  #exPopup .prow{font-size:24px}
+  #exPopup input{width:150px;font-size:28px;padding:6px 10px;font-variant-numeric:tabular-nums}
   #exPopup input.whole{color:#2ecc40}
+  #exPopup .exhint{font-size:14px !important}
   #divPopup{cursor:move;padding:14px 16px}
   #divPopup .prow{font-size:19px}
   #divPopup .dvs{padding:6px 16px;font-size:19px;flex:none;
@@ -156,7 +159,7 @@
     </div>
     <div id="exPopup" hidden>
       <div class="prow">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
-      <div class="prow" style="font-size:10px;color:var(--muted)">+ out (pad) · − in (pocket) · Enter — apply</div>
+      <div class="prow exhint" style="color:var(--muted)">+ out (pad) · − in (pocket) · Enter — apply</div>
     </div>
     <div id="vcnav">
       <button data-act="home" title="Home view">⌂</button>
@@ -950,6 +953,7 @@ function setPPMode(on){
 
 // ---------- «Линия» (L — карандаш SketchUp): чертёжные хорды-направляющие ----------
 let lineMode=false, lineStart=null, lastLinePt=null, lineLenStr='', lineDirLock=null, chordG=0;
+let lineHostDir=null; // направление ребра, с которого стартовала линия
 let lineChain=true; // true — полилиния (G,M / L), false — одиночные отрезки (G,L)
 let guides=[], rubber=null;
 const lnb = document.getElementById('lnb');
@@ -963,7 +967,25 @@ function setLineMode(on){
   canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
 }
-function killRubber(){ if(rubber){ scene.remove(rubber); rubber.geometry.dispose(); rubber=null; } }
+function killRubber(){
+  if(rubber){ scene.remove(rubber); rubber.geometry.dispose(); rubber=null; }
+  killAngleMark();
+}
+// чертёжный знак прямого угла в точке стыка с ребром-хозяином
+let angleMark = null;
+function killAngleMark(){
+  if(angleMark){ scene.remove(angleMark); angleMark.geometry.dispose(); angleMark = null; }
+}
+function showAngleMark(at, hostDir, newDir, len){
+  killAngleMark();
+  const s = Math.max(1.2, Math.min(3, len*0.35));
+  const u = hostDir.clone().multiplyScalar(s);
+  const v = newDir.clone().multiplyScalar(s);
+  const g = new THREE.BufferGeometry().setFromPoints([
+    at.clone().add(u), at.clone().add(u).add(v), at.clone().add(v)]);
+  angleMark = new THREE.Line(g, new THREE.LineBasicMaterial({color:0xd9534f}));
+  scene.add(angleMark);
+}
 function addGuide(A, B){
   const g = new THREE.BufferGeometry().setFromPoints([A, B]);
   // сплошная, как обычные рёбра: нарисованная линия — настоящая геометрия
@@ -1038,6 +1060,36 @@ function shiftOrtho(from, to){
 
 // автопривязка к осям как в SketchUp: резинка почти параллельна мировой оси —
 // линию притягиваем к оси и красим её цветом; чуть увёл курсор — отпустило
+// направление цепочки в точке s (для перпендикуляра от точки на ребре)
+function chainDirAt(ch, s){
+  const a = chainPointAt(ch, Math.max(0, s-0.5));
+  const b = chainPointAt(ch, Math.min(ch.total, s+0.5));
+  const d = new THREE.Vector3().subVectors(b, a);
+  return d.lengthSq() > 1e-12 ? d.normalize() : null;
+}
+// как в SketchUp: резинка почти перпендикулярна (или параллельна) ребру,
+// с которого стартовали, — прилипаем; цвет мадженты покажет привязку
+function perpInfer(from, to, faceN){
+  if(!lineHostDir) return null;
+  const d = new THREE.Vector3().subVectors(to, from);
+  const len = d.length();
+  if(len < 1.0) return null;
+  const cands = [];
+  if(faceN){
+    const perp = new THREE.Vector3().crossVectors(lineHostDir, faceN);
+    if(perp.lengthSq() > 1e-6) cands.push({v: perp.normalize(), kind: 'perpendicular'});
+  }
+  cands.push({v: lineHostDir, kind: 'parallel'});
+  for(const c of cands){
+    if(Math.abs(d.dot(c.v)/len) > 0.992){ // порог ~7 градусов
+      const t = snapMM(d.dot(c.v));
+      if(Math.abs(t) < 0.1) return null;
+      return {p: from.clone().addScaledVector(c.v, t), kind: c.kind};
+    }
+  }
+  return null;
+}
+
 function axisInfer(from, to){
   const d = new THREE.Vector3().subVectors(to, from);
   const len = d.length();
@@ -2242,8 +2294,8 @@ function openExtrude(){
   const ex = beginPatchExtrude(ppPatch);
   exLive = {idx: ex.idx, fac: ex.fac, n: ppPatch.normal.clone(), applied: 0};
   const vr = view.getBoundingClientRect();
-  exPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 220) + 'px';
-  exPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 90) + 'px';
+  exPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 360) + 'px';
+  exPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 130) + 'px';
   exPopup.hidden = false;
   paintExVal();
   ex_val.focus(); ex_val.select();
@@ -3314,8 +3366,18 @@ canvas.addEventListener('pointerdown', e=>{
         else if(lineStart && (pt.kind==='on face' || pt.kind==='on edge')){
           const a = axisInfer(lineStart, pos); // клик кладёт точку туда же, куда тянуло
           if(a) pos = a.p;
+          else {
+            const f = raycastFace(q);
+            const pp = perpInfer(lineStart, pos, f ? triNormalAt(f.faceIndex) : null);
+            if(pp) pos = pp.p;
+          }
         }
+        const wasFirst = !lineStart;
         commitLinePoint(pos);
+        // стартовали с ребра/линии — запоминаем его направление для
+        // перпендикуляра/параллели (инференс SketchUp)
+        if(wasFirst)
+          lineHostDir = (pt.chain && pt.s !== undefined) ? chainDirAt(pt.chain, pt.s) : null;
         lineDirLock = null;
         killRubber();
       }
@@ -3688,7 +3750,7 @@ canvas.addEventListener('pointermove', e=>{
     if(!q.inside){ ghost.visible=false; killRubber(); tipHide(); return; }
     const pt = linePickPoint(q);
     if(pt){
-      let pos = pt.pos, note = pt.kind, axSnap = null;
+      let pos = pt.pos, note = pt.kind, axSnap = null, perpSnap = null;
       if(lineStart && e.shiftKey){ // Shift: строго 90° вдоль ближайшей оси (Draft)
         const o = shiftOrtho(lineStart, pos);
         pos = o.p;
@@ -3696,6 +3758,11 @@ canvas.addEventListener('pointermove', e=>{
       } else if(lineStart && (pt.kind==='on face' || pt.kind==='on edge')){
         axSnap = axisInfer(lineStart, pos); // сильные магниты (вершина/центр) важнее оси
         if(axSnap){ pos = axSnap.p; note = 'on axis ' + axSnap.ax.toUpperCase(); }
+        else {
+          const f = raycastFace(q);
+          perpSnap = perpInfer(lineStart, pos, f ? triNormalAt(f.faceIndex) : null);
+          if(perpSnap){ pos = perpSnap.p; note = perpSnap.kind + ' to edge'; }
+        }
       }
       lastLinePt = pos.clone();
       ghost.material.color.setHex(pt.kind==='vertex' ? C_VERT : C_EDGE);
@@ -3705,10 +3772,35 @@ canvas.addEventListener('pointermove', e=>{
       if(lineStart){
         killRubber();
         const rg = new THREE.BufferGeometry().setFromPoints([lineStart, pos]);
-        rubber = new THREE.Line(rg, new THREE.LineBasicMaterial(
-          {color: axSnap ? AXIS_COLORS[axSnap.ax] : 0x9aa2b1}));
+        let rubMat;
+        if(axSnap) rubMat = new THREE.LineBasicMaterial({color:AXIS_COLORS[axSnap.ax]});
+        else if(perpSnap && perpSnap.kind === 'perpendicular')
+          // пойманы 90°: красный пунктир (не спутать со сплошной осью X)
+          rubMat = new THREE.LineDashedMaterial({color:0xd9534f, dashSize:1.4, gapSize:1.0});
+        else if(perpSnap) rubMat = new THREE.LineBasicMaterial({color:0xe040e0}); // параллель
+        else rubMat = new THREE.LineBasicMaterial({color:0x9aa2b1});
+        rubber = new THREE.Line(rg, rubMat);
+        if(rubMat.isLineDashedMaterial) rubber.computeLineDistances();
         scene.add(rubber);
+        if(perpSnap && perpSnap.kind === 'perpendicular' && lineHostDir){
+          const L = lineStart.distanceTo(pos);
+          if(L > 0.3)
+            showAngleMark(lineStart, lineHostDir,
+              new THREE.Vector3().subVectors(pos, lineStart).normalize(), L);
+        }
         msg += ' · L '+lineStart.distanceTo(pos).toFixed(1)+' mm';
+        if(lineHostDir){ // живой угол к ребру-хозяину (как в Sketcher)
+          const d = new THREE.Vector3().subVectors(pos, lineStart);
+          const len = d.length();
+          if(len > 0.1){
+            const deg = Math.round(Math.acos(Math.min(1, Math.abs(d.dot(lineHostDir))/len))*180/Math.PI);
+            msg += perpSnap && perpSnap.kind === 'perpendicular'
+              ? ' · <span style="color:#d9534f;font-weight:700">∠ '+deg+'°</span>'
+              : perpSnap
+                ? ' · <span style="color:#e040e0;font-weight:700">∠ '+deg+'°</span>'
+                : ' · ∠ '+deg+'°';
+          }
+        }
         if(lineLenStr) msg += ' · typed: '+lineLenStr+' mm (Enter)';
       }
       tipAt(e, msg);
