@@ -1067,6 +1067,9 @@ function chainDirAt(ch, s){
   const d = new THREE.Vector3().subVectors(b, a);
   return d.lengthSq() > 1e-12 ? d.normalize() : null;
 }
+// цвета пойманных углов: 90 красный, 60 жёлтый, 45 голубой, 30 салатовый
+const ANGLE_COLORS = {90: 0xd9534f, 60: 0xffd21f, 45: 0x4fc3ff, 30: 0x6aff3d, 0: 0xe040e0};
+const ANGLE_CSS    = {90: '#d9534f', 60: '#ffd21f', 45: '#4fc3ff', 30: '#6aff3d', 0: '#e040e0'};
 // угловой инференс к ребру-хозяину: магниты на 0/30/45/60/90 градусов
 // (и зеркальные), как транспортир SketchUp; 90 — особый (красный пунктир)
 function perpInfer(from, to, faceN){
@@ -3815,11 +3818,10 @@ canvas.addEventListener('pointermove', e=>{
         const rg = new THREE.BufferGeometry().setFromPoints([lineStart, pos]);
         let rubMat;
         if(axSnap) rubMat = new THREE.LineBasicMaterial({color:AXIS_COLORS[axSnap.ax]});
-        else if(perpSnap && perpSnap.kind === 'perpendicular')
-          // пойманы 90°: красный пунктир (не спутать со сплошной осью X)
-          rubMat = new THREE.LineDashedMaterial({color:0xd9534f, dashSize:1.4, gapSize:1.0});
-        else if(perpSnap && perpSnap.kind === 'angle') // 30/45/60 — маджента-пунктир
-          rubMat = new THREE.LineDashedMaterial({color:0xe040e0, dashSize:1.4, gapSize:1.0});
+        else if(perpSnap && perpSnap.kind !== 'parallel')
+          // пойманный угол: пунктир своего цвета (90 кр., 60 ж., 45 гол., 30 сал.)
+          rubMat = new THREE.LineDashedMaterial(
+            {color: ANGLE_COLORS[perpSnap.deg] || 0xe040e0, dashSize:1.4, gapSize:1.0});
         else if(perpSnap) rubMat = new THREE.LineBasicMaterial({color:0xe040e0}); // параллель
         else rubMat = new THREE.LineBasicMaterial({color:0x9aa2b1});
         rubber = new THREE.Line(rg, rubMat);
@@ -3837,11 +3839,10 @@ canvas.addEventListener('pointermove', e=>{
           const len = d.length();
           if(len > 0.1){
             const deg = Math.round(Math.acos(Math.min(1, Math.abs(d.dot(lineHostDir))/len))*180/Math.PI);
-            msg += perpSnap && perpSnap.kind === 'perpendicular'
-              ? ' · <span style="color:#d9534f;font-weight:700">∠ '+deg+'°</span>'
-              : perpSnap
-                ? ' · <span style="color:#e040e0;font-weight:700">∠ '+deg+'°</span>'
-                : ' · ∠ '+deg+'°';
+            msg += perpSnap
+              ? ' · <span style="color:'+(ANGLE_CSS[perpSnap.deg]||'#e040e0')
+                +';font-weight:700">∠ '+deg+'°</span>'
+              : ' · ∠ '+deg+'°';
           }
         }
         if(lineLenStr) msg += '<br>typed: '+lineLenStr+' mm (Enter)';
