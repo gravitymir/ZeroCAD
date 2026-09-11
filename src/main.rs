@@ -41,10 +41,22 @@ fn handle(stream: TcpStream) {
     if reader.read_line(&mut request_line).is_err() {
         return;
     }
-    // дочитываем заголовки до пустой строки, тело у GET не ждём
+    // дочитываем заголовки; у POST запоминаем длину тела
     let mut line = String::new();
+    let mut content_length = 0usize;
     while reader.read_line(&mut line).is_ok() && line.trim() != "" {
+        if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+            content_length = v.trim().parse().unwrap_or(0);
+        }
         line.clear();
+    }
+    // тело (для /api/bool): бинарный формат, читаем ровно content_length байт
+    let mut body = vec![0u8; content_length.min(64 * 1024 * 1024)];
+    if content_length > 0 {
+        use std::io::Read;
+        if reader.read_exact(&mut body).is_err() {
+            return;
+        }
     }
     let mut stream = reader.into_inner();
 
@@ -94,6 +106,35 @@ fn handle(stream: TcpStream) {
             ];
             respond(&mut stream, "200 OK", "model/stl", &extra, &body);
         }
+        // булева операция ядром csgrs: тело A минус (или плюс) тело B.
+        // Формат бинарный: [u32 nA][nA*9 f32][u32 nB][nB*9 f32] -> [u32 n][n*9 f32]
+        "/api/bool" => {
+            let union = query.split('&').any(|kv| kv == "op=union");
+            let started = std::time::Instant::now();
+            match parse_two_meshes(&body) {
+                Some((a, b)) => {
+                    let out = csg::boolean(&a, &b, union);
+                    let mut resp = Vec::with_capacity(4 + out.len() * 36);
+                    resp.extend_from_slice(&(out.len() as u32).to_le_bytes());
+                    for t in &out {
+                        for v in t {
+                            for c in v {
+                                resp.extend_from_slice(&c.to_le_bytes());
+                            }
+                        }
+                    }
+                    let extra = [format!("X-Gen-Us: {}", started.elapsed().as_micros())];
+                    respond(&mut stream, "200 OK", "application/octet-stream", &extra, &resp);
+                }
+                None => respond(
+                    &mut stream,
+                    "400 Bad Request",
+                    "text/plain; charset=utf-8",
+                    &[],
+                    b"bad mesh payload",
+                ),
+            }
+        }
         _ => respond(
             &mut stream,
             "404 Not Found",
@@ -102,6 +143,36 @@ fn handle(stream: TcpStream) {
             b"404",
         ),
     }
+}
+
+/// Разбор тела /api/bool: два меша подряд, каждый — u32-счётчик и треугольники.
+fn parse_two_meshes(body: &[u8]) -> Option<(Vec<geometry::Tri>, Vec<geometry::Tri>)> {
+    fn read_mesh(b: &[u8], off: &mut usize) -> Option<Vec<geometry::Tri>> {
+        if *off + 4 > b.len() {
+            return None;
+        }
+        let n = u32::from_le_bytes(b[*off..*off + 4].try_into().ok()?) as usize;
+        *off += 4;
+        if n > 2_000_000 || *off + n * 36 > b.len() {
+            return None;
+        }
+        let mut tris = Vec::with_capacity(n);
+        for _ in 0..n {
+            let mut t = [[0f32; 3]; 3];
+            for v in &mut t {
+                for c in v.iter_mut() {
+                    *c = f32::from_le_bytes(b[*off..*off + 4].try_into().ok()?);
+                    *off += 4;
+                }
+            }
+            tris.push(t);
+        }
+        Some(tris)
+    }
+    let mut off = 0usize;
+    let a = read_mesh(body, &mut off)?;
+    let b = read_mesh(body, &mut off)?;
+    Some((a, b))
 }
 
 fn params_from_query(query: &str) -> WheelParams {

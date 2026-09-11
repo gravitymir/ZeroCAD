@@ -43,6 +43,32 @@ pub fn build_wheel_csg(p: &WheelParams) -> Vec<Tri> {
     to_tris(&wheel)
 }
 
+/// Булева операция над двумя мешами-супами треугольников (для /api/bool):
+/// вычитание по умолчанию, объединение по флагу. Универсальный путь для
+/// «прорезать насквозь» из браузерного редактора.
+pub fn boolean(a: &[Tri], b: &[Tri], union: bool) -> Vec<Tri> {
+    let ma = mesh_from_tris(a);
+    let mb = mesh_from_tris(b);
+    let out = if union { ma.union(&mb) } else { ma.difference(&mb) };
+    to_tris(&out)
+}
+
+/// Меш csgrs из супа треугольников: BSP-булевым связность не нужна,
+/// каждый треугольник — самостоятельная грань.
+fn mesh_from_tris(tris: &[Tri]) -> Mesh<()> {
+    let mut points: Vec<[f64; 3]> = Vec::with_capacity(tris.len() * 3);
+    let mut faces: Vec<Vec<usize>> = Vec::with_capacity(tris.len());
+    for t in tris {
+        let base = points.len();
+        for v in t {
+            points.push([f64::from(v[0]), f64::from(v[1]), f64::from(v[2])]);
+        }
+        faces.push(vec![base, base + 1, base + 2]);
+    }
+    let face_refs: Vec<&[usize]> = faces.iter().map(|f| f.as_slice()).collect();
+    Mesh::polyhedron(&points, &face_refs, None).expect("валидный суп треугольников")
+}
+
 /// Треугольная призма по 2D-основанию, z от `z0` на высоту `h`.
 fn prism(base: &[(f64, f64); 3], z0: f64, h: f64) -> Mesh<()> {
     let mut t = *base;
