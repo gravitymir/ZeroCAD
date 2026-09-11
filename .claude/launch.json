@@ -5,7 +5,8 @@
       "name": "zerocad",
       "runtimeExecutable": "cargo",
       "runtimeArgs": ["run"],
-      "port": 8777
+      "port": 8787,
+      "autoPort": true
     }
   ]
 }

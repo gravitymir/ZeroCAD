@@ -14,16 +14,22 @@ use geometry::WheelParams;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 
-const ADDR: &str = "127.0.0.1:8777";
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const BUILD: &str = env!("ZEROCAD_BUILD");
 
 fn main() {
-    let listener = TcpListener::bind(ADDR).unwrap_or_else(|e| {
-        eprintln!("не удалось занять {ADDR}: {e}");
+    // порт из переменной окружения PORT (например, для параллельного
+    // дебаг-запуска), по умолчанию 8777
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(8777);
+    let addr = format!("127.0.0.1:{port}");
+    let listener = TcpListener::bind(&addr).unwrap_or_else(|e| {
+        eprintln!("не удалось занять {addr}: {e}");
         std::process::exit(1);
     });
-    println!("ZeroCAD: http://{ADDR}");
+    println!("ZeroCAD {BUILD}: http://{addr}");
     for stream in listener.incoming().flatten() {
         std::thread::spawn(|| handle(stream));
     }
