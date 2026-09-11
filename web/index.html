@@ -680,6 +680,8 @@ function extractEdges(){
   }
   cachedPatch = null; // меш изменился — кэш грани недействителен
   if(typeof vGhost !== 'undefined') vGhost.visible = false;
+  // выбранные рёбра больше не соответствуют сетке
+  if(typeof edgeSel !== 'undefined' && edgeSel.length) clearEdgeSel();
 }
 
 // кэш плоской грани с площадным центроидом (для магнита «центр грани»)
@@ -1382,6 +1384,7 @@ function showFacePalette(){
   chordHint.innerHTML =
     '<div><span class="key">P</span> — Push/Pull (drag)</div>' +
     '<div><span class="key">E</span> — Extrude by value</div>' +
+    '<div><span class="key">Del</span> — Delete face</div>' +
     '<div style="opacity:.55">Esc — deselect</div>';
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 150) + 'px';
@@ -1389,6 +1392,220 @@ function showFacePalette(){
   clearTimeout(showChordHint._t);
   showChordHint._t = setTimeout(hideChordHint, 4000);
 }
+// удаление выбранной грани (ластик/Del в SketchUp): дырка в оболочке — норма,
+// модель перестаёт быть замкнутой, пока дырку не закроют
+function deleteFacePatch(){
+  if(!ppPatch) return;
+  pushUndo();
+  const pos = mesh.geometry.attributes.position.array;
+  const keep = [];
+  for(let t=0;t<pos.length/9;t++){
+    if(ppPatch.set.has(t)) continue;
+    for(let j=0;j<9;j++) keep.push(pos[t*9+j]);
+  }
+  setMeshFromArray(new Float32Array(keep));
+  ppPatch = null; hidePatch(); hideChordHint();
+  extractEdges();
+}
+
+// контуры дырок: граничные рёбра (у которых один треугольник), развёрнутые
+// задом наперёд — тогда залитая по ним грань смотрит наружу
+function boundaryLoops(){
+  const pos = mesh.geometry.attributes.position.array;
+  const seen = new Map();
+  for(let t=0;t<pos.length/9;t++){
+    for(let e=0;e<3;e++){
+      const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+      const a=new THREE.Vector3().fromArray(pos,o1), b=new THREE.Vector3().fromArray(pos,o2);
+      const k1=keyOf(a.x,a.y,a.z), k2=keyOf(b.x,b.y,b.z);
+      const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+      const r = seen.get(ek);
+      if(r) r.n++;
+      else seen.set(ek, {n:1, a, b, ka:k1, kb:k2});
+    }
+  }
+  const nxt = new Map();
+  for(const r of seen.values()) if(r.n===1) nxt.set(r.kb, {from:r.b, kTo:r.ka});
+  const loops = [], used = new Set();
+  for(const k0 of nxt.keys()){
+    if(used.has(k0)) continue;
+    const loop = []; let k = k0;
+    while(true){
+      const e = nxt.get(k);
+      if(!e || used.has(k)) { break; }
+      used.add(k);
+      loop.push(e.from.clone());
+      k = e.kTo;
+      if(k === k0){ if(loop.length>=3) loops.push(loop); break; }
+    }
+  }
+  return loops;
+}
+// триангуляция плоского (почти) контура отрезанием ушей — держит и Г-формы
+function earClip(loop){
+  const n = new THREE.Vector3(); // нормаль по Ньюэллу
+  for(let i=0;i<loop.length;i++){
+    const p=loop[i], q2=loop[(i+1)%loop.length];
+    n.x += (p.y-q2.y)*(p.z+q2.z);
+    n.y += (p.z-q2.z)*(p.x+q2.x);
+    n.z += (p.x-q2.x)*(p.y+q2.y);
+  }
+  if(n.lengthSq() < 1e-12) return [];
+  n.normalize();
+  const u = (Math.abs(n.z)<0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize();
+  const v = n.clone().cross(u);
+  const pts = loop.map(p=>({p, x:p.dot(u), y:p.dot(v)}));
+  const cross = (a,b,c)=>(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
+  const idx = pts.map((_,i)=>i);
+  const tris = [];
+  let guard = idx.length*idx.length + 10;
+  while(idx.length > 3 && guard-- > 0){
+    let cut = false;
+    for(let i=0;i<idx.length;i++){
+      const A=pts[idx[(i+idx.length-1)%idx.length]], B=pts[idx[i]], C=pts[idx[(i+1)%idx.length]];
+      if(cross(A,B,C) <= 1e-9) continue; // не ухо: вогнутый угол
+      let ok = true;
+      for(const j of idx){
+        if(A===pts[j]||B===pts[j]||C===pts[j]) continue;
+        const P=pts[j];
+        if(cross(A,B,P)>=-1e-9 && cross(B,C,P)>=-1e-9 && cross(C,A,P)>=-1e-9){ ok=false; break; }
+      }
+      if(!ok) continue;
+      tris.push([A.p,B.p,C.p]);
+      idx.splice(i,1); cut = true; break;
+    }
+    if(!cut) break;
+  }
+  if(idx.length===3) tris.push([pts[idx[0]].p, pts[idx[1]].p, pts[idx[2]].p]);
+  return tris;
+}
+// F — залить ближайшую к курсору дырку (Fill, как F в Blender)
+function fillHole(){
+  const loops = boundaryLoops();
+  if(!loops.length) return false;
+  let bestL = loops[0];
+  if(loops.length > 1){
+    const q = quadPos({clientX:lastMX, clientY:lastMY});
+    let bd = 1e18;
+    const P = {x:0,y:0,z:0};
+    for(const L of loops){
+      const c = L.reduce((s,p)=>s.add(p), new THREE.Vector3()).multiplyScalar(1/L.length);
+      projToQuad(c, q.cam, q.w, q.h, P);
+      const d = Math.hypot(P.x-q.mx, P.y-q.my);
+      if(d < bd){ bd = d; bestL = L; }
+    }
+  }
+  return fillLoop(bestL);
+}
+
+// ---------- выбор рёбер Ctrl+кликом (как во FreeCAD/SketchUp) ----------
+// замкнулся контур — показываем «стеклянную» грань-предпросмотр и F заливает
+let edgeSel = [], selPreview = null;
+function edgeSelKey(ch){
+  const a = ch.pts[0], b = ch.pts[ch.pts.length-1], m = ch.pts[Math.floor(ch.pts.length/2)];
+  const k1 = keyOf(a.x,a.y,a.z), k2 = keyOf(b.x,b.y,b.z);
+  return (k1<k2 ? k1+'|'+k2 : k2+'|'+k1) + '|' + keyOf(m.x,m.y,m.z);
+}
+function killSelPreview(){
+  if(selPreview){ scene.remove(selPreview); selPreview.geometry.dispose(); selPreview = null; }
+}
+function clearEdgeSel(){
+  for(const s of edgeSel){ scene.remove(s.line); s.line.geometry.dispose(); }
+  edgeSel = [];
+  killSelPreview();
+}
+function toggleEdgeSel(ch){
+  const key = edgeSelKey(ch);
+  const i = edgeSel.findIndex(s=>s.key===key);
+  if(i>=0){
+    scene.remove(edgeSel[i].line); edgeSel[i].line.geometry.dispose();
+    edgeSel.splice(i,1);
+  } else {
+    const g = new THREE.BufferGeometry().setFromPoints(ch.pts);
+    const l = new THREE.Line(g, new THREE.LineBasicMaterial({color:C_SEL}));
+    scene.add(l);
+    edgeSel.push({pts: ch.pts.map(p=>p.clone()), key, line:l});
+  }
+  updateSelPreview();
+}
+// выбранные рёбра сцепляются в один замкнутый цикл? -> точки контура
+function edgeSelLoop(){
+  if(edgeSel.length < 2) return null;
+  const K = p => keyOf(p.x,p.y,p.z);
+  const segs = edgeSel.map(s=>({a:s.pts[0], b:s.pts[s.pts.length-1], pts:s.pts, used:false}));
+  const deg = new Map();
+  for(const s of segs){ deg.set(K(s.a),(deg.get(K(s.a))||0)+1); deg.set(K(s.b),(deg.get(K(s.b))||0)+1); }
+  for(const d of deg.values()) if(d!==2) return null;
+  const loop = [];
+  let cur = segs[0]; cur.used = true;
+  loop.push(...cur.pts.slice(0,-1));
+  const startK = K(cur.a);
+  let endK = K(cur.b), usedCount = 1;
+  while(endK !== startK){
+    const nx = segs.find(s=>!s.used && (K(s.a)===endK || K(s.b)===endK));
+    if(!nx) return null;
+    nx.used = true; usedCount++;
+    const ordered = K(nx.a)===endK ? nx.pts : [...nx.pts].reverse();
+    loop.push(...ordered.slice(0,-1));
+    endK = K(ordered[ordered.length-1]);
+  }
+  return usedCount === segs.length ? loop : null; // куски вне цикла — не контур
+}
+function updateSelPreview(){
+  killSelPreview();
+  hideChordHint();
+  const loop = edgeSelLoop();
+  if(!loop) return;
+  const tris = earClip(loop);
+  if(!tris.length) return;
+  // «стекло»: еле заметная плёнка — место, которое можно залить
+  const arr = new Float32Array(tris.length*9);
+  let o = 0;
+  for(const t of tris) for(const p of t){ arr[o++]=p.x; arr[o++]=p.y; arr[o++]=p.z; }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(arr,3));
+  selPreview = new THREE.Mesh(g, new THREE.MeshBasicMaterial(
+    {color:0xbfe8ff, transparent:true, opacity:0.18, side:THREE.DoubleSide, depthWrite:false}));
+  scene.add(selPreview);
+  if(hintsChk.checked){
+    const vr = view.getBoundingClientRect();
+    chordHint.innerHTML =
+      '<div>Closed contour · <span class="key">F</span> — fill face</div>' +
+      '<div style="opacity:.55">Esc — deselect</div>';
+    chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
+    chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 150) + 'px';
+    chordHint.hidden = false;
+    clearTimeout(showChordHint._t);
+    showChordHint._t = setTimeout(hideChordHint, 4000);
+  }
+}
+// заливка контура: ориентация — рёбра новой грани против существующих
+function fillLoop(loop){
+  const pos = mesh.geometry.attributes.position.array;
+  const dirSet = new Set();
+  for(let t=0;t<pos.length/9;t++) for(let e=0;e<3;e++){
+    const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+    dirSet.add(keyOf(pos[o1],pos[o1+1],pos[o1+2])+'>'+keyOf(pos[o2],pos[o2+1],pos[o2+2]));
+  }
+  let same=0, opp=0;
+  for(let i=0;i<loop.length;i++){
+    const a=loop[i], b=loop[(i+1)%loop.length];
+    const ka=keyOf(a.x,a.y,a.z), kb=keyOf(b.x,b.y,b.z);
+    if(dirSet.has(ka+'>'+kb)) same++;
+    if(dirSet.has(kb+'>'+ka)) opp++;
+  }
+  const tris = earClip(same>opp ? [...loop].reverse() : loop);
+  if(!tris.length) return false;
+  pushUndo();
+  const arr = new Float32Array(pos.length + tris.length*9);
+  arr.set(pos);
+  let o = pos.length;
+  for(const t of tris) for(const p of t){ arr[o++]=p.x; arr[o++]=p.y; arr[o++]=p.z; }
+  setMeshFromArray(arr);
+  extractEdges();
+  return true;
+}
+
 // точное выдавливание выбранной грани: + наружу (pad), − внутрь (pocket)
 const exPopup = document.getElementById('exPopup'), ex_val = document.getElementById('ex_val');
 function openExtrude(){
@@ -2094,6 +2311,19 @@ window.addEventListener('keydown', e=>{
     e.preventDefault(); chordG = 0; hideChordHint();
     setCircleMode(true); return;
   }
+  // F — залить выбранный контур, а без выбора — дырку (Fill, как F в Blender)
+  if((e.code==='KeyF' || e.key.toLowerCase()==='f') && !e.ctrlKey && !e.altKey && !e.metaKey
+     && !dragPt && !ppDrag && !lineMode && !pointMode && !circleMode && !ppMode
+     && document.activeElement.tagName!=='INPUT'){
+    const selLoop = edgeSelLoop();
+    if(selLoop && fillLoop(selLoop)){ clearEdgeSel(); hideChordHint(); e.preventDefault(); return; }
+    if(fillHole()){ e.preventDefault(); return; }
+  }
+  // Del — удалить выбранную грань (как ластик по грани в SketchUp)
+  if((e.key==='Delete' || e.key==='Backspace') && ppPatch && !ppMode && !dragPt && !ppDrag
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); deleteFacePatch(); return;
+  }
   // E — точное выдавливание выбранной грани (Extrude, как E в Blender)
   if((e.code==='KeyE' || e.key.toLowerCase()==='e') && !e.ctrlKey && !e.altKey && !e.metaKey
      && ppPatch && !ppMode && !lineMode && !dragPt && !ppDrag
@@ -2118,7 +2348,7 @@ window.addEventListener('keydown', e=>{
     return;
   }
   if(e.key==='Escape'){
-    closePopup(); deselect(); tipHide();
+    closePopup(); deselect(); tipHide(); clearEdgeSel();
     hideChordHint(); chordG = 0; closeExtrude(); cancelDivide();
     if(!ppMode){ hidePatch(); ppPatch=null; } // снять выбор плоскости
     if(pointMode) setPointMode(false);
@@ -2306,6 +2536,10 @@ canvas.addEventListener('pointerdown', e=>{
     const c = a ? null : pickCorner(q);
     if(a || c){ // тащим точку или вершину: плоскость параллельна экрану окна
       beginDrag(a, c, q, e.altKey, e.pointerId, e.ctrlKey, e.shiftKey);
+      return;
+    }
+    if(e.ctrlKey && hover){ // Ctrl+клик: копим выбор рёбер (FreeCAD/SketchUp)
+      toggleEdgeSel(hover.chain);
       return;
     }
     if(hover){
