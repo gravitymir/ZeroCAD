@@ -93,6 +93,13 @@
     font-size:22px;line-height:1.6;color:var(--muted);pointer-events:none}
   #chordHint[hidden]{display:none}
   #chordHint .key{color:var(--accent2);font-weight:700}
+  /* окно точного выдавливания выбранной грани (E) */
+  #exPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
+    border-radius:10px;padding:10px 12px;font-size:12px}
+  #exPopup[hidden]{display:none}
+  #exPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
+  #exPopup input{width:80px;background:var(--panel2);color:var(--text);
+    border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
   /* кнопки вокруг ViewCube: стрелки поворота и «домой» */
   #vcnav button{position:absolute;z-index:4;width:20px;height:20px;padding:0;
     background:rgba(38,42,51,.75);color:var(--muted);border:1px solid var(--line);
@@ -126,6 +133,10 @@
     <div id="dragTip" hidden></div>
     <div id="toolTag" hidden></div>
     <div id="chordHint" hidden></div>
+    <div id="exPopup" hidden>
+      <div class="prow">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
+      <div class="prow" style="font-size:10px;color:var(--muted)">+ out (pad) · − in (pocket) · Enter — apply</div>
+    </div>
     <div id="vcnav">
       <button data-act="home" title="Home view">⌂</button>
       <button data-act="left" title="Rotate left">◀</button>
@@ -1004,6 +1015,51 @@ function showChordHint(){
   showChordHint._t = setTimeout(()=>{ hideChordHint(); chordG = 0; }, 3000);
 }
 function hideChordHint(){ chordHint.hidden = true; clearTimeout(showChordHint._t); }
+// палитра операций для выбранной грани
+function showFacePalette(){
+  if(!hintsChk.checked) return;
+  const vr = view.getBoundingClientRect();
+  chordHint.innerHTML =
+    '<div><span class="key">P</span> — Push/Pull (drag)</div>' +
+    '<div><span class="key">E</span> — Extrude by value</div>' +
+    '<div style="opacity:.55">Esc — deselect</div>';
+  chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
+  chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 150) + 'px';
+  chordHint.hidden = false;
+  clearTimeout(showChordHint._t);
+  showChordHint._t = setTimeout(hideChordHint, 4000);
+}
+// точное выдавливание выбранной грани: + наружу (pad), − внутрь (pocket)
+const exPopup = document.getElementById('exPopup'), ex_val = document.getElementById('ex_val');
+function openExtrude(){
+  if(!ppPatch) return;
+  const vr = view.getBoundingClientRect();
+  exPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 220) + 'px';
+  exPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 90) + 'px';
+  exPopup.hidden = false;
+  ex_val.focus(); ex_val.select();
+}
+function closeExtrude(){ exPopup.hidden = true; }
+function extrudeSelected(dist){
+  if(!ppPatch || !dist) return;
+  pushUndo();
+  const pos = mesh.geometry.attributes.position.array;
+  const n = ppPatch.normal;
+  for(let i=0;i<pos.length;i+=3){
+    if(!ppPatch.keys.has(keyOf(pos[i],pos[i+1],pos[i+2]))) continue;
+    pos[i] += n.x*dist; pos[i+1] += n.y*dist; pos[i+2] += n.z*dist;
+  }
+  mesh.geometry.attributes.position.needsUpdate = true;
+  mesh.geometry.computeVertexNormals();
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  hidePatch(); ppPatch = null;
+  extractEdges();
+}
+ex_val.addEventListener('keydown', e=>{
+  if(e.key === 'Enter'){ e.preventDefault(); extrudeSelected(snapMM(+ex_val.value||0)); closeExtrude(); }
+  if(e.key === 'Escape'){ closeExtrude(); }
+  e.stopPropagation();
+});
 const vpanel = document.getElementById('vpanel'),
       vx=document.getElementById('vx'), vy=document.getElementById('vy'), vz=document.getElementById('vz');
 
@@ -1523,6 +1579,12 @@ window.addEventListener('keydown', e=>{
     }
     return;
   }
+  // E — точное выдавливание выбранной грани (Extrude, как E в Blender)
+  if((e.code==='KeyE' || e.key.toLowerCase()==='e') && !e.ctrlKey && !e.altKey && !e.metaKey
+     && ppPatch && !ppMode && !lineMode && !dragPt && !ppDrag
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); hideChordHint(); openExtrude(); return;
+  }
   if((e.code==='KeyM' || e.key.toLowerCase()==='m') && !e.ctrlKey && !e.altKey && !e.metaKey
      && chordG && performance.now() - chordG < 3000
      && document.activeElement.tagName!=='INPUT'){
@@ -1541,7 +1603,7 @@ window.addEventListener('keydown', e=>{
   }
   if(e.key==='Escape'){
     closePopup(); deselect(); tipHide();
-    hideChordHint(); chordG = 0;
+    hideChordHint(); chordG = 0; closeExtrude();
     if(!ppMode){ hidePatch(); ppPatch=null; } // снять выбор плоскости
     if(lineMode){
       if(lineStart){ lineStart=null; lastLinePt=null; lineLenStr=''; lineDirLock=null; killRubber(); }
@@ -1941,7 +2003,7 @@ canvas.addEventListener('dblclick', e=>{
   if(hf){
     ppPatch = facePatchAt(hf.faceIndex);
     showPatch(ppPatch, C_SEL); // выбранная грань — зелёная
-    tipAt(e, 'Face selected · '+ppPatch.tris.length+' tris · P to push/pull · Esc');
+    showFacePalette();         // список доступных операций (P / E / Esc)
   }
 });
 canvas.addEventListener('contextmenu', e=>e.preventDefault());
