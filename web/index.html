@@ -1505,7 +1505,7 @@ function fillHole(){
 
 // ---------- выбор рёбер Ctrl+кликом (как во FreeCAD/SketchUp) ----------
 // замкнулся контур — показываем «стеклянную» грань-предпросмотр и F заливает
-let edgeSel = [], selPreview = null;
+let edgeSel = [], selPreview = null, selLabel = null;
 function edgeSelKey(ch){
   const a = ch.pts[0], b = ch.pts[ch.pts.length-1], m = ch.pts[Math.floor(ch.pts.length/2)];
   const k1 = keyOf(a.x,a.y,a.z), k2 = keyOf(b.x,b.y,b.z);
@@ -1513,6 +1513,13 @@ function edgeSelKey(ch){
 }
 function killSelPreview(){
   if(selPreview){ scene.remove(selPreview); selPreview.geometry.dispose(); selPreview = null; }
+  if(selLabel){
+    scene.remove(selLabel);
+    selLabel.geometry.dispose();
+    selLabel.material.map.dispose();
+    selLabel.material.dispose();
+    selLabel = null;
+  }
 }
 function clearEdgeSel(){
   for(const s of edgeSel){ scene.remove(s.line); s.line.geometry.dispose(); }
@@ -1572,6 +1579,48 @@ function updateSelPreview(){
   selPreview = new THREE.Mesh(g, new THREE.MeshBasicMaterial(
     {color:0xbfe8ff, transparent:true, opacity:0.18, side:THREE.DoubleSide, depthWrite:false}));
   scene.add(selPreview);
+  if(hintsChk.checked){
+    // прямо на «стекле» — клавиша-кейкап F и подпись Fill face (вдвое мельче)
+    const cnv = document.createElement('canvas'); cnv.width = cnv.height = 256;
+    const cx = cnv.getContext('2d');
+    cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    cx.lineWidth = 7; cx.strokeStyle = '#eaf4ff'; cx.fillStyle = '#eaf4ff';
+    cx.shadowColor = 'rgba(10,14,20,0.9)'; cx.shadowBlur = 8;
+    const r = 14, x0 = 78, y0 = 40, w = 100; // рамка клавиши
+    cx.beginPath();
+    cx.moveTo(x0+r, y0); cx.arcTo(x0+w, y0, x0+w, y0+w, r);
+    cx.arcTo(x0+w, y0+w, x0, y0+w, r); cx.arcTo(x0, y0+w, x0, y0, r);
+    cx.arcTo(x0, y0, x0+w, y0, r); cx.closePath(); cx.stroke();
+    cx.font = '700 64px system-ui,sans-serif';
+    cx.fillText('F', 128, y0 + w/2 + 3);
+    cx.font = '700 34px system-ui,sans-serif';
+    cx.fillText('Fill face', 128, 202);
+    const tex = new THREE.CanvasTexture(cnv);
+    // базис грани: подпись лежит в её плоскости, «верх» текста — к +Z мира
+    const c = loop.reduce((s,p)=>s.add(p), new THREE.Vector3()).multiplyScalar(1/loop.length);
+    const nn = new THREE.Vector3();
+    for(let i=0;i<loop.length;i++){
+      const p=loop[i], q2=loop[(i+1)%loop.length];
+      nn.x += (p.y-q2.y)*(p.z+q2.z); nn.y += (p.z-q2.z)*(p.x+q2.x); nn.z += (p.x-q2.x)*(p.y+q2.y);
+    }
+    nn.normalize();
+    if(nn.dot(new THREE.Vector3().subVectors(persp.position, c)) < 0) nn.negate();
+    const helper = Math.abs(nn.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(0,1,0);
+    const vv = helper.clone().addScaledVector(nn, -helper.dot(nn)).normalize();
+    const uu = new THREE.Vector3().crossVectors(vv, nn);
+    // размер — от габаритов контура, чтобы влезало и на маленькую грань
+    let mnU=1e9, mxU=-1e9, mnV=1e9, mxV=-1e9;
+    for(const p of loop){
+      const a=p.dot(uu), b=p.dot(vv);
+      if(a<mnU)mnU=a; if(a>mxU)mxU=a; if(b<mnV)mnV=b; if(b>mxV)mxV=b;
+    }
+    const size = Math.max(4, Math.min(mxU-mnU, mxV-mnV) * 0.6);
+    selLabel = new THREE.Mesh(new THREE.PlaneGeometry(size, size),
+      new THREE.MeshBasicMaterial({map:tex, transparent:true, depthWrite:false}));
+    selLabel.setRotationFromMatrix(new THREE.Matrix4().makeBasis(uu, vv, nn));
+    selLabel.position.copy(c).addScaledVector(nn, 0.15);
+    scene.add(selLabel);
+  }
   if(hintsChk.checked){
     const vr = view.getBoundingClientRect();
     chordHint.innerHTML =
