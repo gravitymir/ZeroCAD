@@ -2691,7 +2691,10 @@ canvas.addEventListener('pointerdown', e=>{
       return;
     }
     if(hover){
-      if(hover.chain.isGuide){ openPopup(e, q); return; } // линии: только попап
+      if(hover.chain.isGuide){ // клик по линии — выбор, как у рёбер
+        clearEdgeSel(); toggleEdgeSel(hover.chain);
+        return;
+      }
       // решение клик/драг откладываем до движения мыши
       pendingEdge = {chain: hover.chain, s: hover.s, x: e.clientX, y: e.clientY,
                      q0: {cam:q.cam, ox:q.ox, oy:q.oy, w:q.w, h:q.h}, is3D: q.is3D};
@@ -2701,19 +2704,35 @@ canvas.addEventListener('pointerdown', e=>{
   }
   tipHide();
   if(q.is3D){ // орбита/сдвиг — только в 3D-окне
-    drag={x:e.clientX,y:e.clientY,b:e.button};
+    // ЛКМ без движения — это клик: на грани выберет её, в пустоте снимет выбор
+    drag={x:e.clientX, y:e.clientY, b:e.button,
+          click: e.button===0 ? {x:e.clientX, y:e.clientY} : null};
     canvas.setPointerCapture(e.pointerId);
   }
 });
-canvas.addEventListener('pointerup', ()=>{
+canvas.addEventListener('pointerup', e=>{
   if(edgeDrag){
     edgeDrag = null; pendingEdge = null;
     tipHide(); normalsFlush(); extractEdges();
   } else if(pendingEdge){
-    // без движения — это был клик по ребру: открываем попап
+    // без движения — это клик по ребру: зелёный выбор (как во FreeCAD)
     const pe = pendingEdge; pendingEdge = null;
-    setHover({chain: pe.chain, s: pe.s});
-    openPopup({clientX: pe.x, clientY: pe.y}, null);
+    clearEdgeSel();
+    toggleEdgeSel(pe.chain);
+  }
+  if(drag && drag.click && !pointMode && !lineMode && !circleMode && !ppMode && !divCtx
+     && Math.hypot(e.clientX-drag.click.x, e.clientY-drag.click.y) < 3){
+    // клик ЛКМ без движения: по грани — выбрать её, в пустоту — снять весь выбор
+    const q = quadPos(e);
+    const f = q.inside ? raycastFace(q) : null;
+    if(f){
+      ppPatch = facePatchAt(f.faceIndex);
+      showPatch(ppPatch, C_SEL);
+      showFacePalette();
+    } else {
+      deselect(); clearEdgeSel(); hideChordHint();
+      hidePatch(); ppPatch = null;
+    }
   }
   if(ppDrag){ ppDrag=null; tipHide(); hidePatch(); ppPatch=null; normalsFlush(); extractEdges(); }
   if(dragPt){
@@ -3030,6 +3049,7 @@ canvas.addEventListener('pointermove', e=>{
   const anh = q.inside ? anchorAt(q) : null;
   if(anh){
     setHover(null); cornerHover = null;
+    if(!ppPatch && !ppMode) hidePatch();
     vGhost.position.copy(anh.pos); vGhost.visible = true;
     tipAt(e, 'Point');
     return;
@@ -3037,6 +3057,7 @@ canvas.addEventListener('pointermove', e=>{
   const c = q.inside ? pickCorner(q) : null;
   if(c){
     setHover(null);
+    if(!ppPatch && !ppMode) hidePatch();
     cornerHover = c;
     vGhost.position.copy(c.pos); vGhost.visible = true;
     tipAt(e, 'Vertex');
@@ -3045,20 +3066,27 @@ canvas.addEventListener('pointermove', e=>{
   cornerHover = null; vGhost.visible = false;
   const h = q.inside ? pickEdge(q) : null;
   if(h){
-    const midP = chainPointAt(h.chain, h.chain.total/2);
-    const scr = projToQuad(midP, q.cam, q.w, q.h, {x:0,y:0,z:0});
-    let isMid = false;
-    if(!h.chain.closed && Math.hypot(scr.x-q.mx, scr.y-q.my) < 8){
-      h.s = h.chain.total/2; isMid = true;
-    }
-    setHover(h, isMid);
+    // preselect как во FreeCAD: ребро жёлтое, точку не предлагаем
+    setHover(h);
+    ghost.visible = false;
+    if(!ppPatch && !ppMode) hidePatch();
     const arc = fitArc(h.chain);
-    tipAt(e, (isMid ? 'Midpoint' : 'On edge · '+h.s.toFixed(1)+' mm')
+    tipAt(e, (h.chain.isGuide ? 'Line · ' : 'Edge · ') + h.chain.total.toFixed(1)+' mm'
              + (arc ? '<br>Arc R '+arc.R.toFixed(1)+' mm' : ''));
-  } else {
-    setHover(null);
-    tipHide();
+    return;
   }
+  setHover(null);
+  // наведение на грань — жёлтая заливка, пока никакая грань не выбрана
+  if(q.inside && !ppPatch && !ppMode){
+    const f = raycastFace(q);
+    if(f){
+      showPatch(facePatchCached(f.faceIndex), C_EDGE);
+      tipAt(e, 'Face');
+      return;
+    }
+    hidePatch();
+  }
+  tipHide();
 });
 // двойной клик: по вершине — кольцо одинаковых вершин (loop как в Max/Maya),
 // по грани — выбрать плоскую область (границы: рёбра модели + линии)
