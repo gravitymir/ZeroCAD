@@ -1067,27 +1067,43 @@ function chainDirAt(ch, s){
   const d = new THREE.Vector3().subVectors(b, a);
   return d.lengthSq() > 1e-12 ? d.normalize() : null;
 }
-// как в SketchUp: резинка почти перпендикулярна (или параллельна) ребру,
-// с которого стартовали, — прилипаем; цвет мадженты покажет привязку
+// угловой инференс к ребру-хозяину: магниты на 0/30/45/60/90 градусов
+// (и зеркальные), как транспортир SketchUp; 90 — особый (красный пунктир)
 function perpInfer(from, to, faceN){
   if(!lineHostDir) return null;
   const d = new THREE.Vector3().subVectors(to, from);
   const len = d.length();
   if(len < 1.0) return null;
-  const cands = [];
-  if(faceN){
-    const perp = new THREE.Vector3().crossVectors(lineHostDir, faceN);
-    if(perp.lengthSq() > 1e-6) cands.push({v: perp.normalize(), kind: 'perpendicular'});
-  }
-  cands.push({v: lineHostDir, kind: 'parallel'});
-  for(const c of cands){
-    if(Math.abs(d.dot(c.v)/len) > 0.992){ // порог ~7 градусов
-      const t = snapMM(d.dot(c.v));
+  if(!faceN){ // без плоскости грани ловим только параллель
+    if(Math.abs(d.dot(lineHostDir)/len) > 0.996){
+      const t = snapMM(d.dot(lineHostDir));
       if(Math.abs(t) < 0.1) return null;
-      return {p: from.clone().addScaledVector(c.v, t), kind: c.kind};
+      return {p: from.clone().addScaledVector(lineHostDir, t), kind:'parallel', deg:0};
     }
+    return null;
   }
-  return null;
+  const n = faceN;
+  const dp = d.clone().addScaledVector(n, -d.dot(n)); // проекция в плоскость
+  if(dp.lengthSq() < 1e-9) return null;
+  const host = lineHostDir.clone().addScaledVector(n, -lineHostDir.dot(n));
+  if(host.lengthSq() < 1e-9) return null;
+  host.normalize();
+  const phi = Math.atan2(
+    new THREE.Vector3().crossVectors(host, dp).dot(n), host.dot(dp)) * 180/Math.PI;
+  let best = null;
+  for(const a of [-180,-150,-135,-120,-90,-60,-45,-30,0,30,45,60,90,120,135,150,180]){
+    const diff = Math.abs(phi - a);
+    if(diff < 5 && (!best || diff < best.diff)) best = {a, diff};
+  }
+  if(!best) return null;
+  const rad = best.a * Math.PI/180;
+  const dir = host.clone().multiplyScalar(Math.cos(rad))
+    .add(new THREE.Vector3().crossVectors(n, host).multiplyScalar(Math.sin(rad)));
+  const t = snapMM(dp.length());
+  if(t < 0.1) return null;
+  const deg = Math.min(Math.abs(best.a), 180 - Math.abs(best.a));
+  const kind = deg === 90 ? 'perpendicular' : (deg === 0 ? 'parallel' : 'angle');
+  return {p: from.clone().addScaledVector(dir, t), kind, deg};
 }
 
 function axisInfer(from, to){
@@ -3761,7 +3777,11 @@ canvas.addEventListener('pointermove', e=>{
         else {
           const f = raycastFace(q);
           perpSnap = perpInfer(lineStart, pos, f ? triNormalAt(f.faceIndex) : null);
-          if(perpSnap){ pos = perpSnap.p; note = perpSnap.kind + ' to edge'; }
+          if(perpSnap){
+            pos = perpSnap.p;
+            note = perpSnap.kind === 'angle'
+              ? perpSnap.deg + '° to edge' : perpSnap.kind + ' to edge';
+          }
         }
       }
       lastLinePt = pos.clone();
@@ -3777,6 +3797,8 @@ canvas.addEventListener('pointermove', e=>{
         else if(perpSnap && perpSnap.kind === 'perpendicular')
           // пойманы 90°: красный пунктир (не спутать со сплошной осью X)
           rubMat = new THREE.LineDashedMaterial({color:0xd9534f, dashSize:1.4, gapSize:1.0});
+        else if(perpSnap && perpSnap.kind === 'angle') // 30/45/60 — маджента-пунктир
+          rubMat = new THREE.LineDashedMaterial({color:0xe040e0, dashSize:1.4, gapSize:1.0});
         else if(perpSnap) rubMat = new THREE.LineBasicMaterial({color:0xe040e0}); // параллель
         else rubMat = new THREE.LineBasicMaterial({color:0x9aa2b1});
         rubber = new THREE.Line(rg, rubMat);
@@ -3788,7 +3810,7 @@ canvas.addEventListener('pointermove', e=>{
             showAngleMark(lineStart, lineHostDir,
               new THREE.Vector3().subVectors(pos, lineStart).normalize(), L);
         }
-        msg += ' · L '+lineStart.distanceTo(pos).toFixed(1)+' mm';
+        msg += '<br>L '+lineStart.distanceTo(pos).toFixed(1)+' mm';
         if(lineHostDir){ // живой угол к ребру-хозяину (как в Sketcher)
           const d = new THREE.Vector3().subVectors(pos, lineStart);
           const len = d.length();
@@ -3801,7 +3823,7 @@ canvas.addEventListener('pointermove', e=>{
                 : ' · ∠ '+deg+'°';
           }
         }
-        if(lineLenStr) msg += ' · typed: '+lineLenStr+' mm (Enter)';
+        if(lineLenStr) msg += '<br>typed: '+lineLenStr+' mm (Enter)';
       }
       tipAt(e, msg);
     } else { ghost.visible=false; killRubber(); tipHide(); }
