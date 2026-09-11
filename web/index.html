@@ -2374,6 +2374,12 @@ ex_val.addEventListener('keydown', e=>{
 const vpanel = document.getElementById('vpanel'),
       vx=document.getElementById('vx'), vy=document.getElementById('vy'), vz=document.getElementById('vz');
 
+// «в центре» — салатовым: пойманную середину/центр видно с одного взгляда
+function kindLabel(kind){
+  return (kind === 'midpoint' || kind === 'center')
+    ? '<span style="color:#6aff3d;font-weight:700">' + kind + '</span>'
+    : kind;
+}
 function tipAt(e, html){
   const vr = view.getBoundingClientRect();
   dragTip.style.left = (e.clientX-vr.left+16)+'px';
@@ -3738,7 +3744,7 @@ canvas.addEventListener('pointermove', e=>{
       ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
       ghost.position.copy(pt.pos); ghost.visible = true;
       showHintFor(pt);
-      let msg = 'Point · ' + pt.kind;
+      let msg = 'Point · ' + kindLabel(pt.kind);
       if(pt.chain && pt.s !== undefined){ // расстояния до концов ребра (AutoCAD)
         msg += '<br>◀ ' + pt.s.toFixed(1) + ' mm · '
              + (pt.chain.total - pt.s).toFixed(1) + ' mm ▶';
@@ -3755,7 +3761,7 @@ canvas.addEventListener('pointermove', e=>{
         ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
         ghost.position.copy(pt.pos); ghost.visible = true;
         showHintFor(pt);
-        tipAt(e, 'Circle · center: ' + pt.kind);
+        tipAt(e, 'Circle · center: ' + kindLabel(pt.kind));
       } else { ghost.visible = false; tipHide(); }
       return;
     }
@@ -3781,7 +3787,7 @@ canvas.addEventListener('pointermove', e=>{
     if(!q.inside){ ghost.visible=false; killRubber(); tipHide(); return; }
     const pt = linePickPoint(q);
     if(pt){
-      let pos = pt.pos, note = pt.kind, axSnap = null, perpSnap = null;
+      let pos = pt.pos, note = kindLabel(pt.kind), axSnap = null, perpSnap = null;
       if(lineStart && e.shiftKey){ // Shift: строго 90° вдоль ближайшей оси (Draft)
         const o = shiftOrtho(lineStart, pos);
         pos = o.p;
