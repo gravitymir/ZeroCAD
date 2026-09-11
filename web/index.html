@@ -859,13 +859,29 @@ function showHintFor(pt){
 
 // ---------- «Тяни-толкай» (клавиша P, как Push/Pull в SketchUp) ----------
 let ppMode=false, ppPatch=null, ppHi=null, ppDrag=null;
+// курсор «поворот камеры»: кружок-стрелка, пока в инструменте зажат Ctrl
+// (Ctrl+ЛКМ — временная орбита); отпустил Ctrl — снова крестик рисования
+const ORBIT_CURSOR = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">' +
+  '<path d="M11 3.5a7.5 7.5 0 1 1-6.4 3.6" fill="none" stroke="#10131a" stroke-width="4" stroke-linecap="round"/>' +
+  '<path d="M11 3.5a7.5 7.5 0 1 1-6.4 3.6" fill="none" stroke="#f2f5fa" stroke-width="2" stroke-linecap="round"/>' +
+  '<path d="M6.2 2.2l-1.9 5.6 5.8-1.2z" fill="#f2f5fa" stroke="#10131a" stroke-width="1"/>' +
+  '</svg>') + '") 11 11, grab';
+function updateOrbitCursor(on){
+  if(!(pointMode || lineMode || circleMode || ppMode)) return;
+  canvas.style.cursor = on ? ORBIT_CURSOR : 'crosshair';
+}
+window.addEventListener('keydown', e=>{ if(e.key === 'Control') updateOrbitCursor(true); });
+window.addEventListener('keyup',   e=>{ if(e.key === 'Control') updateOrbitCursor(false); });
+window.addEventListener('blur', ()=>updateOrbitCursor(false)); // Alt+Tab с зажатым Ctrl
+
 const ppb = document.getElementById('ppb');
 function setPPMode(on){
   ppMode = on;
   ppb.hidden = !on;
-  canvas.style.cursor = on ? 'crosshair' : '';
   ppPatch = null; hidePatch();
   if(on){ setHover(null); tipHide(); if(lineMode) setLineMode(false); }
+  canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
 }
 
@@ -877,11 +893,11 @@ const lnb = document.getElementById('lnb');
 function setLineMode(on){
   lineMode = on;
   lnb.hidden = !on;
-  canvas.style.cursor = on ? 'crosshair' : '';
   lineStart = null; lastLinePt = null; lineLenStr = ''; lineDirLock = null;
   killRubber();
   if(on){ setHover(null); tipHide(); if(ppMode) setPPMode(false); }
   else { ghost.visible = false; vGhost.visible = false; tipHide(); }
+  canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
 }
 function killRubber(){ if(rubber){ scene.remove(rubber); rubber.geometry.dispose(); rubber=null; } }
@@ -994,6 +1010,7 @@ function setPointMode(on){
   if(on){ setLineMode(false); if(typeof circleMode !== 'undefined' && circleMode) setCircleMode(false);
           if(ppMode) setPPMode(false); setHover(null); tipHide(); }
   else { ghost.visible = false; tipHide(); }
+  canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
 }
 
@@ -1008,6 +1025,7 @@ function setCircleMode(on){
   killRing();
   if(on){ setLineMode(false); if(ppMode) setPPMode(false); setHover(null); tipHide(); }
   else { ghost.visible = false; tipHide(); }
+  canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
 }
 function circlePoints(center, normal, R, n){
