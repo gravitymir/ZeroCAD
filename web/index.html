@@ -345,6 +345,11 @@ let mesh = null;
 // белая модель с серыми тенями — как дефолтный стиль SketchUp
 const mat = new THREE.MeshStandardMaterial({color:0xf2f2ee, metalness:0.0, roughness:0.85,
   flatShading:true, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1});
+// изнанка граней — серо-голубая, как задняя сторона грани в SketchUp:
+// после удаления грани внутренность видна и отличима от наружной стороны
+let backMesh = null;
+const backMat = new THREE.MeshStandardMaterial({color:0xa9b7c6, metalness:0.0, roughness:0.9,
+  flatShading:true, side:THREE.BackSide, polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1});
 
 // ---------- камеры: 1 перспективная (орбита) + 3 ортогональные ----------
 const persp = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
@@ -1852,6 +1857,10 @@ function setMeshFromArray(f32){
   if(mesh){ scene.remove(mesh); mesh.geometry.dispose(); }
   mesh = new THREE.Mesh(geo, mat);
   scene.add(mesh);
+  // изнанка тем же мешем не рисуется (culling) — компаньон с BackSide
+  if(backMesh) scene.remove(backMesh); // геометрия общая, dispose уже сделан
+  backMesh = new THREE.Mesh(geo, backMat);
+  scene.add(backMesh);
   s_tris.textContent = f32.length/9;
 }
 
