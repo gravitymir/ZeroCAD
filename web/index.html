@@ -819,6 +819,9 @@ function addOutline(m){
 }
 const ghost = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x4da3ff})));
 ghost.visible = false; scene.add(ghost);
+// индикатор привязки обязан быть видим всегда: поверх маркеров точек и модели
+ghost.material.depthTest = false; ghost.renderOrder = 7;
+ghost.children[0].material.depthTest = false; ghost.children[0].renderOrder = 6;
 
 // цвета как во FreeCAD: жёлтый — preselect (наведение), зелёный — selection
 const C_EDGE = 0xffcc00, C_MID = 0xffcc00, C_VERT = 0xffcc00, C_SEL = 0x2ecc40;
@@ -2193,7 +2196,7 @@ function anchorAt(q){
   const P={x:0,y:0,z:0};
   for(const a of anchors){
     projToQuad(a.marker.position, q.cam, q.w, q.h, P);
-    if(Math.hypot(P.x-q.mx, P.y-q.my)<10) return a;
+    if(P.z < 1 && P.z > -1 && Math.hypot(P.x-q.mx, P.y-q.my) < 12) return a;
   }
   return null;
 }
