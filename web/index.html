@@ -122,6 +122,7 @@
       <div class="prow">Edge: <b id="p_len">–</b> mm</div>
       <div class="prow">Offset: <input id="p_off" type="number" step="0.1" min="0"> mm</div>
       <div class="prow" id="p_radrow" hidden>Radius: <input id="p_rad" type="number" step="0.1"> mm</div>
+      <div class="prow">Divide: <input id="p_div" type="number" min="2" max="20" step="1" value="2"> parts ↵</div>
       <div class="prow" style="font-size:10px;color:var(--muted)">click the dot — place &amp; drag · Alt — bend as arc</div>
     </div>
     <div id="vpanel" hidden>
@@ -813,6 +814,16 @@ function commitLinePoint(pos){
   lineLenStr = '';
 }
 
+// ---------- «Точка» (G,Y — Create Point в Sketcher FreeCAD) ----------
+let pointMode = false;
+function setPointMode(on){
+  pointMode = on;
+  if(on){ setLineMode(false); if(typeof circleMode !== 'undefined' && circleMode) setCircleMode(false);
+          if(ppMode) setPPMode(false); setHover(null); tipHide(); }
+  else { ghost.visible = false; tipHide(); }
+  updateToolTag();
+}
+
 // ---------- «Окружность» (G,C — круг в Sketcher FreeCAD) ----------
 // центр (с магнитами) -> радиус мышью или цифрами+Enter -> врезка 48 хордами
 let circleMode = false, circleCenter = null, circlePlane = null, circleR = 0, circleRStr = '';
@@ -1122,7 +1133,8 @@ function rayLineParam(ray, P, dir){
 const dragTip = document.getElementById('dragTip');
 const toolTag = document.getElementById('toolTag');
 function updateToolTag(){
-  if(circleMode){ toolTag.textContent = 'G,C · CIRCLE'; toolTag.hidden = false; }
+  if(pointMode){ toolTag.textContent = 'G,Y · POINT'; toolTag.hidden = false; }
+  else if(circleMode){ toolTag.textContent = 'G,C · CIRCLE'; toolTag.hidden = false; }
   else if(lineMode){
     toolTag.textContent = lineChain ? 'G,M · POLYLINE' : 'G,L · LINE';
     toolTag.hidden = false;
@@ -1143,6 +1155,7 @@ function showChordHint(){
     row('L', 'Line (single segments)', true) +
     row('M', 'Polyline (chained)', true) +
     row('C', 'Circle on face', true) +
+    row('Y', 'Point (with snaps)', true) +
     row('P', 'Push/Pull mode', true) +
     row('E', 'Extrude face ±mm', !!ppPatch) +
     row('V', 'Vertex X/Y/Z', !!sel) +
@@ -1659,6 +1672,45 @@ wheelStep(p_off, v=>{
   placing.s = Math.max(0, Math.min(placing.chain.total, v));
   ghost.position.copy(chainPointAt(placing.chain, placing.s));
 });
+// найти цепочку (ребро), проходящую через точку P
+function chainAtPoint(P){
+  for(const ch of chains){
+    if(ch.isGuide) continue;
+    for(let i=1;i<ch.pts.length;i++){
+      const a = ch.pts[i-1], b = ch.pts[i];
+      const ab = new THREE.Vector3().subVectors(b, a);
+      const L2 = ab.lengthSq();
+      if(L2 < 1e-12) continue;
+      const t = Math.max(0, Math.min(1,
+        new THREE.Vector3().subVectors(P, a).dot(ab) / L2));
+      if(a.clone().addScaledVector(ab, t).distanceTo(P) < 0.02)
+        return {chain: ch, s: ch.cum[i-1] + t*Math.sqrt(L2)};
+    }
+  }
+  return null;
+}
+// Divide (как DIVIDE в AutoCAD): N равных частей = N-1 точек на ребре
+const p_div = document.getElementById('p_div');
+p_div.addEventListener('keydown', ev=>{
+  if(ev.key === 'Enter'){
+    ev.preventDefault();
+    if(!placing) return;
+    const n = Math.max(2, Math.min(20, Math.round(+p_div.value || 2)));
+    const ch0 = placing.chain, total = ch0.total;
+    const targets = [];
+    for(let i=1;i<n;i++) targets.push(chainPointAt(ch0, total*i/n));
+    pushUndo();
+    closePopup(); setHover(null);
+    for(const P of targets){
+      const loc = chainAtPoint(P); // цепочки пересобираются после каждого сплита
+      const Q = loc ? (splitEdgeAt(loc.chain, loc.s) || P) : P;
+      makeAnchor(Q);
+      extractEdges();
+    }
+  }
+  ev.stopPropagation();
+});
+
 // точка ставится кликом по призраку (и сразу тянется) — кнопки не нужны
 function placePlacingPoint(){
   if(!placing) return null;
@@ -1744,6 +1796,13 @@ window.addEventListener('keydown', e=>{
       commitCircle(); e.preventDefault(); return;
     }
   }
+  // G,Y — точка
+  if((e.code==='KeyY' || e.key.toLowerCase()==='y') && chordG
+     && performance.now() - chordG < 4000 && !e.ctrlKey && !e.altKey && !e.metaKey
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    setPointMode(true); return;
+  }
   // G,C — окружность
   if((e.code==='KeyC' || e.key.toLowerCase()==='c') && chordG
      && performance.now() - chordG < 4000 && !e.ctrlKey && !e.altKey && !e.metaKey
@@ -1777,6 +1836,7 @@ window.addEventListener('keydown', e=>{
     closePopup(); deselect(); tipHide();
     hideChordHint(); chordG = 0; closeExtrude();
     if(!ppMode){ hidePatch(); ppPatch=null; } // снять выбор плоскости
+    if(pointMode) setPointMode(false);
     if(circleMode){
       if(circleCenter){ circleCenter=null; circleRStr=''; killRing(); }
       else setCircleMode(false);
@@ -1865,6 +1925,24 @@ canvas.addEventListener('pointerdown', e=>{
       return;
     }
     closePopup();
+    return;
+  }
+  if(pointMode){ // режим «Точка»: клик ставит точку с привязками
+    if(e.button===0 && q.inside){
+      const c = pickCorner(q);
+      if(c){ pushUndo(); makeAnchor(c.pos); extractEdges(); return; }
+      const h = pickEdge(q);
+      if(h && !h.chain.isGuide){
+        pushUndo();
+        const s = snapMM(h.s);
+        const P = splitEdgeAt(h.chain, s) || chainPointAt(h.chain, s);
+        makeAnchor(P);
+        extractEdges();
+        return;
+      }
+      const pt = linePickPoint(q);
+      if(pt){ pushUndo(); makeAnchor(pt.pos); extractEdges(); }
+    }
     return;
   }
   if(circleMode){ // режим «Окружность»: центр, затем радиус
@@ -2170,6 +2248,16 @@ canvas.addEventListener('pointermove', e=>{
     return;
   }
   if(placing) return;               // пока открыта всплывашка — наведение заморожено
+  if(pointMode){ // призрак точки с привязками
+    if(!q.inside){ ghost.visible=false; tipHide(); return; }
+    const pt = linePickPoint(q);
+    if(pt){
+      ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
+      ghost.position.copy(pt.pos); ghost.visible = true;
+      tipAt(e, 'Point · ' + pt.kind);
+    } else { ghost.visible = false; tipHide(); }
+    return;
+  }
   if(circleMode){ // превью окружности за курсором
     if(!q.inside){ ghost.visible=false; killRing(); tipHide(); return; }
     if(!circleCenter){
