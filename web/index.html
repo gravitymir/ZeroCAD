@@ -56,7 +56,6 @@
   /* режим одного 3D-окна на весь вьюпорт */
   #view.single .quadonly{display:none}
   #view.single #hud{bottom:10px}
-  #view.single #vpanel{bottom:56px}
   /* всплывашка постановки точки на ребро */
   #popup{position:absolute;z-index:5;background:var(--panel);border:1px solid #2ecc40;
     border-radius:10px;padding:10px 12px;font-size:12px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
@@ -69,8 +68,8 @@
     border-radius:6px;padding:4px 6px;font-size:12px}
   #popup .pbtns{display:flex;gap:6px;margin-top:8px}
   #popup .pbtns button{padding:5px 10px;font-size:12px;flex:1}
-  /* панель координат выбранной вершины (в 3D-окне) */
-  #vpanel{position:absolute;z-index:5;left:10px;bottom:calc(50% + 40px);
+  /* окно точного ввода координат (открывается по G,V у курсора) */
+  #vpanel{position:absolute;z-index:7;
     background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
     padding:8px 12px;font-size:12px}
   #vpanel[hidden]{display:none}
@@ -2038,7 +2037,9 @@ function removeInvertedShells(){
   }
   const bad = new Set();
   for(const [r,v] of vol) if(v < -0.1) bad.add(r);
-  if(!bad.size || bad.size === vol.size) return; // всю модель не удаляем
+  if(!bad.size) return;
+  // вычесть больше, чем есть тела — честный результат: пусто.
+  // «Куб из антиматерии» (вычет -80 из тела в 40) удаляется целиком.
   const keep = [];
   for(let t=0;t<nT;t++)
     if(!bad.has(find(t))) for(let j=0;j<9;j++) keep.push(pos[t*9+j]);
@@ -2129,7 +2130,15 @@ function selectVertex(pos){
   if(!ppMode){ hidePatch(); ppPatch = null; }
   sel = {pos: pos.clone()};
   selMarker.position.copy(sel.pos); selMarker.visible = true;
-  updateVPanel(); vpanel.hidden = false;
+  updateVPanel(); // значения готовы, но окно ввода откроет только G,V
+}
+// окно точного ввода — у курсора, как все остальные окна
+function openVPanel(){
+  const vr = view.getBoundingClientRect();
+  vpanel.style.left = Math.min(lastMX - vr.left + 20, vr.width - 200) + 'px';
+  vpanel.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 150) + 'px';
+  updateVPanel();
+  vpanel.hidden = false;
 }
 // палитра выбранной вершины: координаты — данные, команды — подсказка
 function showVertexPalette(){
@@ -2142,7 +2151,7 @@ function showVertexPalette(){
   chordHint.innerHTML =
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     (!hintsChk.checked ? '' :
-    '<div><span class="key">X/Y/Z</span> — exact move (panel · G,V)</div>' +
+    '<div><span class="key">G,V</span> — edit X/Y/Z</div>' +
     '<div><span class="key">Alt+drag</span> — ring · <span class="key">Shift</span> — column</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
@@ -2159,7 +2168,7 @@ function selectAnchor(a){
   if(!ppMode){ hidePatch(); ppPatch = null; }
   selAnchor = a;
   selMarker.position.copy(a.pos); selMarker.visible = true;
-  updateVPanel(); vpanel.hidden = false;
+  updateVPanel(); // окно ввода откроет G,V
   showPointPalette();
 }
 function showPointPalette(){
@@ -2812,6 +2821,7 @@ window.addEventListener('keydown', e=>{
   if((e.code==='KeyV' || e.key.toLowerCase()==='v') && chordG && (sel || selAnchor)
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); chordG = 0; hideChordHint();
+    openVPanel(); // окно ввода X/Y/Z — у курсора
     vx.focus(); vx.select();
     return;
   }
