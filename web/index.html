@@ -176,6 +176,8 @@
     Ring of identical vertices (all teeth at once): <b>Alt+grab</b> a vertex
     (Blender loop-select) or <b>double-click</b> it, then drag; the ring moves
     in its own plane (radius), press <b>Z</b> to move height instead.
+    <b>Shift+grab</b> makes it a column — same radius on both caps at once
+    (e.g. move pocket apexes without tilting the walls).
     <b>Double-click a face</b> selects the whole flat region bounded by model
     edges and drawn lines. X/Y/Z keys during a drag lock one axis; points snap
     to other vertices (green) and edges (red). Everything works in all four
@@ -1305,20 +1307,21 @@ window.addEventListener('keydown', e=>{
 });
 
 let drag=null;
-// кольцо одинаковых вершин (тот же радиус и Z вокруг оси)
-function ringCornersAt(pos){
+// кольцо одинаковых вершин: тот же радиус и Z; anyZ — «колонна» по всем высотам
+function ringCornersAt(pos, anyZ){
   const r0 = Math.hypot(pos.x, pos.y), z0 = pos.z;
   return corners.filter(cc =>
     Math.abs(Math.hypot(cc.pos.x, cc.pos.y) - r0) < 0.05 &&
-    Math.abs(cc.pos.z - z0) < 0.05);
+    (anyZ || Math.abs(cc.pos.z - z0) < 0.05));
 }
 let ringMarkers = [];
 function clearRingMarkers(){ for(const m of ringMarkers) scene.remove(m); ringMarkers = []; }
 
 // начать перетаскивание точки (a) или выбранной вершины (c)
-function beginDrag(a, c, q, altKey, pointerId, ctrlKey){
-  // кольцо: Alt (loop-select Blender), Ctrl, или вершина уже выбрана двойным кликом
-  const wantRing = !!c && (altKey || ctrlKey ||
+function beginDrag(a, c, q, altKey, pointerId, ctrlKey, shiftKey){
+  // кольцо: Alt (loop-select Blender), Ctrl, или вершина уже выбрана двойным кликом;
+  // Shift дополнительно превращает кольцо в «колонну» (обе крышки разом)
+  const wantRing = !!c && (altKey || ctrlKey || shiftKey ||
     (sel && sel.ring && sel.pos.distanceTo(c.pos) < 1e-3));
   if(c) selectVertex(c.pos);
   if(wantRing){ sel.ring = true; clearRingMarkers(); }
@@ -1332,10 +1335,10 @@ function beginDrag(a, c, q, altKey, pointerId, ctrlKey){
             snap: takeSnapshot(), snapPushed: false,
             markers: a ? [a.marker] : [selMarker]};
   if(wantRing){ // кольцевая симметрия: тянем все повторяющиеся вершины
-    const ring = ringCornersAt(tgt);
+    const ring = ringCornersAt(tgt, shiftKey);
     const byKey = new Map();
     const items = ring.map(cc => {
-      const it = {ang: Math.atan2(cc.pos.y, cc.pos.x), idx: []};
+      const it = {ang: Math.atan2(cc.pos.y, cc.pos.x), z0: cc.pos.z, idx: []};
       byKey.set(keyOf(cc.pos.x, cc.pos.y, cc.pos.z), it);
       return it;
     });
@@ -1419,7 +1422,7 @@ canvas.addEventListener('pointerdown', e=>{
     const a = anchorAt(q);
     const c = a ? null : pickCorner(q);
     if(a || c){ // тащим точку или вершину: плоскость параллельна экрану окна
-      beginDrag(a, c, q, e.altKey, e.pointerId, e.ctrlKey);
+      beginDrag(a, c, q, e.altKey, e.pointerId, e.ctrlKey, e.shiftKey);
       return;
     }
     if(hover){ openPopup(e, q); return; } // клик по ребру
@@ -1506,7 +1509,7 @@ canvas.addEventListener('pointermove', e=>{
         dr = ((hit.x - st.x)*st.x + (hit.y - st.y)*st.y) / ru;
       }
       const nR = snapMM(Math.max(0.2, rr.r0 + dr));
-      const nz = snapMM(rr.z0 + dz);
+      const dzs = snapMM(dz);
       if(!dragPt.snapPushed){ // история для Ctrl+Z
         undoStack.push(dragPt.snap);
         if(undoStack.length>30) undoStack.shift();
@@ -1514,8 +1517,10 @@ canvas.addEventListener('pointermove', e=>{
       }
       for(const it of rr.items){
         const nx = Math.cos(it.ang)*nR, ny = Math.sin(it.ang)*nR;
-        for(const i of it.idx){ posR[i]=nx; posR[i+1]=ny; posR[i+2]=nz; }
+        const zi = it.z0 + dzs; // каждая вершина на своей высоте
+        for(const i of it.idx){ posR[i]=nx; posR[i+1]=ny; posR[i+2]=zi; }
       }
+      const nz = rr.z0 + dzs;
       mesh.geometry.attributes.position.needsUpdate = true;
       normalsThrottled();
       if(sel){
