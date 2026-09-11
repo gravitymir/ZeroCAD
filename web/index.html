@@ -1309,12 +1309,18 @@ function splitMeshByChord(A, B, wholeLine){
       for(const st of sub) pushTri(st[0], st[1], st[2]);
     }
   }
-  // страховка: дубликаты треугольников (одинаковые тройки вершин) выкидываем
+  // страховка: дубликаты С ОДИНАКОВЫМ обходом выкидываем; противоположные
+  // ориентации — разные поверхности (низ грани + стенка), их не трогаем
   const seen = new Set();
   const ded = [];
   for(let i=0;i<out.length;i+=9){
-    const ks = [keyOf(out[i],out[i+1],out[i+2]), keyOf(out[i+3],out[i+4],out[i+5]),
-                keyOf(out[i+6],out[i+7],out[i+8])].sort().join('#');
+    const k = [keyOf(out[i],out[i+1],out[i+2]), keyOf(out[i+3],out[i+4],out[i+5]),
+               keyOf(out[i+6],out[i+7],out[i+8])];
+    // циклическая нормализация: старт с минимального ключа, порядок сохраняем
+    let m = 0;
+    if(k[1] < k[m]) m = 1;
+    if(k[2] < k[m]) m = 2;
+    const ks = k[m] + '#' + k[(m+1)%3] + '#' + k[(m+2)%3];
     if(seen.has(ks)) continue;
     seen.add(ks);
     for(let j=0;j<9;j++) ded.push(out[i+j]);
@@ -1468,7 +1474,9 @@ function hideChordHint(){ chordHint.hidden = true; clearTimeout(showChordHint._t
 // палитра операций для выбранной грани
 function showFacePalette(){
   tipHide(); // информация объекта — в шапке палитры
-  let info = 'Face';
+  // площадь есть у любой плоской грани — треугольной, Г-образной, любой
+  let info = 'Face' + (ppPatch && ppPatch.area
+    ? ' · ' + (Math.round(ppPatch.area*10)/10) + ' mm²' : '');
   if(ppPatch && ppPatch.rectDims){
     const [a, b] = ppPatch.rectDims;
     const area = (Math.round(a*b*10)/10).toString();
@@ -1847,6 +1855,151 @@ function cleanupMesh(){
   setMeshFromArray(out);
 }
 
+// «Заживление» перекрытий: стенка кармана, легшая в плоскость соседней
+// грани, аннигилирует с её материалом — грань подрезается, как в SketchUp.
+// Фаза 1: в плоскостях, где есть обе ориентации, врезаем рёбра друг в друга;
+// фаза 2: треугольник, чей центроид накрыт противоположным копланарным,
+// удаляется (с обеих сторон пары «материал—стенка»).
+function healCoplanarOverlaps(){
+  const planeGroups = () => {
+    const pos = mesh.geometry.attributes.position.array;
+    const groups = new Map();
+    for(let t=0;t<pos.length/9;t++){
+      const o=t*9;
+      const ux=pos[o+3]-pos[o], uy=pos[o+4]-pos[o+1], uz=pos[o+5]-pos[o+2];
+      const vx=pos[o+6]-pos[o], vy=pos[o+7]-pos[o+1], vz=pos[o+8]-pos[o+2];
+      let nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+      const L = Math.hypot(nx,ny,nz);
+      if(L < 1e-6) continue;
+      nx/=L; ny/=L; nz/=L;
+      let orient = 1;
+      if(nx < -1e-4 || (Math.abs(nx)<=1e-4 && (ny < -1e-4 || (Math.abs(ny)<=1e-4 && nz < 0)))){
+        nx=-nx; ny=-ny; nz=-nz; orient = -1; // канонический знак нормали
+      }
+      const d = nx*pos[o] + ny*pos[o+1] + nz*pos[o+2];
+      const key = Math.round(nx*200)+','+Math.round(ny*200)+','+Math.round(nz*200)+'|'+Math.round(d*20);
+      let g = groups.get(key);
+      if(!g){ g = {n:[nx,ny,nz], tris:[]}; groups.set(key, g); }
+      g.tris.push({t, orient});
+    }
+    return groups;
+  };
+  { // фаза 1: взаимная врезка рёбер (splitMeshByChord пропустит нережущие)
+    const pos = mesh.geometry.attributes.position.array;
+    const segs = [];
+    for(const g of planeGroups().values()){
+      if(!g.tris.some(x=>x.orient>0) || !g.tris.some(x=>x.orient<0)) continue;
+      const seen = new Set();
+      for(const {t} of g.tris){
+        for(let e=0;e<3;e++){
+          const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+          const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+          const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+          if(seen.has(ek)) continue;
+          seen.add(ek);
+          segs.push([new THREE.Vector3(pos[o1],pos[o1+1],pos[o1+2]),
+                     new THREE.Vector3(pos[o2],pos[o2+1],pos[o2+2])]);
+        }
+      }
+    }
+    for(const s of segs) splitMeshByChord(s[0], s[1]);
+  }
+  { // фаза 2: аннигиляция накрытых треугольников
+    const pos = mesh.geometry.attributes.position.array;
+    const drop = new Uint8Array(pos.length/9);
+    for(const g of planeGroups().values()){
+      const pls = g.tris.filter(x=>x.orient>0), mns = g.tris.filter(x=>x.orient<0);
+      if(!pls.length || !mns.length) continue;
+      const N = new THREE.Vector3(g.n[0], g.n[1], g.n[2]);
+      const U = (Math.abs(N.z)<0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0))
+        .cross(N).normalize();
+      const V = N.clone().cross(U);
+      const p2 = i => [pos[i]*U.x+pos[i+1]*U.y+pos[i+2]*U.z,
+                       pos[i]*V.x+pos[i+1]*V.y+pos[i+2]*V.z];
+      const tri2 = t => [p2(t*9), p2(t*9+3), p2(t*9+6)];
+      const cent = T => [(T[0][0]+T[1][0]+T[2][0])/3, (T[0][1]+T[1][1]+T[2][1])/3];
+      const inTri = (p, T) => {
+        const cr = (a,b)=> (b[0]-a[0])*(p[1]-a[1]) - (b[1]-a[1])*(p[0]-a[0]);
+        const s1=cr(T[0],T[1]), s2=cr(T[1],T[2]), s3=cr(T[2],T[0]);
+        return (s1>=-1e-6 && s2>=-1e-6 && s3>=-1e-6) || (s1<=1e-6 && s2<=1e-6 && s3<=1e-6);
+      };
+      const P2 = pls.map(x=>({x, T:tri2(x.t)}));
+      const M2 = mns.map(x=>({x, T:tri2(x.t)}));
+      for(const a of P2){
+        const c = cent(a.T);
+        for(const b of M2) if(inTri(c, b.T)){ drop[a.x.t]=1; break; }
+      }
+      for(const b of M2){
+        const c = cent(b.T);
+        for(const a of P2) if(inTri(c, a.T)){ drop[b.x.t]=1; break; }
+      }
+    }
+    let removed = 0; for(const d of drop) removed += d;
+    if(removed){
+      const out = new Float32Array(pos.length - removed*9);
+      let o = 0;
+      for(let t=0;t<pos.length/9;t++){
+        if(drop[t]) continue;
+        for(let j=0;j<9;j++) out[o++] = pos[t*9+j];
+      }
+      setMeshFromArray(out);
+    }
+  }
+}
+
+// Т-стыки после подрезки: цельное ребро с одной стороны против двух кусков
+// с другой. Делим ребро по чужой вершине, пока сетка не сойдётся.
+function healTJunctions(){
+  for(let guard=0; guard<16; guard++){
+    const pos = mesh.geometry.attributes.position.array;
+    const nT = pos.length/9;
+    const verts = new Map();
+    for(let i=0;i<pos.length;i+=3)
+      verts.set(keyOf(pos[i],pos[i+1],pos[i+2]), [pos[i],pos[i+1],pos[i+2]]);
+    const cnt = new Map();
+    for(let t=0;t<nT;t++) for(let e=0;e<3;e++){
+      const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+      const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+      const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+      cnt.set(ek,(cnt.get(ek)||0)+1);
+    }
+    let split = null; // {t, e, v}
+    outer:
+    for(let t=0;t<nT;t++){
+      for(let e=0;e<3;e++){
+        const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+        const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+        const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+        if(cnt.get(ek) !== 1) continue; // только граничные
+        const A=[pos[o1],pos[o1+1],pos[o1+2]], B=[pos[o2],pos[o2+1],pos[o2+2]];
+        const ab=[B[0]-A[0],B[1]-A[1],B[2]-A[2]];
+        const L2 = ab[0]*ab[0]+ab[1]*ab[1]+ab[2]*ab[2];
+        if(L2 < 1e-9) continue;
+        for(const [k, v] of verts){
+          if(k===k1 || k===k2) continue;
+          const tp = ((v[0]-A[0])*ab[0]+(v[1]-A[1])*ab[1]+(v[2]-A[2])*ab[2])/L2;
+          if(tp <= 1e-3 || tp >= 1-1e-3) continue;
+          const qx=A[0]+ab[0]*tp, qy=A[1]+ab[1]*tp, qz=A[2]+ab[2]*tp;
+          if(Math.hypot(v[0]-qx, v[1]-qy, v[2]-qz) > 0.01) continue;
+          split = {t, e, v};
+          break outer;
+        }
+      }
+    }
+    if(!split) break;
+    // делим треугольник по точке на ребре
+    const {t, e, v} = split;
+    const o = t*9;
+    const V = [[pos[o],pos[o+1],pos[o+2]],[pos[o+3],pos[o+4],pos[o+5]],[pos[o+6],pos[o+7],pos[o+8]]];
+    const a = e, b = (e+1)%3, c = (e+2)%3;
+    const out = new Float32Array(pos.length + 9);
+    out.set(pos.subarray(0, o));
+    out.set([...V[a], ...v, ...V[c],  ...v, ...V[b], ...V[c]], o);
+    out.set(pos.subarray(o+9), o+18);
+    setMeshFromArray(out);
+  }
+}
+
 let exLive = null; // живой предпросмотр: {idx, n, applied}
 function openExtrude(){
   if(!ppPatch) return;
@@ -1890,7 +2043,7 @@ function commitExtrude(){
   const applied = exLive.applied;
   exLive = null;
   exPopup.hidden = true;
-  if(applied){ hidePatch(); ppPatch = null; cleanupMesh(); extractEdges(); }
+  if(applied){ hidePatch(); ppPatch = null; cleanupMesh(); healCoplanarOverlaps(); healTJunctions(); extractEdges(); }
   else undo(); // нулевая высота: убираем врезанные стенки снимком
 }
 function closeExtrude(){ // Esc: стенки уже врезаны — откат всей сессии окна
@@ -2947,7 +3100,7 @@ canvas.addEventListener('pointerup', e=>{
     const revert = !ppDrag.snapPushed, snap = ppDrag.snap;
     ppDrag=null; tipHide(); hidePatch(); ppPatch=null;
     if(revert) applySnapshot(snap); // не тянули: убрать стенки нулевой высоты
-    else { normalsFlush(); cleanupMesh(); extractEdges(); }
+    else { normalsFlush(); cleanupMesh(); healCoplanarOverlaps(); healTJunctions(); extractEdges(); }
   }
   if(dragPt){
     normalsFlush();
