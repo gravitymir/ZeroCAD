@@ -901,6 +901,10 @@ function restoreGuides(list){
 // точка для рисования: вершина > точка на ребре (0.1 мм) > точка на грани
 function linePickPoint(q){
   linePickPoint._faceCenters = null;
+  // поставленная точка — одна на своём месте, ей высший приоритет:
+  // грань можно взять где угодно, а точку — только тут
+  const an = anchorAt(q);
+  if(an) return {pos: an.pos.clone(), kind:'vertex'};
   const c = pickCorner(q);
   if(c) return {pos:c.pos.clone(), kind:'vertex'};
   // центры дуг/окружностей и центр плоской грани (Snap Center)
@@ -2567,6 +2571,8 @@ canvas.addEventListener('pointerdown', e=>{
         extractEdges();
         return;
       }
+      // здесь уже стоит точка — не дублируем её второй такой же
+      if(anchors.some(a=>a.pos.distanceTo(pt.pos) < 1e-3)) return;
       pushUndo(); makeAnchor(pt.pos); extractEdges();
     }
     return;
@@ -2969,6 +2975,14 @@ canvas.addEventListener('pointermove', e=>{
     return;
   }
   // приоритет привязок как в SketchUp: вершина > середина > ребро
+  // поставленная точка подсвечивается раньше вершин и всего остального
+  const anh = q.inside ? anchorAt(q) : null;
+  if(anh){
+    setHover(null); cornerHover = null;
+    vGhost.position.copy(anh.pos); vGhost.visible = true;
+    tipAt(e, 'Point');
+    return;
+  }
   const c = q.inside ? pickCorner(q) : null;
   if(c){
     setHover(null);
