@@ -476,6 +476,11 @@ function gizmoClick(e){
 }
 let orthoFit = 70;
 
+function updateOrthoPoses(){
+  orthoX.position.set(camTarget.x + D, camTarget.y, camTarget.z); orthoX.lookAt(camTarget);
+  orthoY.position.set(camTarget.x, camTarget.y + D, camTarget.z); orthoY.lookAt(camTarget);
+  orthoZ.position.set(camTarget.x, camTarget.y, camTarget.z + D); orthoZ.lookAt(camTarget);
+}
 function updateOrthoFrusta(){
   const w=view.clientWidth/2, h=view.clientHeight/2, aspect=w/h;
   for(const c of [orthoX, orthoY, orthoZ]){
@@ -1482,8 +1487,13 @@ async function rebuild(){
   camDist = Math.max(p.dia*1.9, 60);
   orthoFit = p.dia*0.62;
   updateOrthoFrusta();
-  bedGrid.position.z = -p.thk/2 - 0.05; // «стол» сразу под деталью
-  updateAxesSize(p.dia*0.62); // оси чуть выступают за обод
+  bedGrid.position.z = -0.05; // рабочая плоскость z=0, сетка и оси лежат на ней
+  updateAxesSize(p.dia*0.8);
+  // орбита и орто-виды смотрят на центр модели (куб растёт из начала координат)
+  const isCube = document.querySelector('input[name=shape]:checked').value === 'cube';
+  if(isCube) camTarget.set(p.dia/2, p.dia/2, p.dia/2);
+  else camTarget.set(0, 0, p.thk/2);
+  updateOrthoPoses();
   s_apex.textContent = res.headers.get('X-Apex-Mm')+' mm';
   s_pitch.textContent = res.headers.get('X-Pitch-Mm')+' mm';
   const us = +res.headers.get('X-Gen-Us');
@@ -2395,8 +2405,8 @@ document.getElementById('stl').addEventListener('click', downloadSTL);
 document.getElementById('reset').addEventListener('click', ()=>{
   const d={dia:70,thk:11,sh:5,n:12,dep:6,w:11};
   dia.value=d.dia; thk.value=d.thk; sh.value=d.sh; n.value=d.n; dep.value=d.dep; w.value=d.w;
-  yaw=-1.1; pitch=0.55; camTarget.set(0,0,0);
-  rebuild();
+  yaw=-1.1; pitch=0.55;
+  rebuild(); // rebuild сам наведёт орбиту на центр модели
 });
 
 // кнопки вокруг ViewCube

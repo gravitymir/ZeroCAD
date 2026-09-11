@@ -39,8 +39,8 @@ pub fn build_wheel_csg(p: &WheelParams) -> Vec<Tri> {
         wheel = wheel.difference(&wedge);
     }
 
-    // в систему координат своего генератора: середина толщины в z=0
-    to_tris(&wheel.translate(0.0, 0.0, -p.thk / 2.0))
+    // деталь стоит на рабочей плоскости: z от 0 до толщины, как у своего движка
+    to_tris(&wheel)
 }
 
 /// Треугольная призма по 2D-основанию, z от `z0` на высоту `h`.

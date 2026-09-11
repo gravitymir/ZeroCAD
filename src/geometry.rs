@@ -53,10 +53,11 @@ pub type Tri = [[f32; 3]; 3];
 /// Куб со стороной `size`, центр в начале координат. Стартовая фигура для
 /// отработки выбора вершин/рёбер/граней: 8 вершин, 12 рёбер, 6 граней.
 pub fn build_cube(size: f64) -> Vec<Tri> {
-    let h = (size / 2.0) as f32;
+    // как Part Box во FreeCAD: угол в начале координат, рост в +X+Y+Z
+    let s = size as f32;
     let p = [
-        [-h, -h, -h], [h, -h, -h], [h, h, -h], [-h, h, -h],
-        [-h, -h,  h], [h, -h,  h], [h, h,  h], [-h, h,  h],
+        [0.0, 0.0, 0.0], [s, 0.0, 0.0], [s, s, 0.0], [0.0, s, 0.0],
+        [0.0, 0.0,   s], [s, 0.0,   s], [s, s,   s], [0.0, s,   s],
     ];
     // грани CCW при взгляде снаружи
     let quads = [
@@ -104,7 +105,9 @@ const CAP_RINGS: usize = 8;
 /// валом и контуром), внешняя стенка по контуру, внутренняя стенка отверстия.
 pub fn build_wheel(p: &WheelParams) -> Vec<Tri> {
     let rs = p.shaft / 2.0;
-    let hz = p.thk / 2.0;
+    // деталь стоит на рабочей плоскости: z от 0 до толщины (как Pad во FreeCAD)
+    let z0 = 0.0;
+    let z1 = p.thk;
 
     // Кольцевые точки на общей угловой сетке: пояс 0 — вал, пояс CAP_RINGS — контур.
     let mut rings = vec![[(0.0f64, 0.0f64); STEPS]; CAP_RINGS + 1];
@@ -126,10 +129,10 @@ pub fn build_wheel(p: &WheelParams) -> Vec<Tri> {
         let (rin, rout) = (&rings[k], &rings[k + 1]);
         for i in 0..STEPS {
             let j = (i + 1) % STEPS;
-            let (it, ot) = (v(rin[i], hz), v(rout[i], hz));
-            let (jt, pt) = (v(rin[j], hz), v(rout[j], hz));
-            let (ib, ob) = (v(rin[i], -hz), v(rout[i], -hz));
-            let (jb, pb) = (v(rin[j], -hz), v(rout[j], -hz));
+            let (it, ot) = (v(rin[i], z1), v(rout[i], z1));
+            let (jt, pt) = (v(rin[j], z1), v(rout[j], z1));
+            let (ib, ob) = (v(rin[i], z0), v(rout[i], z0));
+            let (jb, pb) = (v(rin[j], z0), v(rout[j], z0));
             // верхняя (нормаль +Z), нижняя (нормаль -Z)
             tris.push([it, ot, pt]);
             tris.push([it, pt, jt]);
@@ -141,10 +144,10 @@ pub fn build_wheel(p: &WheelParams) -> Vec<Tri> {
     let (inner, outer) = (&rings[0], &rings[CAP_RINGS]);
     for i in 0..STEPS {
         let j = (i + 1) % STEPS;
-        let (it, ot) = (v(inner[i], hz), v(outer[i], hz));
-        let (jt, pt) = (v(inner[j], hz), v(outer[j], hz));
-        let (ib, ob) = (v(inner[i], -hz), v(outer[i], -hz));
-        let (jb, pb) = (v(inner[j], -hz), v(outer[j], -hz));
+        let (it, ot) = (v(inner[i], z1), v(outer[i], z1));
+        let (jt, pt) = (v(inner[j], z1), v(outer[j], z1));
+        let (ib, ob) = (v(inner[i], z0), v(outer[i], z0));
+        let (jb, pb) = (v(inner[j], z0), v(outer[j], z0));
         // внешняя стенка (нормаль наружу)
         tris.push([ob, pb, pt]);
         tris.push([ob, pt, ot]);
