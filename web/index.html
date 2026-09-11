@@ -2243,6 +2243,8 @@ function divideCounts(L){
 function openDivide(ch){
   divCtx = {chain: ch};
   divN = divideCounts(ch.total)[0];
+  // будущие точки показывает превью — призрак в центре только путает
+  ghost.visible = false; hideHints(); setHover(null); tipHide();
   const vr = view.getBoundingClientRect();
   divPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 260) + 'px';
   divPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 160) + 'px';
