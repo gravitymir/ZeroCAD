@@ -2203,7 +2203,9 @@ function commitPocketCSG(snap, patchTris, n, depth){
     return;
   }
   setMeshFromArray(snap.pos.slice()); // предпросмотрные стенки выбрасываем
-  const prism = buildPrismTris(loop, n, 1.0, depth + 1.0);
+  // запас 1 мм только СНАРУЖИ (срезать кожу грани); вглубь — ровно depth,
+  // иначе карман получается глубже заказанного и +20 после -20 не сходится
+  const prism = buildPrismTris(loop, n, 1.0, depth);
   try{
     const pos = mesh.geometry.attributes.position.array;
     const bodyTris = [];
