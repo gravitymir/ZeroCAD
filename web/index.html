@@ -1467,8 +1467,7 @@ function showChordHint(){
 function hideChordHint(){ chordHint.hidden = true; clearTimeout(showChordHint._t); }
 // палитра операций для выбранной грани
 function showFacePalette(){
-  if(!hintsChk.checked) return;
-  tipHide(); // информация объекта переезжает в шапку палитры
+  tipHide(); // информация объекта — в шапке палитры
   let info = 'Face';
   if(ppPatch && ppPatch.rectDims){
     const [a, b] = ppPatch.rectDims;
@@ -1478,12 +1477,14 @@ function showFacePalette(){
       : 'Rectangle · ' + area + ' mm²';
   }
   const vr = view.getBoundingClientRect();
+  // размеры — данные, видны всегда; команды — подсказка, гасится флагом
   chordHint.innerHTML =
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
+    (!hintsChk.checked ? '' :
     '<div><span class="key">P</span> — Push/Pull (drag)</div>' +
     '<div><span class="key">E</span> — Extrude by value</div>' +
     '<div><span class="key">Del</span> — Delete face</div>' +
-    '<div style="opacity:.55">Esc — deselect</div>';
+    '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 150) + 'px';
   chordHint.hidden = false;
@@ -1959,7 +1960,6 @@ function showPointPalette(){
 // палитра операций для выбранного ребра — как у грани и точки;
 // в шапке данные объекта, F не упоминаем — подскажем при замкнутом контуре
 function showEdgePalette(ch){
-  if(!hintsChk.checked) return;
   tipHide();
   const arc = ch && fitArc(ch);
   const info = ch
@@ -1967,11 +1967,13 @@ function showEdgePalette(ch){
       + (arc ? ' · R ' + arc.R.toFixed(1) + ' mm' : '')
     : 'Edge';
   const vr = view.getBoundingClientRect();
+  // размеры — данные, видны всегда; команды — подсказка, гасится флагом
   chordHint.innerHTML =
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
+    (!hintsChk.checked ? '' :
     '<div><span class="key">G,Y</span> — point / divide</div>' +
     '<div><span class="key">Ctrl+click</span> — multi-select</div>' +
-    '<div style="opacity:.55">Esc — deselect</div>';
+    '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
   chordHint.hidden = false;
@@ -3249,12 +3251,13 @@ canvas.addEventListener('pointermove', e=>{
   }
   // приоритет привязок как в SketchUp: вершина > середина > ребро
   // поставленная точка подсвечивается раньше вершин и всего остального
+  // при наведении — только подсветка, без тултипов (данные покажет выбор)
   const anh = q.inside ? anchorAt(q) : null;
   if(anh){
     setHover(null); cornerHover = null;
     if(!ppPatch && !ppMode) hidePatch();
     vGhost.position.copy(anh.pos); vGhost.visible = true;
-    tipAt(e, 'Point');
+    tipHide();
     return;
   }
   const c = q.inside ? pickCorner(q) : null;
@@ -3263,7 +3266,7 @@ canvas.addEventListener('pointermove', e=>{
     if(!ppPatch && !ppMode) hidePatch();
     cornerHover = c;
     vGhost.position.copy(c.pos); vGhost.visible = true;
-    tipAt(e, 'Vertex');
+    tipHide();
     return;
   }
   cornerHover = null; vGhost.visible = false;
@@ -3273,9 +3276,7 @@ canvas.addEventListener('pointermove', e=>{
     setHover(h);
     ghost.visible = false;
     if(!ppPatch && !ppMode) hidePatch();
-    const arc = fitArc(h.chain);
-    tipAt(e, (h.chain.isGuide ? 'Line' : 'Edge') + '<br>' + h.chain.total.toFixed(1)+' mm'
-             + (arc ? '<br>Arc R '+arc.R.toFixed(1)+' mm' : ''));
+    tipHide();
     return;
   }
   setHover(null);
@@ -3283,17 +3284,8 @@ canvas.addEventListener('pointermove', e=>{
   if(q.inside && !ppPatch && !ppMode){
     const f = raycastFace(q);
     if(f){
-      const patch = facePatchCached(f.faceIndex);
-      showPatch(patch, C_EDGE);
-      let msg = 'Face';
-      if(patch.rectDims){ // квадрат: сторона и площадь; прямоугольник: площадь
-        const [a, b] = patch.rectDims;
-        const area = (Math.round(a*b*10)/10).toString();
-        msg = Math.abs(a - b) < 0.05
-          ? 'Square<br>side ' + a.toFixed(1) + ' mm<br>' + area + ' mm²'
-          : 'Rectangle<br>' + area + ' mm²';
-      }
-      tipAt(e, msg);
+      showPatch(facePatchCached(f.faceIndex), C_EDGE);
+      tipHide();
       return;
     }
     hidePatch();
