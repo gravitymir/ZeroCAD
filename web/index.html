@@ -699,7 +699,92 @@ function facePatchCached(fi){
     aSum += ar;
   }
   cachedPatch.centroid = c.divideScalar(aSum || 1);
+  cachedPatch.centers = patchCenters(cachedPatch);
   return cachedPatch;
+}
+
+// Раскладка грани с прямолинейным контуром на прямоугольники полосами:
+// Г-образная — 2 центра, П — 3 и т.д. Контур не прямолинеен (круг, скос)
+// или прямоугольников больше HINT_MAX — берём самые крупные / центроид.
+function patchCenters(patch){
+  const pos = mesh.geometry.attributes.position.array;
+  // граничные рёбра лоскута: встречаются ровно в одном его треугольнике
+  const cnt = new Map();
+  for(const t of patch.tris){
+    for(let e=0;e<3;e++){
+      const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+      const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+      const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+      const rec = cnt.get(ek);
+      if(rec) rec.n++;
+      else cnt.set(ek, {n:1, a:[pos[o1],pos[o1+1],pos[o1+2]], b:[pos[o2],pos[o2+1],pos[o2+2]]});
+    }
+  }
+  const n0 = patch.normal;
+  const u = (Math.abs(n0.z) < 0.9
+    ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n0).normalize();
+  const v = n0.clone().cross(u);
+  const o0 = patch.tris[0]*9;
+  const d0 = n0.x*pos[o0]+n0.y*pos[o0+1]+n0.z*pos[o0+2];
+  const segs = [];
+  for(const rec of cnt.values()){
+    if(rec.n !== 1) continue;
+    segs.push([[rec.a[0]*u.x+rec.a[1]*u.y+rec.a[2]*u.z, rec.a[0]*v.x+rec.a[1]*v.y+rec.a[2]*v.z],
+               [rec.b[0]*u.x+rec.b[1]*u.y+rec.b[2]*u.z, rec.b[0]*v.x+rec.b[1]*v.y+rec.b[2]*v.z]]);
+  }
+  if(!segs.length || segs.length > 400) return [patch.centroid];
+  // ось разложения — вдоль самого длинного граничного ребра; при равной длине
+  // берём стабильное направление, чтобы раскладка не менялась между пересчётами
+  let best = 0, ex = 1, ey = 0;
+  for(const s of segs){
+    const dx = s[1][0]-s[0][0], dy = s[1][1]-s[0][1], L = dx*dx+dy*dy;
+    if(L < 1e-12) continue;
+    const l = Math.sqrt(L);
+    let cx = dx/l, cy = dy/l;
+    if(cx < 0 || (Math.abs(cx) < 1e-9 && cy < 0)){ cx = -cx; cy = -cy; }
+    if(L > best + 1e-9 ||
+       (Math.abs(L-best) <= 1e-9 && (cx > ex + 1e-9 || (Math.abs(cx-ex) <= 1e-9 && cy > ey)))){
+      best = L; ex = cx; ey = cy;
+    }
+  }
+  const rot = p => [p[0]*ex + p[1]*ey, -p[0]*ey + p[1]*ex];
+  const rs = segs.map(s => [rot(s[0]), rot(s[1])]);
+  // прямолинейность: каждое граничное ребро параллельно одной из осей
+  for(const s of rs){
+    const dx = Math.abs(s[1][0]-s[0][0]), dy = Math.abs(s[1][1]-s[0][1]);
+    if(dx > 0.05 && dy > 0.05) return [patch.centroid];
+  }
+  const q3 = x => Math.round(x*1000)/1000;
+  const ys = [...new Set(rs.flatMap(s => [q3(s[0][1]), q3(s[1][1])]))].sort((a,b)=>a-b);
+  const rects = [];    // {x0,x1,y0,y1} в повёрнутой 2D-системе
+  let open = new Map(); // x-интервал -> недостроенный прямоугольник из полосы ниже
+  for(let i=0;i<ys.length-1;i++){
+    const y0 = ys[i], y1 = ys[i+1], my = (y0+y1)/2;
+    // чётность пересечений вертикальными рёбрами — внутренние x-интервалы полосы
+    const xs = [];
+    for(const s of rs){
+      const a = s[0], b = s[1];
+      if(Math.min(a[1],b[1]) < my && Math.max(a[1],b[1]) > my)
+        xs.push(a[0] + (b[0]-a[0])*(my-a[1])/(b[1]-a[1]));
+    }
+    xs.sort((a,b)=>a-b);
+    const next = new Map();
+    for(let j=0;j+1<xs.length;j+=2){
+      const key = Math.round(xs[j]*100)+'|'+Math.round(xs[j+1]*100);
+      const prev = open.get(key);
+      if(prev){ prev.y1 = y1; next.set(key, prev); } // тот же интервал — растим вверх
+      else { const r = {x0:xs[j], x1:xs[j+1], y0, y1}; rects.push(r); next.set(key, r); }
+    }
+    open = next;
+  }
+  if(!rects.length) return [patch.centroid];
+  rects.sort((a,b)=>(b.x1-b.x0)*(b.y1-b.y0)-(a.x1-a.x0)*(a.y1-a.y0));
+  return rects.slice(0, HINT_MAX).map(r=>{
+    const cx = (r.x0+r.x1)/2, cy = (r.y0+r.y1)/2;
+    const X = cx*ex - cy*ey, Y = cx*ey + cy*ex; // поворот обратно
+    return new THREE.Vector3()
+      .addScaledVector(u, X).addScaledVector(v, Y).addScaledVector(n0, d0);
+  });
 }
 
 function chainPointAt(chain, s){
@@ -737,16 +822,26 @@ selMarker.visible = false; scene.add(selMarker);
 // маркер цели магнита при перетаскивании (зелёный — вершина, красный — ребро)
 const snapDot = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x52c752})));
 snapDot.visible = false; scene.add(snapDot);
-// точка-кандидат: заранее подсвечивает середину ребра / центр грани
-const hintDot = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x3fd9c9})));
-hintDot.visible = false; scene.add(hintDot);
+// точки-кандидаты: заранее подсвечивают середину ребра / центры грани.
+// Непрямоугольная грань (Г, П, G-образная) раскладывается на прямоугольники,
+// показываем центр каждого — до HINT_MAX штук.
+const HINT_MAX = 5;
+const hintDots = [];
+for(let i=0;i<HINT_MAX;i++){
+  const d = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x3fd9c9})));
+  d.visible = false; scene.add(d);
+  hintDots.push(d);
+}
+function hideHints(){ for(const d of hintDots) d.visible = false; }
+function showHintAt(p){
+  const d = hintDots.find(x=>!x.visible);
+  if(d){ d.position.copy(p); d.visible = true; }
+}
 function showHintFor(pt){
   if(pt.chain && !pt.chain.closed && pt.kind !== 'midpoint'){
-    hintDot.position.copy(chainPointAt(pt.chain, pt.chain.total/2));
-    hintDot.visible = true;
-  } else if(pt.kind === 'on face' && pt.centroid){
-    hintDot.position.copy(pt.centroid);
-    hintDot.visible = true;
+    showHintAt(chainPointAt(pt.chain, pt.chain.total/2));
+  } else if(pt.kind === 'on face' && pt.centers){
+    for(const c of pt.centers) showHintAt(c);
   }
 }
 
@@ -793,7 +888,7 @@ function restoreGuides(list){
 }
 // точка для рисования: вершина > точка на ребре (0.1 мм) > точка на грани
 function linePickPoint(q){
-  linePickPoint._faceCentroid = null;
+  linePickPoint._faceCenters = null;
   const c = pickCorner(q);
   if(c) return {pos:c.pos.clone(), kind:'vertex'};
   // центры дуг/окружностей и центр плоской грани (Snap Center)
@@ -807,12 +902,15 @@ function linePickPoint(q){
     const f = raycastFace(q);
     if(f){
       const patch = facePatchCached(f.faceIndex);
-      if(patch && patch.centroid){
-        projToQuad(patch.centroid, q.cam, q.w, q.h, P);
-        if(Math.hypot(P.x-q.mx, P.y-q.my) < 12)
-          return {pos: patch.centroid.clone(), kind:'center'};
-        // центр грани как подсказка-кандидат для hintDot
-        linePickPoint._faceCentroid = patch.centroid;
+      if(patch && patch.centers){
+        for(const cs of patch.centers){
+          projToQuad(cs, q.cam, q.w, q.h, P);
+          if(Math.hypot(P.x-q.mx, P.y-q.my) < 12)
+            return {pos: cs.clone(), kind:'center'};
+        }
+        // центры (грань может состоять из нескольких прямоугольников) —
+        // подсказки-кандидаты для hintDots
+        linePickPoint._faceCenters = patch.centers;
       }
     }
   }
@@ -829,7 +927,7 @@ function linePickPoint(q){
   if(f){
     const p = f.point.clone();
     p.set(snapMM(p.x), snapMM(p.y), snapMM(p.z));
-    return {pos:p, kind:'on face', centroid: linePickPoint._faceCentroid || null};
+    return {pos:p, kind:'on face', centers: linePickPoint._faceCenters || null};
   }
   return null;
 }
@@ -964,6 +1062,55 @@ function splitMeshByChord(A, B, wholeLine){
     // середина линии реза должна лежать внутри отрезка хорды — иначе это
     // продолжение линии за её концом (режет дольки вдоль, до вала)
     const inChord = (t1,t2) => { const tm=(t1+t2)/2; return tm > -0.05 && tm < chordLen+0.05; };
+    // конец хорды внутри треугольника (угол полилинии): обычный рез тут
+    // отбрасывается правилом середины и угол остаётся рваным — ставим
+    // вершину в конце хорды и дорезаем веером вокруг неё
+    if(!wholeLine){
+      const nAbs=[Math.abs(n.x),Math.abs(n.y),Math.abs(n.z)];
+      const dropAx = nAbs[0]>=nAbs[1]&&nAbs[0]>=nAbs[2] ? 0 : (nAbs[1]>=nAbs[2] ? 1 : 2);
+      const to2e = p => dropAx===0 ? [p.y,p.z] : (dropAx===1 ? [p.x,p.z] : [p.x,p.y]);
+      const t2 = V.map(to2e);
+      const orr2=(p,q,r)=>(q[0]-p[0])*(r[1]-p[1])-(q[1]-p[1])*(r[0]-p[0]);
+      const sgnT = Math.sign(orr2(t2[0],t2[1],t2[2])) || 1;
+      const inside = p => { // строго внутри: до каждой стороны больше 0.1 мм
+        for(let e2=0;e2<3;e2++){
+          const a=t2[e2], b=t2[(e2+1)%3];
+          const L=Math.hypot(b[0]-a[0],b[1]-a[1])||1;
+          if(orr2(a,b,p)*sgnT/L < 0.1) return false;
+        }
+        return true;
+      };
+      let done = false;
+      for(const E of [A, B]){
+        if(!inside(to2e(E))) continue;
+        // точка входа хорды: пересечение линии с границей внутри отрезка
+        const cand = [];
+        for(let e2=0;e2<3;e2++){
+          const j2=(e2+1)%3;
+          if(s[e2]===0){ cand.push({P:V[e2].clone(), edge:-1}); continue; }
+          if(s[e2]*s[j2] < 0)
+            cand.push({P:new THREE.Vector3().lerpVectors(V[e2],V[j2], d[e2]/(d[e2]-d[j2])), edge:e2});
+        }
+        const inRange = cand.filter(c=>{ const t=tOf(c.P); return t>-0.05 && t<chordLen+0.05; });
+        if(inRange.length !== 1) break;
+        const P = snapV(inRange[0].P);
+        if(P.distanceTo(E) < 0.1) break; // хорда едва зацепила треугольник
+        const edge = isVert(P) >= 0 ? -1 : inRange[0].edge;
+        const fan = [];
+        for(let e2=0;e2<3;e2++){
+          const X=V[e2], Y=V[(e2+1)%3];
+          if(edge === e2)
+            fan.push([X.clone(), P.clone(), E.clone()], [P.clone(), Y.clone(), E.clone()]);
+          else
+            fan.push([X.clone(), Y.clone(), E.clone()]);
+        }
+        splitTris.set(ti, fan);
+        if(edge >= 0) edgeCuts.set(ekey(V[edge], V[(edge+1)%3]), P.clone());
+        done = true;
+        break;
+      }
+      if(done) continue;
+    }
     const zeroIdx = s.indexOf(0);
     if(zeroIdx >= 0){
       // вершина на линии, две другие по разные стороны
@@ -2179,7 +2326,7 @@ const raycaster = new THREE.Raycaster();
 canvas.addEventListener('pointermove', e=>{
   const q = quadPos(e);
   lastMX = e.clientX; lastMY = e.clientY;
-  hintDot.visible = false; // кандидаты пересчитываются каждым движением
+  hideHints(); // кандидаты пересчитываются каждым движением
   if(!toolTag.hidden){ // бейдж инструмента следует за курсором
     const vr = view.getBoundingClientRect();
     toolTag.style.left = (e.clientX - vr.left + 14)+'px';
@@ -2485,8 +2632,7 @@ canvas.addEventListener('pointermove', e=>{
     }
     setHover(h, isMid);
     if(!h.chain.closed && !isMid){ // кандидат-середина видна заранее
-      hintDot.position.copy(chainPointAt(h.chain, h.chain.total/2));
-      hintDot.visible = true;
+      showHintAt(chainPointAt(h.chain, h.chain.total/2));
     }
     const arc = fitArc(h.chain);
     tipAt(e, (isMid ? 'Midpoint' : 'On edge · '+h.s.toFixed(1)+' mm')
@@ -2578,7 +2724,7 @@ function loop(t){
   for(const m of ringMarkers) dot(m);
   for(const m of divDots) dot(m);
   for(const a of anchors) dot(a.marker);
-  dot(hintDot, 0.0035);
+  for(const d of hintDots) dot(d, 0.0035);
   // билборды масштабируются от реального расстояния до камеры —
   // постоянный экранный размер при любом зуме
   for(const sp of axisLabels){
