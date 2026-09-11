@@ -943,6 +943,23 @@ function shiftOrtho(from, to){
   return {p, ax};
 }
 
+// автопривязка к осям как в SketchUp: резинка почти параллельна мировой оси —
+// линию притягиваем к оси и красим её цветом; чуть увёл курсор — отпустило
+function axisInfer(from, to){
+  const d = new THREE.Vector3().subVectors(to, from);
+  const len = d.length();
+  if(len < 1.0) return null;
+  let bestAx = null, best = 0.992; // порог ~7 градусов
+  for(const ax of ['x','y','z']){
+    const c = Math.abs(d[ax]) / len;
+    if(c > best){ best = c; bestAx = ax; }
+  }
+  if(!bestAx) return null;
+  const p = from.clone();
+  p[bestAx] += snapMM(d[bestAx]);
+  return {p, ax: bestAx};
+}
+
 function commitLinePoint(pos){
   if(!lineStart){ lineStart = pos.clone(); }
   else {
@@ -2253,6 +2270,10 @@ canvas.addEventListener('pointerdown', e=>{
       if(pt){
         let pos = pt.pos;
         if(lineStart && e.shiftKey) pos = shiftOrtho(lineStart, pos).p; // 90°, как в Draft
+        else if(lineStart && (pt.kind==='on face' || pt.kind==='on edge')){
+          const a = axisInfer(lineStart, pos); // клик кладёт точку туда же, куда тянуло
+          if(a) pos = a.p;
+        }
         commitLinePoint(pos);
         lineDirLock = null;
         killRubber();
@@ -2579,11 +2600,14 @@ canvas.addEventListener('pointermove', e=>{
     if(!q.inside){ ghost.visible=false; killRubber(); tipHide(); return; }
     const pt = linePickPoint(q);
     if(pt){
-      let pos = pt.pos, note = pt.kind;
+      let pos = pt.pos, note = pt.kind, axSnap = null;
       if(lineStart && e.shiftKey){ // Shift: строго 90° вдоль ближайшей оси (Draft)
         const o = shiftOrtho(lineStart, pos);
         pos = o.p;
         note += ' · 90° axis ' + o.ax.toUpperCase();
+      } else if(lineStart && (pt.kind==='on face' || pt.kind==='on edge')){
+        axSnap = axisInfer(lineStart, pos); // сильные магниты (вершина/центр) важнее оси
+        if(axSnap){ pos = axSnap.p; note = 'on axis ' + axSnap.ax.toUpperCase(); }
       }
       lastLinePt = pos.clone();
       ghost.material.color.setHex(pt.kind==='vertex' ? C_VERT : C_EDGE);
@@ -2593,7 +2617,8 @@ canvas.addEventListener('pointermove', e=>{
       if(lineStart){
         killRubber();
         const rg = new THREE.BufferGeometry().setFromPoints([lineStart, pos]);
-        rubber = new THREE.Line(rg, new THREE.LineBasicMaterial({color:0x4da3ff}));
+        rubber = new THREE.Line(rg, new THREE.LineBasicMaterial(
+          {color: axSnap ? AXIS_COLORS[axSnap.ax] : 0x9aa2b1}));
         scene.add(rubber);
         msg += ' · L '+lineStart.distanceTo(pos).toFixed(1)+' mm';
         if(lineLenStr) msg += ' · typed: '+lineLenStr+' mm (Enter)';
