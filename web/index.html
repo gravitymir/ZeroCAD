@@ -102,6 +102,9 @@
   #exPopup .prow,#divPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
   #exPopup input,#divPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
+  /* поле выдавливания: цифры крупнее; целые мм — зелёные, дробные — белые */
+  #exPopup input{width:96px;font-size:17px;font-variant-numeric:tabular-nums}
+  #exPopup input.whole{color:#2ecc40}
   #divPopup{cursor:move;padding:14px 16px}
   #divPopup .prow{font-size:19px}
   #divPopup .dvs{padding:6px 16px;font-size:19px;flex:none;
@@ -1662,32 +1665,64 @@ function fillLoop(loop){
 
 // точное выдавливание выбранной грани: + наружу (pad), − внутрь (pocket)
 const exPopup = document.getElementById('exPopup'), ex_val = document.getElementById('ex_val');
+let exLive = null; // живой предпросмотр: {idx, n, applied, pushed}
 function openExtrude(){
   if(!ppPatch) return;
+  // вершины лоскута по индексам: после сдвига ключи позиций меняются
+  const pos = mesh.geometry.attributes.position.array;
+  const idx = [];
+  for(let i=0;i<pos.length;i+=3)
+    if(ppPatch.keys.has(keyOf(pos[i],pos[i+1],pos[i+2]))) idx.push(i);
+  exLive = {idx, n: ppPatch.normal.clone(), applied: 0, pushed: false};
   const vr = view.getBoundingClientRect();
   exPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 220) + 'px';
   exPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 90) + 'px';
   exPopup.hidden = false;
+  paintExVal();
   ex_val.focus(); ex_val.select();
 }
-function closeExtrude(){ exPopup.hidden = true; }
-function extrudeSelected(dist){
-  if(!ppPatch || !dist) return;
-  pushUndo();
-  const pos = mesh.geometry.attributes.position.array;
-  const n = ppPatch.normal;
-  for(let i=0;i<pos.length;i+=3){
-    if(!ppPatch.keys.has(keyOf(pos[i],pos[i+1],pos[i+2]))) continue;
-    pos[i] += n.x*dist; pos[i+1] += n.y*dist; pos[i+2] += n.z*dist;
-  }
-  mesh.geometry.attributes.position.needsUpdate = true;
-  mesh.geometry.computeVertexNormals();
-  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
-  hidePatch(); ppPatch = null;
-  extractEdges();
+// целые миллиметры — зелёным: видно, что дробной части нет
+function paintExVal(){
+  const v = +ex_val.value;
+  ex_val.classList.toggle('whole', Number.isFinite(v) && Math.abs(v - Math.round(v)) < 1e-9);
 }
+// сдвиг грани к значению v — модель меняется прямо под роликом/цифрами
+function applyExtrudeLive(v){
+  if(!exLive) return;
+  v = Math.round(v*10)/10;
+  if(!exLive.pushed){ pushUndo(); exLive.pushed = true; } // один снимок на сессию окна
+  const d = v - exLive.applied;
+  if(d){
+    const pos = mesh.geometry.attributes.position.array;
+    for(const i of exLive.idx){
+      pos[i] += exLive.n.x*d; pos[i+1] += exLive.n.y*d; pos[i+2] += exLive.n.z*d;
+    }
+    mesh.geometry.attributes.position.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
+    if(ppHi) ppHi.position.addScaledVector(exLive.n, d); // зелёная подсветка едет с гранью
+    if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+    exLive.applied = v;
+  }
+  paintExVal();
+}
+function commitExtrude(){
+  if(!exLive){ exPopup.hidden = true; return; }
+  applyExtrudeLive(snapMM(+ex_val.value||0));
+  if(exLive.applied){ hidePatch(); ppPatch = null; extractEdges(); }
+  exLive = null;
+  exPopup.hidden = true;
+}
+function closeExtrude(){ // Esc: живой предпросмотр откатывается
+  if(exLive && exLive.pushed && exLive.applied) undo();
+  exLive = null;
+  exPopup.hidden = true;
+}
+ex_val.addEventListener('input', ()=>{
+  const v = +ex_val.value;
+  if(Number.isFinite(v)) applyExtrudeLive(snapMM(v)); else paintExVal();
+});
 ex_val.addEventListener('keydown', e=>{
-  if(e.key === 'Enter'){ e.preventDefault(); extrudeSelected(snapMM(+ex_val.value||0)); closeExtrude(); }
+  if(e.key === 'Enter'){ e.preventDefault(); commitExtrude(); }
   if(e.key === 'Escape'){ closeExtrude(); }
   e.stopPropagation();
 });
@@ -2161,6 +2196,7 @@ function wheelStep(inp, apply){
   }, {passive:false});
 }
 wheelStep(p_rad, v=>applyRadiusLive(Math.max(0.2, v)));
+wheelStep(ex_val, v=>applyExtrudeLive(v)); // ролик над полем двигает грань вживую
 wheelStep(p_off, v=>{
   if(!placing) return;
   placing.s = Math.max(0, Math.min(placing.chain.total, v));
