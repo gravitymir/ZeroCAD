@@ -937,8 +937,9 @@ const ORBIT_CURSOR = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(
   '<path d="M6.2 2.2l-1.9 5.6 5.8-1.2z" fill="#f2f5fa" stroke="#10131a" stroke-width="1"/>' +
   '</svg>') + '") 11 11, grab';
 function updateOrbitCursor(on){
-  if(!(pointMode || lineMode || circleMode || ppMode)) return;
-  canvas.style.cursor = on ? ORBIT_CURSOR : 'crosshair';
+  const toolActive = pointMode || lineMode || circleMode || ppMode;
+  if(!toolActive && !exLive) return; // окно Extrude тоже даёт Ctrl-орбиту
+  canvas.style.cursor = on ? ORBIT_CURSOR : (toolActive ? 'crosshair' : '');
 }
 window.addEventListener('keydown', e=>{ if(e.key === 'Control') updateOrbitCursor(true); });
 window.addEventListener('keyup',   e=>{ if(e.key === 'Control') updateOrbitCursor(false); });
@@ -3333,10 +3334,17 @@ canvas.addEventListener('pointerdown', e=>{
   if(!q.inside) return;
   hideChordHint(); chordG = 0;
   if(e.button===0 && gizmoClick(e)) return; // клик по ViewCube
-  // окно выдавливания привязано к выбранной грани: ЛКМ по сцене —
-  // человек пошёл к другим объектам, инструмент закрывается (предпросмотр
-  // откатывается), а клик обрабатывается как обычно
-  if(exLive && e.button === 0) closeExtrude();
+  // окно выдавливания привязано к выбранной грани: Ctrl+ЛКМ — временная
+  // орбита (окно живёт), обычный ЛКМ — человек пошёл к другим объектам,
+  // инструмент закрывается и клик обрабатывается как обычно
+  if(exLive && e.button === 0){
+    if(e.ctrlKey && q.is3D){
+      drag = {x: e.clientX, y: e.clientY, b: 1};
+      try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+      return;
+    }
+    closeExtrude();
+  }
   if(divCtx){ // окно деления открыто: камера свободна, инструменты — на паузе
     tipHide();
     if(q.is3D){
