@@ -534,7 +534,8 @@ let hover = null;       // {chain, s}
 let placing = null;     // {chain, s} — открыта всплывашка
 let anchors = [];       // поставленные точки {pos, marker, bend?}
 let dragPt = null;      // текущее перетаскивание {a?, isSel, start, plane, idx|bendRun, markers}
-let pendingEdge = null; // нажатие на ребро: клик => попап, движение => драг ребра
+let pendingEdge = null; // нажатие на ребро: клик => выбор, движение => камера
+let pendingVertex = null; // нажатие на вершину: клик => выбор, движение => камера
 let edgeDrag = null;    // перенос целого ребра (как перетаскивание линии в Sketcher)
 let modified = false;
 // нормали при драге пересчитываем не чаще раза в 120 мс (иначе fps проседает)
@@ -2005,6 +2006,45 @@ function healTJunctions(){
   }
 }
 
+// «Антиматерия»: выдавливание, прошедшее сквозь тело в пустоту, оставляет
+// замкнутые вывернутые наизнанку компоненты (грани смотрят внутрь, объём
+// отрицательный — поэтому рёбра выбираются, а грани нет). Пустоту не
+// вычитаем — такие оболочки удаляем целиком.
+function removeInvertedShells(){
+  const pos = mesh.geometry.attributes.position.array;
+  const nT = pos.length/9;
+  if(nT < 4) return;
+  const parent = new Int32Array(nT);
+  for(let i=0;i<nT;i++) parent[i]=i;
+  const find = i => { while(parent[i]!==i){ parent[i]=parent[parent[i]]; i=parent[i]; } return i; };
+  const eMap = new Map();
+  for(let t=0;t<nT;t++) for(let e=0;e<3;e++){
+    const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+    const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+    const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+    const prev = eMap.get(ek);
+    if(prev !== undefined){
+      let a=find(prev), b=find(t);
+      if(a!==b) parent[a]=b;
+    } else eMap.set(ek, t);
+  }
+  const vol = new Map(); // корень компоненты -> знаковый объём
+  for(let t=0;t<nT;t++){
+    const o=t*9, r=find(t);
+    const v = (pos[o]  *(pos[o+4]*pos[o+8]-pos[o+5]*pos[o+7])
+             - pos[o+1]*(pos[o+3]*pos[o+8]-pos[o+5]*pos[o+6])
+             + pos[o+2]*(pos[o+3]*pos[o+7]-pos[o+4]*pos[o+6]))/6;
+    vol.set(r, (vol.get(r)||0) + v);
+  }
+  const bad = new Set();
+  for(const [r,v] of vol) if(v < -0.1) bad.add(r);
+  if(!bad.size || bad.size === vol.size) return; // всю модель не удаляем
+  const keep = [];
+  for(let t=0;t<nT;t++)
+    if(!bad.has(find(t))) for(let j=0;j<9;j++) keep.push(pos[t*9+j]);
+  setMeshFromArray(new Float32Array(keep));
+}
+
 let exLive = null; // живой предпросмотр: {idx, n, applied}
 function openExtrude(){
   if(!ppPatch) return;
@@ -2048,7 +2088,7 @@ function commitExtrude(){
   const applied = exLive.applied;
   exLive = null;
   exPopup.hidden = true;
-  if(applied){ hidePatch(); ppPatch = null; cleanupMesh(); healCoplanarOverlaps(); healTJunctions(); extractEdges(); }
+  if(applied){ hidePatch(); ppPatch = null; cleanupMesh(); healCoplanarOverlaps(); healTJunctions(); removeInvertedShells(); extractEdges(); }
   else undo(); // нулевая высота: убираем врезанные стенки снимком
 }
 function closeExtrude(){ // Esc: стенки уже врезаны — откат всей сессии окна
@@ -2085,9 +2125,31 @@ function updateVPanel(){
 }
 function selectVertex(pos){
   selAnchor = null;
+  clearEdgeSel(); // выбор взаимоисключающий
+  if(!ppMode){ hidePatch(); ppPatch = null; }
   sel = {pos: pos.clone()};
   selMarker.position.copy(sel.pos); selMarker.visible = true;
   updateVPanel(); vpanel.hidden = false;
+}
+// палитра выбранной вершины: координаты — данные, команды — подсказка
+function showVertexPalette(){
+  tipHide();
+  const p = sel && sel.pos;
+  const info = p
+    ? 'Vertex · X ' + p.x.toFixed(1) + ' · Y ' + p.y.toFixed(1) + ' · Z ' + p.z.toFixed(1)
+    : 'Vertex';
+  const vr = view.getBoundingClientRect();
+  chordHint.innerHTML =
+    '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
+    (!hintsChk.checked ? '' :
+    '<div><span class="key">X/Y/Z</span> — exact move (panel · G,V)</div>' +
+    '<div><span class="key">Alt+drag</span> — ring · <span class="key">Shift</span> — column</div>' +
+    '<div style="opacity:.55">Esc — deselect</div>');
+  chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
+  chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
+  chordHint.hidden = false;
+  clearTimeout(showChordHint._t);
+  showChordHint._t = setTimeout(hideChordHint, 4000);
 }
 // выбранная точка — зелёная, как ребро и грань (selection во FreeCAD)
 let selAnchor = null;
@@ -3047,8 +3109,15 @@ canvas.addEventListener('pointerdown', e=>{
   if(e.button===0){
     const a = anchorAt(q);
     const c = a ? null : pickCorner(q);
-    if(a || c){ // тащим точку или вершину: плоскость параллельна экрану окна
+    // точки тянутся сразу; вершины — только с модификатором (кольцо/колонна),
+    // обычный клик по вершине лишь выбирает, а драг остаётся камерой
+    if(a || (c && (e.altKey || e.ctrlKey || e.shiftKey))){
       beginDrag(a, c, q, e.altKey, e.pointerId, e.ctrlKey, e.shiftKey);
+      return;
+    }
+    if(c){
+      pendingVertex = {pos: c.pos.clone(), x: e.clientX, y: e.clientY};
+      try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
       return;
     }
     if(e.ctrlKey && hover){ // Ctrl+клик: копим выбор рёбер (FreeCAD/SketchUp)
@@ -3088,6 +3157,12 @@ canvas.addEventListener('pointerup', e=>{
     toggleEdgeSel(pe.chain);
     showEdgePalette(pe.chain);
   }
+  if(pendingVertex){
+    // без движения — клик по вершине: зелёный выбор + панель X/Y/Z
+    const pv = pendingVertex; pendingVertex = null;
+    selectVertex(pv.pos);
+    showVertexPalette();
+  }
   if(drag && drag.click && !pointMode && !lineMode && !circleMode && !ppMode && !divCtx
      && Math.hypot(e.clientX-drag.click.x, e.clientY-drag.click.y) < 3){
     // клик ЛКМ без движения: по грани — выбрать её, в пустоту — снять весь выбор
@@ -3107,7 +3182,7 @@ canvas.addEventListener('pointerup', e=>{
     const revert = !ppDrag.snapPushed, snap = ppDrag.snap;
     ppDrag=null; tipHide(); hidePatch(); ppPatch=null;
     if(revert) applySnapshot(snap); // не тянули: убрать стенки нулевой высоты
-    else { normalsFlush(); cleanupMesh(); healCoplanarOverlaps(); healTJunctions(); extractEdges(); }
+    else { normalsFlush(); cleanupMesh(); healCoplanarOverlaps(); healTJunctions(); removeInvertedShells(); extractEdges(); }
   }
   if(dragPt){
     normalsFlush();
@@ -3133,6 +3208,14 @@ canvas.addEventListener('pointermove', e=>{
     const vr = view.getBoundingClientRect();
     toolTag.style.left = (e.clientX - vr.left + 14)+'px';
     toolTag.style.top  = (e.clientY - vr.top - 20)+'px';
+  }
+  if(pendingVertex){
+    if(Math.hypot(e.clientX-pendingVertex.x, e.clientY-pendingVertex.y) > 4){
+      // потащили с вершины — это камера, геометрию двигают инструменты
+      const pv = pendingVertex; pendingVertex = null;
+      vGhost.visible = false; tipHide();
+      if(!drag) drag = {x: pv.x, y: pv.y, b: 0};
+    }
   }
   if(pendingEdge && !edgeDrag){
     if(Math.hypot(e.clientX-pendingEdge.x, e.clientY-pendingEdge.y) > 4){
