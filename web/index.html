@@ -711,6 +711,7 @@ function facePatchCached(fi){
     aSum += ar;
   }
   cachedPatch.centroid = c.divideScalar(aSum || 1);
+  cachedPatch.area = aSum;
   cachedPatch.centers = patchCenters(cachedPatch);
   return cachedPatch;
 }
@@ -790,6 +791,12 @@ function patchCenters(patch){
     open = next;
   }
   if(!rects.length) return [patch.centroid];
+  // единственный прямоугольник, покрывающий всю площадь — грань прямоугольная
+  if(rects.length === 1){
+    const r = rects[0], w = Math.abs(r.x1-r.x0), h = Math.abs(r.y1-r.y0);
+    if(patch.area && Math.abs(w*h - patch.area) < Math.max(0.5, patch.area*0.02))
+      patch.rectDims = [w, h];
+  }
   rects.sort((a,b)=>(b.x1-b.x0)*(b.y1-b.y0)-(a.x1-a.x0)*(a.y1-a.y0));
   return rects.slice(0, HINT_MAX).map(r=>{
     const cx = (r.x0+r.x1)/2, cy = (r.y0+r.y1)/2;
@@ -3104,7 +3111,7 @@ canvas.addEventListener('pointermove', e=>{
     ghost.visible = false;
     if(!ppPatch && !ppMode) hidePatch();
     const arc = fitArc(h.chain);
-    tipAt(e, (h.chain.isGuide ? 'Line · ' : 'Edge · ') + h.chain.total.toFixed(1)+' mm'
+    tipAt(e, (h.chain.isGuide ? 'Line' : 'Edge') + '<br>' + h.chain.total.toFixed(1)+' mm'
              + (arc ? '<br>Arc R '+arc.R.toFixed(1)+' mm' : ''));
     return;
   }
@@ -3113,8 +3120,17 @@ canvas.addEventListener('pointermove', e=>{
   if(q.inside && !ppPatch && !ppMode){
     const f = raycastFace(q);
     if(f){
-      showPatch(facePatchCached(f.faceIndex), C_EDGE);
-      tipAt(e, 'Face');
+      const patch = facePatchCached(f.faceIndex);
+      showPatch(patch, C_EDGE);
+      let msg = 'Face';
+      if(patch.rectDims){ // квадрат: сторона и площадь; прямоугольник: площадь
+        const [a, b] = patch.rectDims;
+        const area = (Math.round(a*b*10)/10).toString();
+        msg = Math.abs(a - b) < 0.05
+          ? 'Square<br>side ' + a.toFixed(1) + ' mm<br>' + area + ' mm²'
+          : 'Rectangle<br>' + area + ' mm²';
+      }
+      tipAt(e, msg);
       return;
     }
     hidePatch();
