@@ -378,9 +378,9 @@ const gizmoCube = (()=>{
     push(mi, pts, [0,0, 1,0, 0.5,1]);
   };
   // грани-таблички (порядок материалов: RIGHT,LEFT,BACK,FRONT,TOP,BOTTOM)
-  quad(0, [A,-S,-S],[A, S,-S],[A, S, S],[A,-S, S], true);   // +X RIGHT
-  quad(1, [-A, S,-S],[-A,-S,-S],[-A,-S, S],[-A, S, S], true); // -X LEFT
-  quad(2, [ S, A,-S],[-S, A,-S],[-S, A, S],[ S, A, S], true); // +Y BACK
+  quad(0, [A,-S,-S],[A, S,-S],[A, S, S],[A,-S, S], false);   // +X RIGHT
+  quad(1, [-A, S,-S],[-A,-S,-S],[-A,-S, S],[-A, S, S], false); // -X LEFT
+  quad(2, [ S, A,-S],[-S, A,-S],[-S, A, S],[ S, A, S], false); // +Y BACK
   quad(3, [-S,-A,-S],[ S,-A,-S],[ S,-A, S],[-S,-A, S], false); // -Y FRONT
   quad(4, [-S,-S, A],[ S,-S, A],[ S, S, A],[-S, S, A], false); // +Z TOP
   quad(5, [-S, S,-A],[ S, S,-A],[ S,-S,-A],[-S,-S,-A], true);  // -Z BOTTOM
@@ -2054,6 +2054,7 @@ function loop(t){
     camTarget.z + camDist*sp);
   persp.lookAt(camTarget);
 
+  if(window.__vcReady) updateVcArrows();
   // маркеры-точки: постоянный экранный размер ~7px, масштаб от реального
   // расстояния до камеры (не «раздуваются» при приближении)
   const dot = (m, k) => { if(m.visible !== false) m.scale.setScalar(
@@ -2155,6 +2156,13 @@ vcnav.addEventListener('click', e=>{
 });
 window.__vcReady = true;
 placeVcNav();
+// стрелки наклона прячутся на пределе (дальше крутить некуда)
+const vcUp = vcnav.querySelector('[data-act=up]');
+const vcDown = vcnav.querySelector('[data-act=down]');
+function updateVcArrows(){
+  vcUp.style.visibility = pitch >= 1.5 - 1e-3 ? 'hidden' : '';
+  vcDown.style.visibility = pitch <= -1.5 + 1e-3 ? 'hidden' : '';
+}
 
 resize(); rebuild(); requestAnimationFrame(loop);
 </script>
