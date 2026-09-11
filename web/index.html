@@ -80,7 +80,7 @@
   #vpanel b{color:#2ecc40}
   /* полупрозрачный тултип при перетаскивании */
   #dragTip{position:absolute;z-index:6;background:rgba(30,33,40,.78);border:1px solid var(--line);
-    border-radius:8px;padding:6px 9px;font-size:11px;line-height:1.5;color:var(--text);
+    border-radius:8px;padding:8px 12px;font-size:22px;line-height:1.5;color:var(--text);
     font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
   #dragTip[hidden]{display:none}
   #dragTip .d{color:var(--accent2)}
@@ -1376,14 +1376,9 @@ function rayLineParam(ray, P, dir){
 const dragTip = document.getElementById('dragTip');
 const toolTag = document.getElementById('toolTag');
 function updateToolTag(){
-  if(pointMode){ toolTag.textContent = 'G,Y · POINT'; toolTag.hidden = false; }
-  else if(circleMode){ toolTag.textContent = 'G,C · CIRCLE'; toolTag.hidden = false; }
-  else if(lineMode){
-    toolTag.textContent = lineChain ? 'G,M · POLYLINE' : 'G,L · LINE';
-    toolTag.hidden = false;
-  }
-  else if(ppMode){ toolTag.textContent = 'P · PUSH/PULL'; toolTag.hidden = false; }
-  else toolTag.hidden = true;
+  // бейдж у курсора убран по просьбе пользователя: курсор-крестик и HUD
+  // внизу уже говорят, какой инструмент активен
+  toolTag.hidden = true;
 }
 // палитра продолжений после G — полупрозрачный список у курсора
 const chordHint = document.getElementById('chordHint');
