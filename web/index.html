@@ -1615,10 +1615,21 @@ function pickEdge(q, excl){
       t=Math.max(0,Math.min(1,t));
       const ex=P1.x+t*dx-q.mx, ey=P1.y+t*dy-q.my;
       const d=Math.hypot(ex,ey);
-      if(d<bestD){ bestD=d; best={chain:ch, s: ch.cum[i-1]+t*(ch.cum[i]-ch.cum[i-1])}; }
+      if(d<bestD){ bestD=d; best={chain:ch, i}; }
     }
   }
-  return best;
+  if(best){
+    // перспективно-честная позиция: ближайшая точка 3D-отрезка к лучу курсора
+    // (экранная доля пути в перспективе врёт — точка «обгоняла» курсор)
+    const ch = best.chain, i = best.i;
+    const A = ch.pts[i-1], B = ch.pts[i];
+    const segLen = ch.cum[i] - ch.cum[i-1];
+    raycaster.setFromCamera({x: q.mx/q.w*2-1, y: -(q.my/q.h*2-1)}, q.cam);
+    const dir = new THREE.Vector3().subVectors(B, A).normalize();
+    const t3 = Math.max(0, Math.min(segLen, rayLineParam(raycaster.ray, A, dir)));
+    return {chain: ch, s: ch.cum[i-1] + t3};
+  }
+  return null;
 }
 function anchorAt(q){
   const P={x:0,y:0,z:0};
