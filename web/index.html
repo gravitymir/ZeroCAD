@@ -676,6 +676,7 @@ function extractEdges(){
     chains.push({pts:[gd.a.clone(), gd.b.clone()], cum:[0,len], total:len,
                  closed:false, isGuide:true});
   }
+  splitChainsByAnchors(); // точки на ребре делят его на выбираемые куски
   cornerHover = null;
   // оси всегда выходят за габарит модели (буквы не «поглощаются» фигурой)
   {
@@ -807,6 +808,55 @@ function patchCenters(patch){
     return new THREE.Vector3()
       .addScaledVector(u, X).addScaledVector(v, Y).addScaledVector(n0, d0);
   });
+}
+
+// параметр s точки P на цепочке (или null, если P не лежит на ней)
+function chainParamOf(ch, P){
+  for(let i=1;i<ch.pts.length;i++){
+    const A = ch.pts[i-1], B = ch.pts[i];
+    const ab = new THREE.Vector3().subVectors(B, A);
+    const L2 = ab.lengthSq();
+    if(L2 < 1e-12) continue;
+    const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(P, A).dot(ab)/L2));
+    const Q = new THREE.Vector3().copy(A).addScaledVector(ab, t);
+    if(Q.distanceTo(P) < 0.02) return ch.cum[i-1] + Math.sqrt(L2)*t;
+  }
+  return null;
+}
+// кусок цепочки между параметрами s0..s1 — самостоятельная цепочка
+function subChain(ch, s0, s1){
+  const pts = [chainPointAt(ch, s0)];
+  for(let i=0;i<ch.pts.length;i++)
+    if(ch.cum[i] > s0 + 1e-6 && ch.cum[i] < s1 - 1e-6) pts.push(ch.pts[i].clone());
+  pts.push(chainPointAt(ch, s1));
+  const cum = [0];
+  for(let i=1;i<pts.length;i++) cum.push(cum[i-1] + pts[i].distanceTo(pts[i-1]));
+  const sc = {pts, cum, total: cum[cum.length-1], closed: false};
+  if(ch.isGuide) sc.isGuide = true;
+  return sc;
+}
+// поставленные точки режут цепочки: 3 точки на ребре -> 4 выбираемых куска,
+// у каждого своё наведение, выбор, длина и магнит середины (как во FreeCAD)
+function splitChainsByAnchors(){
+  if(!anchors.length) return;
+  const out = [];
+  for(const ch of chains){
+    if(ch.closed){ out.push(ch); continue; } // замкнутые (окружности) не трогаем
+    const ss = [];
+    for(const a of anchors){
+      const s = chainParamOf(ch, a.pos);
+      if(s !== null && s > 0.05 && s < ch.total - 0.05) ss.push(s);
+    }
+    if(!ss.length){ out.push(ch); continue; }
+    ss.sort((x,y)=>x-y);
+    let prev = 0;
+    for(const s of [...ss, ch.total]){
+      if(s - prev < 0.05){ prev = s; continue; }
+      out.push(subChain(ch, prev, s));
+      prev = s;
+    }
+  }
+  chains = out;
 }
 
 function chainPointAt(chain, s){
