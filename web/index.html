@@ -1004,15 +1004,21 @@ let lastMX = 0, lastMY = 0;
 function showChordHint(){
   if(!hintsChk.checked) return; // профи подсказки не нужны
   const vr = view.getBoundingClientRect();
+  // весь список инструментов: доступные — ярко, недоступные — притушены
+  const row = (key, label, on) =>
+    '<div'+(on ? '' : ' style="opacity:.35"')+'><span class="key">'+key+'</span> — '+label+'</div>';
   chordHint.innerHTML =
-    '<div><span class="key">L</span> — Line (single segments)</div>' +
-    '<div><span class="key">M</span> — Polyline (chained)</div>' +
+    row('L', 'Line (single segments)', true) +
+    row('M', 'Polyline (chained)', true) +
+    row('P', 'Push/Pull mode', true) +
+    row('E', 'Extrude face ±mm', !!ppPatch) +
+    row('V', 'Vertex X/Y/Z', !!sel) +
     '<div style="opacity:.55">Esc — cancel</div>';
-  chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
-  chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 150) + 'px';
+  chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 400) + 'px';
+  chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 240) + 'px';
   chordHint.hidden = false;
   clearTimeout(showChordHint._t);
-  showChordHint._t = setTimeout(()=>{ hideChordHint(); chordG = 0; }, 3000);
+  showChordHint._t = setTimeout(()=>{ hideChordHint(); chordG = 0; }, 4000);
 }
 function hideChordHint(){ chordHint.hidden = true; clearTimeout(showChordHint._t); }
 // палитра операций для выбранной грани
@@ -1542,7 +1548,17 @@ window.addEventListener('keydown', e=>{
   }
   if((e.code==='KeyP' || e.key.toLowerCase()==='p') && !e.ctrlKey && !e.altKey && !e.metaKey
      && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
-    e.preventDefault(); setPPMode(!ppMode); return; // P — Push/Pull, как в SketchUp
+    e.preventDefault();
+    if(chordG){ chordG = 0; hideChordHint(); setPPMode(true); }
+    else setPPMode(!ppMode); // P — Push/Pull, как в SketchUp
+    return;
+  }
+  // G,V — фокус в поля X/Y/Z выбранной вершины
+  if((e.code==='KeyV' || e.key.toLowerCase()==='v') && chordG && sel
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    vx.focus(); vx.select();
+    return;
   }
   if(lineMode && lineStart){ // набор длины отрезка с клавиатуры (Measurements SketchUp)
     if(/^[0-9]$/.test(e.key) || e.key==='.' || e.key===','){
@@ -1583,7 +1599,7 @@ window.addEventListener('keydown', e=>{
   if((e.code==='KeyE' || e.key.toLowerCase()==='e') && !e.ctrlKey && !e.altKey && !e.metaKey
      && ppPatch && !ppMode && !lineMode && !dragPt && !ppDrag
      && document.activeElement.tagName!=='INPUT'){
-    e.preventDefault(); hideChordHint(); openExtrude(); return;
+    e.preventDefault(); chordG = 0; hideChordHint(); openExtrude(); return;
   }
   if((e.code==='KeyM' || e.key.toLowerCase()==='m') && !e.ctrlKey && !e.altKey && !e.metaKey
      && chordG && performance.now() - chordG < 3000
