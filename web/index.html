@@ -1743,17 +1743,50 @@ function tipAt(e, html){
 function tipHide(){ dragTip.hidden = true; }
 
 function updateVPanel(){
-  if(!sel) return;
-  vx.value = sel.pos.x.toFixed(1);
-  vy.value = sel.pos.y.toFixed(1);
-  vz.value = sel.pos.z.toFixed(1);
+  const p = selAnchor ? selAnchor.pos : (sel && sel.pos);
+  if(!p) return;
+  vx.value = p.x.toFixed(1);
+  vy.value = p.y.toFixed(1);
+  vz.value = p.z.toFixed(1);
 }
 function selectVertex(pos){
+  selAnchor = null;
   sel = {pos: pos.clone()};
   selMarker.position.copy(sel.pos); selMarker.visible = true;
   updateVPanel(); vpanel.hidden = false;
 }
-function deselect(){ sel = null; selMarker.visible = false; vpanel.hidden = true; clearRingMarkers(); }
+// выбранная точка — зелёная, как ребро и грань (selection во FreeCAD)
+let selAnchor = null;
+function selectAnchor(a){
+  deselect();
+  selAnchor = a;
+  selMarker.position.copy(a.pos); selMarker.visible = true;
+  updateVPanel(); vpanel.hidden = false;
+  showPointPalette();
+}
+function showPointPalette(){
+  if(!hintsChk.checked) return;
+  const vr = view.getBoundingClientRect();
+  chordHint.innerHTML =
+    '<div><span class="key">Drag</span> — move point</div>' +
+    '<div><span class="key">G,V</span> — edit X/Y/Z</div>' +
+    '<div><span class="key">Del</span> — delete point</div>' +
+    '<div style="opacity:.55">Esc — deselect</div>';
+  chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
+  chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 150) + 'px';
+  chordHint.hidden = false;
+  clearTimeout(showChordHint._t);
+  showChordHint._t = setTimeout(hideChordHint, 4000);
+}
+function deleteSelAnchor(){
+  if(!selAnchor) return;
+  pushUndo(); // снимок хранит и точки — Ctrl+Z вернёт
+  const i = anchors.indexOf(selAnchor);
+  scene.remove(selAnchor.marker);
+  if(i >= 0) anchors.splice(i, 1);
+  deselect(); hideChordHint();
+}
+function deselect(){ sel = null; selAnchor = null; selMarker.visible = false; vpanel.hidden = true; clearRingMarkers(); }
 
 // перенос всех совпадающих вершин буфера в новую позицию
 function moveVerticesByKey(oldPos, newPos){
@@ -1766,11 +1799,18 @@ function moveVerticesByKey(oldPos, newPos){
   if(!modified){ modified=true; s_mod.textContent='yes'; }
 }
 for(const inp of [vx,vy,vz]) inp.addEventListener('change', ()=>{
-  if(!sel) return;
+  if(!sel && !selAnchor) return;
   pushUndo();
   const np = new THREE.Vector3(snapMM(+vx.value||0), snapMM(+vy.value||0), snapMM(+vz.value||0));
-  moveVerticesByKey(sel.pos, np);
-  sel.pos.copy(np); selMarker.position.copy(np);
+  if(selAnchor){
+    // точка, врезанная в ребро, тянет за собой и совпадающие вершины сетки
+    moveVerticesByKey(selAnchor.pos, np);
+    selAnchor.pos.copy(np); selAnchor.marker.position.copy(np);
+  } else {
+    moveVerticesByKey(sel.pos, np);
+    sel.pos.copy(np);
+  }
+  selMarker.position.copy(np);
   updateVPanel(); extractEdges();
 });
 function makeAnchor(p){
@@ -2344,7 +2384,7 @@ window.addEventListener('keydown', e=>{
     return;
   }
   // G,V — фокус в поля X/Y/Z выбранной вершины
-  if((e.code==='KeyV' || e.key.toLowerCase()==='v') && chordG && sel
+  if((e.code==='KeyV' || e.key.toLowerCase()==='v') && chordG && (sel || selAnchor)
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); chordG = 0; hideChordHint();
     vx.focus(); vx.select();
@@ -2418,6 +2458,11 @@ window.addEventListener('keydown', e=>{
     const selLoop = edgeSelLoop();
     if(selLoop && fillLoop(selLoop)){ clearEdgeSel(); hideChordHint(); e.preventDefault(); return; }
     if(fillHole()){ e.preventDefault(); return; }
+  }
+  // Del — удалить выбранную точку (как удаление вершины во FreeCAD)
+  if((e.key==='Delete' || e.key==='Backspace') && selAnchor && !dragPt && !ppDrag
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); deleteSelAnchor(); return;
   }
   // Del — удалить выбранную грань (как ластик по грани в SketchUp)
   if((e.key==='Delete' || e.key==='Backspace') && ppPatch && !ppMode && !dragPt && !ppDrag
@@ -2676,9 +2721,13 @@ canvas.addEventListener('pointerup', ()=>{
     // после изгиба запоминаем новые позиции цепочки для следующего раза
     if(dragPt.bendRun && dragPt.a && dragPt.a.bend)
       dragPt.a.bend.pts0 = dragPt.bendRun.cur.map(p=>p.clone());
+    // отпустили не сдвинув — это был клик: выбираем точку зелёным (FreeCAD)
+    const clickedAnchor = dragPt.a && !dragPt.snapPushed
+      && dragPt.start.distanceTo(dragPt.a.pos) < 0.05 ? dragPt.a : null;
     setAxisLock(null);
     snapDot.visible = false;
     dragPt=null; tipHide(); extractEdges();
+    if(clickedAnchor) selectAnchor(clickedAnchor);
   }
   drag=null;
 });
