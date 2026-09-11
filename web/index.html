@@ -2633,9 +2633,6 @@ canvas.addEventListener('pointermove', e=>{
       h.s = h.chain.total/2; isMid = true;
     }
     setHover(h, isMid);
-    if(!h.chain.closed && !isMid){ // кандидат-середина видна заранее
-      showHintAt(chainPointAt(h.chain, h.chain.total/2));
-    }
     const arc = fitArc(h.chain);
     tipAt(e, (isMid ? 'Midpoint' : 'On edge · '+h.s.toFixed(1)+' mm')
              + (arc ? '<br>Arc R '+arc.R.toFixed(1)+' mm' : ''));
