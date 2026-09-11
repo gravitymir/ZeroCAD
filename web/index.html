@@ -60,6 +60,8 @@
   /* всплывашка постановки точки на ребро */
   #popup{position:absolute;z-index:5;background:var(--panel);border:1px solid #2ecc40;
     border-radius:10px;padding:10px 12px;font-size:12px;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  /* атрибут hidden сильнее любых display у наших правил */
+  [hidden]{display:none!important}
   #popup[hidden]{display:none}
   #popup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
   #popup b{color:var(--text);font-variant-numeric:tabular-nums}
