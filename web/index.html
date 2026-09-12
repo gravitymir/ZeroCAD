@@ -94,6 +94,10 @@
     font-size:22px;line-height:1.6;color:var(--muted);pointer-events:none}
   #chordHint[hidden]{display:none}
   #chordHint .key{color:var(--accent2);font-weight:700}
+  /* ручка перетаскивания палитры (правый верхний угол) */
+  #chordHint .chgrip{position:absolute;top:4px;right:8px;cursor:move;
+    pointer-events:auto;color:var(--muted);font-size:15px;line-height:1;padding:3px 5px}
+  #chordHint .chgrip:hover{color:var(--text)}
   /* окна точного выдавливания (E) и деления ребра точками */
   #exPopup,#divPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
     border-radius:10px;padding:10px 12px;font-size:12px}
@@ -106,7 +110,9 @@
   #exPopup .prow{font-size:24px}
   #exPopup input{width:150px;font-size:28px;padding:6px 10px;font-variant-numeric:tabular-nums}
   #exPopup input.whole{color:#2ecc40}
-  #exPopup .exhint{font-size:14px !important}
+  #exPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
+    border:1px solid var(--line);background:var(--panel2);color:var(--text)}
+  #exPopup #ex_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
   #divPopup{cursor:move;padding:14px 16px}
   #divPopup .prow{font-size:19px}
   #divPopup .dvs{padding:6px 16px;font-size:19px;flex:none;
@@ -159,7 +165,7 @@
     </div>
     <div id="exPopup" hidden>
       <div class="prow">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
-      <div class="prow exhint" style="color:var(--muted)">+ out (pad) · − in (pocket) · Enter — apply</div>
+      <div class="prow" style="gap:10px"><button id="ex_ok">OK</button><button id="ex_cancel">Cancel</button></div>
     </div>
     <div id="vcnav">
       <button data-act="home" title="Home view">⌂</button>
@@ -907,6 +913,34 @@ selMarker.visible = false; scene.add(selMarker);
 // маркер цели магнита при перетаскивании (зелёный — вершина, красный — ребро)
 const snapDot = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x52c752})));
 snapDot.visible = false; scene.add(snapDot);
+// концы выбранного ребра/линии: золотой — начало, серебряный — конец
+// (не красный/синий — те визуально привязаны к осям X/Z)
+const selEndA = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0xf5c542})));
+const selEndB = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0xc9d1dc})));
+selEndA.visible = false; selEndB.visible = false;
+scene.add(selEndA); scene.add(selEndB);
+function hideSelEnds(){ selEndA.visible = false; selEndB.visible = false; }
+// центры выбранной грани (бирюзовые, живут пока грань выбрана)
+const selCenterDots = [];
+for(let i=0;i<5;i++){
+  const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x3fd9c9})));
+  m.visible = false; scene.add(m); selCenterDots.push(m);
+}
+function hideSelCenters(){ for(const m of selCenterDots) m.visible = false; }
+function showSelCenters(patch){
+  hideSelCenters();
+  if(!patch || !patch.centers) return;
+  patch.centers.slice(0, selCenterDots.length).forEach((c, i)=>{
+    selCenterDots[i].position.copy(c);
+    selCenterDots[i].visible = true;
+  });
+}
+function showSelEnds(ch){
+  if(!ch || ch.closed){ hideSelEnds(); return; }
+  selEndA.position.copy(ch.pts[0]); selEndA.visible = true;
+  selEndB.position.copy(ch.pts[ch.pts.length-1]); selEndB.visible = true;
+}
+
 // точки-кандидаты: заранее подсвечивают середину ребра / центры грани.
 // Непрямоугольная грань (Г, П, G-образная) раскладывается на прямоугольники,
 // показываем центр каждого — до HINT_MAX штук.
@@ -933,7 +967,7 @@ function showHintCross(corners, n){
   const g = new THREE.BufferGeometry().setFromPoints([
     lift(corners[0]), lift(corners[2]), lift(corners[1]), lift(corners[3])]);
   const l = new THREE.LineSegments(g, new THREE.LineDashedMaterial(
-    {color:0x3fd9c9, dashSize:1.2, gapSize:0.9, transparent:true, opacity:0.55}));
+    {color:0x3a3f47, dashSize:1.2, gapSize:0.9, transparent:true, opacity:0.75}));
   l.computeLineDistances();
   scene.add(l);
   hintLines.push(l);
@@ -1551,7 +1585,10 @@ function showPatch(patch, color){
   ppHi.position.copy(patch.normal).multiplyScalar(0.05); // чуть над гранью
   scene.add(ppHi);
 }
-function hidePatch(){ if(ppHi){ scene.remove(ppHi); ppHi.geometry.dispose(); ppHi=null; } }
+function hidePatch(){
+  if(ppHi){ scene.remove(ppHi); ppHi.geometry.dispose(); ppHi=null; }
+  if(typeof hideSelCenters === 'function') hideSelCenters();
+}
 function raycastFace(q){
   raycaster.setFromCamera({x:q.mx/q.w*2-1, y:-(q.my/q.h*2-1)}, q.cam);
   const hits = raycaster.intersectObject(mesh);
@@ -1577,6 +1614,22 @@ function updateToolTag(){
 // палитра продолжений после G — полупрозрачный список у курсора
 const chordHint = document.getElementById('chordHint');
 let lastMX = 0, lastMY = 0;
+// палитры выбора не исчезают сами; ручка ⠿ — перетащить окно
+const CH_GRIP = '<div class="chgrip" title="Drag">⠿</div>';
+let chGripDrag = null;
+chordHint.addEventListener('pointerdown', ev=>{
+  if(!ev.target.classList || !ev.target.classList.contains('chgrip')) return;
+  const r = chordHint.getBoundingClientRect();
+  chGripDrag = {dx: ev.clientX - r.left, dy: ev.clientY - r.top};
+  ev.preventDefault(); ev.stopPropagation();
+});
+window.addEventListener('pointermove', ev=>{
+  if(!chGripDrag) return;
+  const vr = view.getBoundingClientRect();
+  chordHint.style.left = (ev.clientX - vr.left - chGripDrag.dx) + 'px';
+  chordHint.style.top  = (ev.clientY - vr.top - chGripDrag.dy) + 'px';
+});
+window.addEventListener('pointerup', ()=>{ chGripDrag = null; });
 function showChordHint(){
   if(!hintsChk.checked) return; // профи подсказки не нужны
   const vr = view.getBoundingClientRect();
@@ -1602,19 +1655,21 @@ function hideChordHint(){ chordHint.hidden = true; clearTimeout(showChordHint._t
 // палитра операций для выбранной грани
 function showFacePalette(){
   tipHide(); // информация объекта — в шапке палитры
-  // площадь есть у любой плоской грани — треугольной, Г-образной, любой
-  let info = 'Face' + (ppPatch && ppPatch.area
-    ? ' · ' + (Math.round(ppPatch.area*10)/10) + ' mm²' : '');
+  showSelCenters(ppPatch); // центры грани видны, пока она выбрана
+  // информация в столбик: тип, сторона (у квадрата), площадь
+  const areaStr = ppPatch && ppPatch.area
+    ? (Math.round(ppPatch.area*10)/10) + ' mm²' : null;
+  let info = 'Face' + (areaStr ? '<br>' + areaStr : '');
   if(ppPatch && ppPatch.rectDims){
     const [a, b] = ppPatch.rectDims;
     const area = (Math.round(a*b*10)/10).toString();
     info = Math.abs(a - b) < 0.05
-      ? 'Square · side ' + a.toFixed(1) + ' mm · ' + area + ' mm²'
-      : 'Rectangle · ' + area + ' mm²';
+      ? 'Square<br>side ' + a.toFixed(1) + ' mm<br>' + area + ' mm²'
+      : 'Rectangle<br>' + area + ' mm²';
   }
   const vr = view.getBoundingClientRect();
   // размеры — данные, видны всегда; команды — подсказка, гасится флагом
-  chordHint.innerHTML =
+  chordHint.innerHTML = CH_GRIP +
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     (!hintsChk.checked ? '' :
     '<div><span class="key">P</span> — Push/Pull (drag)</div>' +
@@ -1624,8 +1679,7 @@ function showFacePalette(){
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 150) + 'px';
   chordHint.hidden = false;
-  clearTimeout(showChordHint._t);
-  showChordHint._t = setTimeout(hideChordHint, 4000);
+  clearTimeout(showChordHint._t); // живёт, пока выбор жив
 }
 // удаление выбранной грани (ластик/Del в SketchUp): дырка в оболочке — норма,
 // модель перестаёт быть замкнутой, пока дырку не закроют
@@ -1755,6 +1809,7 @@ function clearEdgeSel(){
   for(const s of edgeSel){ scene.remove(s.line); s.line.geometry.dispose(); }
   edgeSel = [];
   killSelPreview();
+  hideSelEnds();
 }
 function toggleEdgeSel(ch){
   // выбор взаимоисключающий: рёбра снимают выбор грани и точки
@@ -2426,6 +2481,8 @@ ex_val.addEventListener('keydown', e=>{
   if(e.key === 'Escape'){ closeExtrude(); }
   e.stopPropagation();
 });
+document.getElementById('ex_ok').addEventListener('click', commitExtrude);
+document.getElementById('ex_cancel').addEventListener('click', closeExtrude);
 const vpanel = document.getElementById('vpanel'),
       vx=document.getElementById('vx'), vy=document.getElementById('vy'), vz=document.getElementById('vz');
 
@@ -2475,7 +2532,7 @@ function showVertexPalette(){
     ? 'Vertex · X ' + p.x.toFixed(1) + ' · Y ' + p.y.toFixed(1) + ' · Z ' + p.z.toFixed(1)
     : 'Vertex';
   const vr = view.getBoundingClientRect();
-  chordHint.innerHTML =
+  chordHint.innerHTML = CH_GRIP +
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     (!hintsChk.checked ? '' :
     '<div><span class="key">G,V</span> — edit X/Y/Z</div>' +
@@ -2484,8 +2541,7 @@ function showVertexPalette(){
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
   chordHint.hidden = false;
-  clearTimeout(showChordHint._t);
-  showChordHint._t = setTimeout(hideChordHint, 4000);
+  clearTimeout(showChordHint._t); // живёт, пока выбор жив
 }
 // выбранная точка — зелёная, как ребро и грань (selection во FreeCAD)
 let selAnchor = null;
@@ -2502,7 +2558,7 @@ function showPointPalette(){
   if(!hintsChk.checked) return;
   tipHide();
   const vr = view.getBoundingClientRect();
-  chordHint.innerHTML =
+  chordHint.innerHTML = CH_GRIP +
     '<div><span class="key">Drag</span> — move point</div>' +
     '<div><span class="key">G,V</span> — edit X/Y/Z</div>' +
     '<div><span class="key">Del</span> — delete point</div>' +
@@ -2510,31 +2566,67 @@ function showPointPalette(){
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 150) + 'px';
   chordHint.hidden = false;
-  clearTimeout(showChordHint._t);
-  showChordHint._t = setTimeout(hideChordHint, 4000);
+  clearTimeout(showChordHint._t); // живёт, пока выбор жив
 }
+// M — двигать выбранное ребро: grab-стиль Blender (ребро следует за мышью,
+// клик фиксирует, X/Y/Z — ось, Esc — отмена); клавиша M — Move из SketchUp
+function startEdgeMove(){
+  const s = edgeSel[0];
+  if(!s) return;
+  const pts = s.pts.map(p=>p.clone());
+  const q = quadPos({clientX: lastMX, clientY: lastMY});
+  const nrm = q.is3D
+    ? new THREE.Vector3().subVectors(persp.position, camTarget).normalize()
+    : q.cam.position.clone().normalize();
+  const mid = pts[0].clone().add(pts[pts.length-1]).multiplyScalar(0.5);
+  const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(nrm, mid);
+  // захват от текущего курсора, спроецированного на плоскость — без прыжка
+  const rc = canvas.getBoundingClientRect();
+  const lx = (lastMX - rc.left) - q.ox, ly = (lastMY - rc.top) - q.oy;
+  raycaster.setFromCamera({x: lx/q.w*2-1, y: -(ly/q.h*2-1)}, q.cam);
+  const grab0 = new THREE.Vector3();
+  if(!raycaster.ray.intersectPlane(plane, grab0)) grab0.copy(mid);
+  const im = buildIndexMap(pts);
+  edgeDrag = {
+    pts0: pts.map(p=>p.clone()),
+    idx: pts.map(p=>im.get(keyOf(p.x,p.y,p.z))||[]),
+    grab0, q0: {cam:q.cam, ox:q.ox, oy:q.oy, w:q.w, h:q.h},
+    plane,
+    snap: takeSnapshot(), snapPushed: false,
+    grabMode: true
+  };
+  clearEdgeSel(); hideChordHint();
+  tipAt({clientX:lastMX, clientY:lastMY}, 'Move edge · click — apply · X/Y/Z — axis · Esc — cancel');
+}
+
 // палитра операций для выбранного ребра — как у грани и точки;
 // в шапке данные объекта, F не упоминаем — подскажем при замкнутом контуре
 function showEdgePalette(ch){
   tipHide();
+  showSelEnds(ch); // красная и голубая точки на концах
   const arc = ch && fitArc(ch);
   const info = ch
     ? (ch.isGuide ? 'Line' : 'Edge') + ' · ' + ch.total.toFixed(1) + ' mm'
       + (arc ? ' · R ' + arc.R.toFixed(1) + ' mm' : '')
     : 'Edge';
+  const fmt = p => p.x.toFixed(1) + ' · ' + p.y.toFixed(1) + ' · ' + p.z.toFixed(1);
+  const ends = (ch && !ch.closed)
+    ? '<div><span style="color:#f5c542;font-weight:600">● ' + fmt(ch.pts[0]) + '</span></div>' +
+      '<div><span style="color:#c9d1dc;font-weight:600">● ' + fmt(ch.pts[ch.pts.length-1]) + '</span></div>'
+    : '';
   const vr = view.getBoundingClientRect();
-  // размеры — данные, видны всегда; команды — подсказка, гасится флагом
-  chordHint.innerHTML =
-    '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
+  // размеры и координаты — данные, видны всегда; команды гасятся флагом
+  chordHint.innerHTML = CH_GRIP +
+    '<div style="color:var(--text);font-weight:600">' + info + '</div>' + ends +
     (!hintsChk.checked ? '' :
+    '<div><span class="key">M</span> — move edge</div>' +
     '<div><span class="key">G,Y</span> — point / divide</div>' +
     '<div><span class="key">Ctrl+click</span> — multi-select</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
   chordHint.hidden = false;
-  clearTimeout(showChordHint._t);
-  showChordHint._t = setTimeout(hideChordHint, 4000);
+  clearTimeout(showChordHint._t); // палитра выбора живёт, пока выбор жив
 }
 function deleteSelAnchor(){
   if(!selAnchor) return;
@@ -3152,7 +3244,7 @@ function placePlacingPoint(){
 }
 window.addEventListener('keydown', e=>{
   if(divCtx && e.key === 'Enter'){ e.preventDefault(); commitDivide(); return; }
-  if(dragPt && !e.ctrlKey && !e.altKey && !e.metaKey){
+  if((dragPt || edgeDrag) && !e.ctrlKey && !e.altKey && !e.metaKey){
     const ax = {KeyX:'x', KeyY:'y', KeyZ:'z'}[e.code]
              || {x:'x', y:'y', z:'z'}[e.key.toLowerCase()]; // как в Blender
     if(ax){ e.preventDefault(); setAxisLock(axisLock===ax ? null : ax); return; }
@@ -3266,6 +3358,12 @@ window.addEventListener('keydown', e=>{
     lineChain = true; setLineMode(true); // G,M — полилиния
     return;
   }
+  // M — двигать выбранное ребро (Move, как в SketchUp)
+  if((e.code==='KeyM' || e.key.toLowerCase()==='m') && !e.ctrlKey && !e.altKey && !e.metaKey
+     && !chordG && edgeSel.length === 1 && !dragPt && !ppDrag && !edgeDrag
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); startEdgeMove(); return;
+  }
   if((e.ctrlKey || e.metaKey) && e.shiftKey
      && (e.code==='KeyZ' || e.key.toLowerCase()==='z')){ // Ctrl+Shift+Z — повтор
     e.preventDefault(); redo(); return;
@@ -3281,6 +3379,11 @@ window.addEventListener('keydown', e=>{
     return;
   }
   if(e.key==='Escape'){
+    if(edgeDrag){ // отмена переноса ребра — вернуть как было
+      const pushed = edgeDrag.snapPushed;
+      edgeDrag = null; setAxisLock(null);
+      if(pushed) undo(true);
+    }
     closePopup(); deselect(); tipHide(); clearEdgeSel();
     hideChordHint(); chordG = 0; closeExtrude(); cancelDivide();
     if(!ppMode){ hidePatch(); ppPatch=null; } // снять выбор плоскости
@@ -3361,8 +3464,16 @@ function beginDrag(a, c, q, altKey, pointerId, ctrlKey, shiftKey){
 canvas.addEventListener('pointerdown', e=>{
   const q = quadPos(e);
   if(!q.inside) return;
-  hideChordHint(); chordG = 0;
+  // гасим только транзитную G-палитру; палитра выбора живёт до нового выбора
+  if(chordG){ hideChordHint(); chordG = 0; }
   if(e.button===0 && gizmoClick(e)) return; // клик по ViewCube
+  if(edgeDrag && edgeDrag.grabMode){ // перенос ребра: клик фиксирует
+    if(e.button === 0){
+      edgeDrag = null; setAxisLock(null);
+      tipHide(); normalsFlush(); extractEdges();
+    }
+    return;
+  }
   // окно выдавливания живёт при вращении и пустых кликах; закрывается оно
   // только когда кликом ВЫБРАН другой объект (см. развязки кликов ниже).
   // Ctrl+ЛКМ — временная орбита.
@@ -3631,6 +3742,11 @@ canvas.addEventListener('pointermove', e=>{
     if(!raycaster.ray.intersectPlane(edgeDrag.plane, hit)) return;
     const d = new THREE.Vector3(snapMM(hit.x-edgeDrag.grab0.x),
       snapMM(hit.y-edgeDrag.grab0.y), snapMM(hit.z-edgeDrag.grab0.z));
+    if(axisLock){ // X/Y/Z — движение только вдоль выбранной оси (Blender)
+      if(axisLock !== 'x') d.x = 0;
+      if(axisLock !== 'y') d.y = 0;
+      if(axisLock !== 'z') d.z = 0;
+    }
     if(!edgeDrag.snapPushed){
       pushHistory(edgeDrag.snap);
       edgeDrag.snapPushed = true;
@@ -3809,6 +3925,10 @@ canvas.addEventListener('pointermove', e=>{
       ghost.position.copy(pt.pos); ghost.visible = true;
       showHintFor(pt);
       let msg = 'Point · ' + kindLabel(pt.kind);
+      // координаты будущей точки в цветах осей (X кр., Y зел., Z син.)
+      msg += '<br><span style="color:'+AXIS_CSS.x+'">'+pt.pos.x.toFixed(1)+'</span> · '
+           + '<span style="color:'+AXIS_CSS.y+'">'+pt.pos.y.toFixed(1)+'</span> · '
+           + '<span style="color:'+AXIS_CSS.z+'">'+pt.pos.z.toFixed(1)+'</span>';
       if(pt.chain && pt.s !== undefined){ // расстояния до концов ребра (AutoCAD)
         msg += '<br>◀ ' + pt.s.toFixed(1) + ' mm · '
              + (pt.chain.total - pt.s).toFixed(1) + ' mm ▶';
@@ -4060,6 +4180,8 @@ function loop(t){
   for(const m of divDots) dot(m);
   for(const a of anchors) dot(a.marker);
   for(const d of hintDots) dot(d, 0.0035);
+  dot(selEndA); dot(selEndB);
+  for(const m of selCenterDots) dot(m, 0.0035);
   // билборды масштабируются от реального расстояния до камеры —
   // постоянный экранный размер при любом зуме
   for(const sp of axisLabels){
