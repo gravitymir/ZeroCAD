@@ -88,6 +88,7 @@
     border-radius:8px;padding:8px 12px;font-size:22px;line-height:1.5;color:var(--text);
     font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
   #dragTip[hidden]{display:none}
+  #dragTip .key{color:var(--accent2);font-weight:700}
   #dragTip .d{color:var(--accent2)}
   /* бейдж активного инструмента у курсора */
   #toolTag{position:absolute;z-index:6;pointer-events:none;font-size:10px;font-weight:700;
@@ -100,8 +101,9 @@
     font-size:22px;line-height:1.6;color:var(--muted);pointer-events:none}
   #chordHint[hidden]{display:none}
   #chordHint .key{color:var(--accent2);font-weight:700}
-  /* зажатый модификатор — его строка в палитре вспыхивает белым */
-  body.altHeld .key.kAlt, body.shiftHeld .key.kShift{color:#fff}
+  /* зажатый модификатор — его строка в палитре/тултипе вспыхивает белым */
+  body.altHeld .key.kAlt, body.shiftHeld .key.kShift,
+  body.altHeld #dragTip .key.kAlt, body.shiftHeld #dragTip .key.kShift{color:#fff}
   /* ручка перетаскивания окна (правый верхний угол) — общая для палитр
      и окон инструментов */
   .chgrip{position:absolute;top:2px;right:4px;cursor:move;
@@ -4357,10 +4359,12 @@ canvas.addEventListener('pointermove', e=>{
     }
     mesh.geometry.attributes.position.needsUpdate = true;
     normalsThrottled();
-    tipAt(e, 'edge Δ '
-      +'<span style="color:'+AXIS_CSS.x+';font-weight:600">X '+d.x.toFixed(1)+'</span> · '
-      +'<span style="color:'+AXIS_CSS.y+';font-weight:600">Y '+d.y.toFixed(1)+'</span> · '
-      +'<span style="color:'+AXIS_CSS.z+';font-weight:600">Z '+d.z.toFixed(1)+'</span>');
+    // дельты построчно в цветах осей; Shift вспыхивает белым, пока зажат
+    tipAt(e, 'edge Δ'
+      +'<br><span style="color:'+AXIS_CSS.x+';font-weight:600">X '+d.x.toFixed(1)+'</span>'
+      +'<br><span style="color:'+AXIS_CSS.y+';font-weight:600">Y '+d.y.toFixed(1)+'</span>'
+      +'<br><span style="color:'+AXIS_CSS.z+';font-weight:600">Z '+d.z.toFixed(1)+'</span>'
+      +'<br><span class="key kShift">Shift</span> — stick to axis');
     if(!modified){ modified=true; s_mod.textContent='yes'; }
     return;
   }
