@@ -102,9 +102,11 @@
   #chordHint .key{color:var(--accent2);font-weight:700}
   /* зажатый модификатор — его строка в палитре вспыхивает белым */
   body.altHeld .key.kAlt, body.shiftHeld .key.kShift{color:#fff}
-  /* ручка перетаскивания палитры (правый верхний угол) */
-  #chordHint .chgrip{position:absolute;top:2px;right:4px;cursor:move;
+  /* ручка перетаскивания окна (правый верхний угол) — общая для палитр
+     и окон инструментов */
+  .chgrip{position:absolute;top:2px;right:4px;cursor:move;
     pointer-events:auto;color:var(--muted);font-size:30px;line-height:1;padding:8px 12px}
+  .chgrip:hover{color:var(--text)}
   #chordHint .chgrip:hover{color:var(--text)}
   /* окна точного выдавливания (E) и деления ребра точками */
   #exPopup,#divPopup,#txtPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
@@ -113,8 +115,8 @@
   #exPopup .prow,#divPopup .prow,#txtPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
   #exPopup input,#divPopup input,#txtPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
-  /* окно 3D-текста (G,T): крупное, перетаскивается, как остальные окна */
-  #txtPopup{cursor:move;padding:14px 16px}
+  /* окно 3D-текста (G,T): крупное, перетаскивается за ручку ⠿ */
+  #txtPopup{padding:14px 16px}
   #txtPopup .prow{font-size:19px;gap:10px}
   #txtPopup input{font-size:22px;padding:6px 10px}
   #txtPopup #tx_str{width:250px;text-transform:uppercase;letter-spacing:2px}
@@ -155,7 +157,7 @@
       <div class="vplabel quadonly" style="left:10px;top:calc(50% + 10px)"><b>+Y</b> view (side) · grid 1/10 mm</div>
       <div class="vplabel quadonly" style="left:calc(50% + 10px);top:calc(50% + 10px)"><b>+Z</b> view (top) · grid 1/10 mm</div>
     </div>
-    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>PUSH/PULL · drag a face · P/Esc — exit<br></b><b id="lnb" style="color:var(--accent2)" hidden>LINE · click–click — chord · type length + Enter · Esc/L — exit<br></b><b id="txb" style="color:var(--accent2)" hidden>3D TEXT · click a face to place · Esc — cancel<br></b><b id="fps"></b></div>
+    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>PUSH/PULL · drag a face · P/Esc — exit<br></b><b id="lnb" style="color:var(--accent2)" hidden>LINE · click–click — chord · type length + Enter · Esc/L — exit<br></b><b id="txb" style="color:var(--accent2)" hidden>3D TEXT · click a face — start point of text · Esc — cancel<br></b><b id="fps"></b></div>
     <div id="popup" hidden>
       <div class="prow">Edge: <b id="p_len">–</b> mm</div>
       <div class="prow">Offset: <input id="p_off" type="number" step="0.1" min="0"> mm</div>
@@ -181,15 +183,18 @@
       </div>
     </div>
     <div id="txtPopup" hidden>
-      <div class="prow"><b style="color:#2ecc40">3D Text</b><span style="font-size:13px">(SketchUp 3D Text)</span></div>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">3D Text</b><span style="font-size:13px">(SketchUp 3D Text)</span></div>
       <div class="prow">Text <input id="tx_str" type="text" value="ZERO"></div>
       <div class="prow">Height <input id="tx_h" type="number" step="1" min="3" value="10"> mm</div>
-      <div class="prow">Extrude <input id="tx_d" type="number" step="0.5" value="2"> mm</div>
-      <div class="prow" style="font-size:13px">negative Extrude — engrave into the face</div>
-      <div class="prow" style="gap:10px;margin-top:8px"><button id="tx_ok">Place</button><button id="tx_cancel">Cancel</button></div>
+      <div class="prow">Extrude <input id="tx_d" type="number" step="0.1" value="2"> mm</div>
+      <div class="prow" style="font-size:13px">click a face — start point (bottom-left of 1st letter)</div>
+      <div class="prow" style="font-size:13px">Extrude: + out · − engrave · 0 outline only</div>
+      <div class="prow" style="gap:10px;margin-top:8px"><button id="tx_ok">OK</button><button id="tx_cancel">Cancel</button></div>
     </div>
     <div id="exPopup" hidden>
-      <div class="prow">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
       <div class="prow" style="gap:10px"><button id="ex_ok">OK</button><button id="ex_cancel">Cancel</button></div>
     </div>
     <div id="vcnav">
@@ -1365,6 +1370,8 @@ function buildTextSolid(P, u, v, n, cells, s, above, below){
   return tris;
 }
 let textMode = false, textParams = null;
+let txtLive = null;    // текст уже стоит как предпросмотр: {P, n}
+let txReTimer = null;  // перестройка предпросмотра при правке полей
 function setTextMode(on){
   textMode = on;
   if(on){
@@ -1379,10 +1386,12 @@ function setTextMode(on){
   updateToolTag();
 }
 function openTextPopup(){
+  txtLive = null;
   const vr = view.getBoundingClientRect();
   txtPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 400) + 'px';
   txtPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 300) + 'px';
   txtPopup.hidden = false;
+  setTextMode(true); // сразу ждём клик-точку начала текста
   tx_str.focus(); tx_str.select();
 }
 function closeTextPopup(){ txtPopup.hidden = true; }
@@ -1407,6 +1416,41 @@ function placeTextAt(P, n){
   if(!cells.size) return;
   pushUndo();
   try{
+    if(d === 0){
+      // чертёжный набросок: контуры букв врезаются в грань линиями-хордами
+      // (как линия/окружность) — области букв потом можно выдавить выбором.
+      // Граничные рёбра клеток сливаются в длинные отрезки по строкам/столбцам.
+      const H = new Map(), Vg = new Map(); // линия gy -> {gx}, линия gx -> {gy}
+      const put = (m,k,x)=>{ if(!m.has(k)) m.set(k,new Set()); m.get(k).add(x); };
+      for(const key of cells){
+        const [gx,gy] = key.split(',').map(Number);
+        if(!cells.has(gx+','+(gy-1))) put(H, gy,   gx);
+        if(!cells.has(gx+','+(gy+1))) put(H, gy+1, gx);
+        if(!cells.has((gx-1)+','+gy)) put(Vg, gx,   gy);
+        if(!cells.has((gx+1)+','+gy)) put(Vg, gx+1, gy);
+      }
+      const runs = set => { // подряд идущие клетки -> интервалы [a, b+1]
+        const a = [...set].sort((x,y)=>x-y), r = [];
+        let s0 = a[0], prev = a[0];
+        for(let i=1;i<=a.length;i++){
+          if(a[i] === prev+1){ prev = a[i]; continue; }
+          r.push([s0, prev+1]); s0 = a[i]; prev = a[i];
+        }
+        return r;
+      };
+      const pt = (gx,gy)=>P.clone().addScaledVector(u,gx*s).addScaledVector(v,gy*s);
+      for(const [gy,set] of H) for(const [x0,x1] of runs(set)){
+        const A = pt(x0,gy), B = pt(x1,gy);
+        addGuide(A, B); splitMeshByChord(A, B, true);
+      }
+      for(const [gx,set] of Vg) for(const [y0,y1] of runs(set)){
+        const A = pt(gx,y0), B = pt(gx,y1);
+        addGuide(A, B); splitMeshByChord(A, B, true);
+      }
+      if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+      extractEdges();
+      return;
+    }
     const above = d > 0 ? d : 1.0;   // гравировка: 1 мм запаса наружу
     const below = d > 0 ? 0.5 : -d;  // выдавливание: врастаем на 0.5 мм
     const letters = buildTextSolid(P, u, v, n, cells, s, above, below);
@@ -1451,31 +1495,71 @@ function placeTextAt(P, n){
   if(!modified){ modified = true; s_mod.textContent = 'yes'; }
   extractEdges();
 }
-tx_ok.addEventListener('click', ()=>{
+function readTextParams(){
   const str = (tx_str.value || '').toUpperCase();
   const h = Math.max(3, +tx_h.value || 10);
-  const d = +tx_d.value || 0;
-  if(!str.trim() || !d) return; // нечего ставить / нулевая глубина
-  textParams = {str, h, d};
+  const d = snapMM(+tx_d.value || 0); // 0 — чертёжный контур без выдавливания
+  if(![...str].some(ch => FONT57[ch] && ch !== ' ')) return null;
+  return {str, h, d};
+}
+// красная стартовая точка текста (нижний левый угол первой буквы)
+let txAnchor = null;
+function showTxAnchor(P){
+  hideTxAnchor();
+  txAnchor = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0xd9302e}));
+  txAnchor.scale.setScalar(2); // вдвое больше обычной точки — хорошо видна
+  txAnchor.position.copy(P);
+  scene.add(txAnchor);
+}
+function hideTxAnchor(){ if(txAnchor){ scene.remove(txAnchor); txAnchor = null; } }
+// живой предпросмотр: текст стоит в модели, правки полей перестраивают его
+function rebuildTextLive(){
+  if(!txtLive) return;
+  const p = readTextParams();
+  if(!p) return; // мусор в полях — оставляем предпросмотр как был
+  textParams = p;
+  undo(true); // снять старый предпросмотр
+  placeTextAt(txtLive.P.clone(), txtLive.n.clone());
+}
+function finishText(){ // OK: предпросмотр уже в модели и в истории
+  txtLive = null;
+  hideTxAnchor();
   closeTextPopup();
-  setTextMode(true);
+  if(textMode) setTextMode(false);
+}
+function cancelText(){ // Esc/Cancel: предпросмотр откатываем
+  if(txtLive){ undo(true); txtLive = null; }
+  hideTxAnchor();
+  closeTextPopup();
+  if(textMode) setTextMode(false);
+}
+tx_ok.addEventListener('click', ()=>{
+  if(txtLive) finishText(); // OK фиксирует; пока точка не поставлена — ждём
 });
-tx_cancel.addEventListener('click', closeTextPopup);
-// окно перетаскивается за пустое место, как остальные окна
-let txDrag = null;
-txtPopup.addEventListener('pointerdown', ev=>{
-  if(ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON') return;
-  const r = txtPopup.getBoundingClientRect();
-  txDrag = {dx: ev.clientX - r.left, dy: ev.clientY - r.top};
-  ev.preventDefault();
+tx_cancel.addEventListener('click', cancelText);
+for(const inp of [tx_str, tx_h, tx_d]) inp.addEventListener('input', ()=>{
+  clearTimeout(txReTimer);
+  txReTimer = setTimeout(rebuildTextLive, 250);
 });
-window.addEventListener('pointermove', ev=>{
-  if(!txDrag) return;
-  const vr = view.getBoundingClientRect();
-  txtPopup.style.left = (ev.clientX - vr.left - txDrag.dx) + 'px';
-  txtPopup.style.top  = (ev.clientY - vr.top - txDrag.dy) + 'px';
-});
-window.addEventListener('pointerup', ()=>{ txDrag = null; });
+// окна инструментов перетаскиваются за ручку ⠿ (как палитры выбора)
+function makeGripDrag(win){
+  let gd = null;
+  win.addEventListener('pointerdown', ev=>{
+    if(!ev.target.classList || !ev.target.classList.contains('chgrip')) return;
+    const r = win.getBoundingClientRect();
+    gd = {dx: ev.clientX - r.left, dy: ev.clientY - r.top};
+    ev.preventDefault(); ev.stopPropagation();
+  });
+  window.addEventListener('pointermove', ev=>{
+    if(!gd) return;
+    const vr = view.getBoundingClientRect();
+    win.style.left = (ev.clientX - vr.left - gd.dx) + 'px';
+    win.style.top  = (ev.clientY - vr.top - gd.dy) + 'px';
+  });
+  window.addEventListener('pointerup', ()=>{ gd = null; });
+}
+makeGripDrag(txtPopup);
+// exPopup объявляется ниже — его грипп подключается там же
 
 // Врезка отрезка A-B в копланарные треугольники меша: каждый пересечённый
 // треугольник делится по линии хорды на 2-3. После этого вдоль хорды есть
@@ -2629,12 +2713,38 @@ function commitPocketCSG(snap, patchTris, n, depth){
   extractEdges();
 }
 
-let exLive = null; // живой предпросмотр: {idx, n, applied}
+let exLive = null; // живой предпросмотр: {idx, set, n, applied}
+let exFaceDrag = null; // грань тянут мышью при открытом окне Extrude
+// белая пунктирная ось выдавливания через центр грани (как ось в SketchUp)
+let exAxisLine = null;
+function showExAxis(center, n){
+  hideExAxis();
+  const L = 80;
+  const g = new THREE.BufferGeometry().setFromPoints([
+    center.clone().addScaledVector(n, -L), center.clone().addScaledVector(n, L)]);
+  exAxisLine = new THREE.Line(g, new THREE.LineDashedMaterial({
+    color: 0xffffff, dashSize: 1.4, gapSize: 0.9, transparent: true, opacity: 0.8}));
+  exAxisLine.computeLineDistances();
+  scene.add(exAxisLine);
+}
+function hideExAxis(){
+  if(exAxisLine){ scene.remove(exAxisLine); exAxisLine.geometry.dispose(); exAxisLine = null; }
+}
 function openExtrude(){
   if(!ppPatch) return;
   pushUndo(); // снимок ДО дублирования контура: Esc вернёт всё как было
+  // центроид лоскута — опора белой оси (до дублирования контура)
+  const posC = mesh.geometry.attributes.position.array;
+  const c = new THREE.Vector3();
+  let cn = 0;
+  for(const t of ppPatch.tris){
+    for(let k=0;k<9;k+=3){ c.x += posC[t*9+k]; c.y += posC[t*9+k+1]; c.z += posC[t*9+k+2]; cn++; }
+  }
+  if(cn) c.multiplyScalar(1/cn);
   const ex = beginPatchExtrude(ppPatch);
-  exLive = {idx: ex.idx, fac: ex.fac, n: ppPatch.normal.clone(), applied: 0};
+  exLive = {idx: ex.idx, fac: ex.fac, set: new Set(ex.idx),
+            n: ppPatch.normal.clone(), applied: 0};
+  showExAxis(c, ppPatch.normal);
   const vr = view.getBoundingClientRect();
   exPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 360) + 'px';
   exPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 130) + 'px';
@@ -2667,6 +2777,7 @@ function applyExtrudeLive(v){
   paintExVal();
 }
 function commitExtrude(){
+  hideExAxis(); exFaceDrag = null;
   if(!exLive){ exPopup.hidden = true; return; }
   applyExtrudeLive(snapMM(+ex_val.value||0));
   const applied = exLive.applied, n = exLive.n.clone();
@@ -2685,6 +2796,7 @@ function commitExtrude(){
   cleanupMesh(); healCoplanarOverlaps(); healTJunctions(); removeInvertedShells(); extractEdges();
 }
 function closeExtrude(){ // Esc: стенки уже врезаны — откат всей сессии окна
+  hideExAxis(); exFaceDrag = null;
   if(exLive){ exLive = null; undo(true); }
   exPopup.hidden = true;
 }
@@ -2699,6 +2811,7 @@ ex_val.addEventListener('keydown', e=>{
 });
 document.getElementById('ex_ok').addEventListener('click', commitExtrude);
 document.getElementById('ex_cancel').addEventListener('click', closeExtrude);
+makeGripDrag(exPopup); // ручка ⠿ окна Extrude
 const vpanel = document.getElementById('vpanel'), vp_t = document.getElementById('vp_t'),
       vx=document.getElementById('vx'), vy=document.getElementById('vy'), vz=document.getElementById('vz');
 
@@ -3690,8 +3803,7 @@ window.addEventListener('keydown', e=>{
       else setLineMode(false);
     }
     if(ppMode) setPPMode(false);
-    closeTextPopup();
-    if(textMode) setTextMode(false);
+    cancelText(); // 3D-текст: откат предпросмотра и закрытие окна
   }
 });
 
@@ -3777,6 +3889,27 @@ canvas.addEventListener('pointerdown', e=>{
     try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
     return;
   }
+  // ЛКМ по самому лоскуту при открытом окне Extrude — тянуть мышью вдоль
+  // нормали (значение в поле бежит следом); другая грань — обычный выбор
+  if(exLive && e.button === 0 && !e.ctrlKey && q.inside){
+    const f = raycastFace(q);
+    if(f){
+      const o = f.faceIndex*9;
+      if(exLive.set.has(o) && exLive.set.has(o+3) && exLive.set.has(o+6)){
+        const rc = canvas.getBoundingClientRect();
+        const lx = (e.clientX - rc.left) - q.ox, ly = (e.clientY - rc.top) - q.oy;
+        raycaster.setFromCamera({x: lx/q.w*2-1, y: -(ly/q.h*2-1)}, q.cam);
+        exFaceDrag = {
+          q0: {cam: q.cam, ox: q.ox, oy: q.oy, w: q.w, h: q.h},
+          base: f.point.clone(), n: exLive.n.clone(),
+          t0: rayLineParam(raycaster.ray, f.point, exLive.n),
+          v0: exLive.applied
+        };
+        try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+        return;
+      }
+    }
+  }
   if(divCtx){ // окно деления открыто: камера свободна, инструменты — на паузе
     tipHide();
     if(q.is3D){
@@ -3826,12 +3959,19 @@ canvas.addEventListener('pointerdown', e=>{
     }
     return;
   }
-  if(textMode){ // режим «3D Text»: клик по грани ставит текст
+  if(textMode){ // режим «3D Text»: клик ставит красную стартовую точку,
+    // предпросмотр перестраивается от неё; повторный клик — перенос
     if(e.button===0 && q.inside){
       const f = raycastFace(q);
       if(f){
-        placeTextAt(f.point.clone(), triNormalAt(f.faceIndex));
-        setTextMode(false); // как одиночная линия: поставил — вышел
+        const p = readTextParams();
+        if(p){
+          textParams = p;
+          if(txtLive) undo(true);
+          placeTextAt(f.point.clone(), triNormalAt(f.faceIndex));
+          txtLive = {P: f.point.clone(), n: triNormalAt(f.faceIndex)};
+          showTxAnchor(f.point);
+        }
       }
     }
     return;
@@ -3954,6 +4094,10 @@ canvas.addEventListener('pointerdown', e=>{
   }
 });
 canvas.addEventListener('pointerup', e=>{
+  if(exFaceDrag){ // отпустили лоскут — значение остаётся, окно живёт
+    exFaceDrag = null;
+    return;
+  }
   if(edgeDrag){
     edgeDrag = null; pendingEdge = null;
     tipHide(); normalsFlush(); extractEdges();
@@ -4075,6 +4219,17 @@ canvas.addEventListener('pointermove', e=>{
       +'<span style="color:'+AXIS_CSS.y+';font-weight:600">Y '+d.y.toFixed(1)+'</span> · '
       +'<span style="color:'+AXIS_CSS.z+';font-weight:600">Z '+d.z.toFixed(1)+'</span>');
     if(!modified){ modified=true; s_mod.textContent='yes'; }
+    return;
+  }
+  if(exFaceDrag){ // окно Extrude: лоскут едет за мышью, цифры — за ним
+    const rc = canvas.getBoundingClientRect();
+    const q0 = exFaceDrag.q0;
+    const lx=(e.clientX-rc.left)-q0.ox, ly=(e.clientY-rc.top)-q0.oy;
+    raycaster.setFromCamera({x:lx/q0.w*2-1, y:-(ly/q0.h*2-1)}, q0.cam);
+    const t = rayLineParam(raycaster.ray, exFaceDrag.base, exFaceDrag.n);
+    const v = snapMM(exFaceDrag.v0 + t - exFaceDrag.t0);
+    ex_val.value = v.toFixed(1);
+    applyExtrudeLive(v);
     return;
   }
   if(ppDrag){ // выдавливание: смещение вдоль нормали грани
