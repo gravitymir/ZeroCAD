@@ -1373,7 +1373,7 @@ function setCircleMode(on){
     circPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 200) + 'px';
     circPopup.hidden = false;
   }
-  else { ghost.visible = false; tipHide(); circPopup.hidden = true; }
+  else { ghost.visible = false; tipHide(); circPopup.hidden = true; releaseToolInput(); }
   canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
 }
@@ -1482,7 +1482,7 @@ function openTextPopup(){
   setTextMode(true); // сразу ждём клик-точку начала текста
   tx_str.focus(); tx_str.select();
 }
-function closeTextPopup(){ txtPopup.hidden = true; }
+function closeTextPopup(){ txtPopup.hidden = true; releaseToolInput(); }
 // тело минус/плюс призмы прямоугольников шрифта; врезаем в кликнутую грань
 function placeTextAt(P, n){
   const {str, h, d} = textParams;
@@ -2963,38 +2963,61 @@ function csgNode(polys){
   return n;
 }
 function csgBuild(node, polys){
-  if(!polys.length) return;
-  if(!node.plane) node.plane = {n: polys[0].p.n.clone(), w: polys[0].p.w};
-  const front=[], back=[];
-  for(const p of polys) csgSplit(node.plane, p, node.polys, node.polys, front, back);
-  if(front.length){ if(!node.front) node.front = csgNode(); csgBuild(node.front, front); }
-  if(back.length){ if(!node.back) node.back = csgNode(); csgBuild(node.back, back); }
+  const stack = [[node, polys]];
+  while(stack.length){
+    const [nd, ps] = stack.pop();
+    if(!ps.length) continue;
+    if(!nd.plane) nd.plane = {n: ps[0].p.n.clone(), w: ps[0].p.w};
+    const front=[], back=[];
+    for(const p of ps) csgSplit(nd.plane, p, nd.polys, nd.polys, front, back);
+    if(front.length){ if(!nd.front) nd.front = csgNode(); stack.push([nd.front, front]); }
+    if(back.length){ if(!nd.back) nd.back = csgNode(); stack.push([nd.back, back]); }
+  }
 }
 function csgClipPolys(node, polys){
-  if(!node.plane) return polys.slice();
-  let front=[], back=[];
-  for(const p of polys) csgSplit(node.plane, p, front, back, front, back);
-  if(node.front) front = csgClipPolys(node.front, front);
-  back = node.back ? csgClipPolys(node.back, back) : [];
-  return front.concat(back);
+  const out = [];
+  const stack = [[node, polys]];
+  while(stack.length){
+    const [nd, ps] = stack.pop();
+    if(!ps.length) continue;
+    if(!nd.plane){ for(const p of ps) out.push(p); continue; }
+    const front=[], back=[];
+    for(const p of ps) csgSplit(nd.plane, p, front, back, front, back);
+    if(nd.front) stack.push([nd.front, front]);
+    else for(const p of front) out.push(p);
+    if(nd.back) stack.push([nd.back, back]); // без задней ветви всё отсекается
+  }
+  return out;
 }
 function csgClipTo(node, bsp){
-  node.polys = csgClipPolys(bsp, node.polys);
-  if(node.front) csgClipTo(node.front, bsp);
-  if(node.back) csgClipTo(node.back, bsp);
+  const stack = [node];
+  while(stack.length){
+    const nd = stack.pop();
+    nd.polys = csgClipPolys(bsp, nd.polys);
+    if(nd.front) stack.push(nd.front);
+    if(nd.back) stack.push(nd.back);
+  }
 }
 function csgAllPolys(node, out){
-  out.push(...node.polys);
-  if(node.front) csgAllPolys(node.front, out);
-  if(node.back) csgAllPolys(node.back, out);
+  const stack = [node];
+  while(stack.length){
+    const nd = stack.pop();
+    for(const p of nd.polys) out.push(p);
+    if(nd.front) stack.push(nd.front);
+    if(nd.back) stack.push(nd.back);
+  }
   return out;
 }
 function csgInvert(node){
-  for(const p of node.polys){ p.v.reverse(); p.p.n.negate(); p.p.w = -p.p.w; }
-  if(node.plane){ node.plane.n.negate(); node.plane.w = -node.plane.w; }
-  const tmp = node.front; node.front = node.back; node.back = tmp;
-  if(node.front) csgInvert(node.front);
-  if(node.back) csgInvert(node.back);
+  const stack = [node];
+  while(stack.length){
+    const nd = stack.pop();
+    for(const p of nd.polys){ p.v.reverse(); p.p.n.negate(); p.p.w = -p.p.w; }
+    if(nd.plane){ nd.plane.n.negate(); nd.plane.w = -nd.plane.w; }
+    const tmp = nd.front; nd.front = nd.back; nd.back = tmp;
+    if(nd.front) stack.push(nd.front);
+    if(nd.back) stack.push(nd.back);
+  }
 }
 // A минус B; входы — массивы треугольников [V3,V3,V3]
 // объединение A∪B тем же BSP (порядок клипов — как union в csg.js);
@@ -3081,15 +3104,14 @@ function buildPrismTris(loop, n, above, below){
 // минус призма контура. Режет насквозь, под углом, через углы — без
 // антиматерии (сервеный /api/bool с csgrs остаётся запасным путём).
 function commitPocketCSG(snap, patchTris, n, depth){
-  const loop = patchOutlineLoop(snap.pos, patchTris);
-  if(!loop){ // контур не одна петля — локальный конвейер как раньше
-    cleanupMesh(); healCoplanarOverlaps(); healTJunctions(); removeInvertedShells(); extractEdges();
-    return;
-  }
   setMeshFromArray(snap.pos.slice()); // предпросмотрные стенки выбрасываем
-  // запас 1 мм только СНАРУЖИ (срезать кожу грани); вглубь — ровно depth,
-  // иначе карман получается глубже заказанного и +20 после -20 не сходится
-  const prism = buildPrismTris(loop, n, 1.0, depth);
+  // Призму строим по треугольникам самого лоскута: крышки — его копии,
+  // стенки — по граничным рёбрам. Так карман работает и когда у грани
+  // НЕСКОЛЬКО петель (крышка колеса: обод + отверстие вала) — прежняя
+  // сборка по одной петле там сдавалась и оставляла вывернутые ошмётки.
+  // Запас 1 мм только СНАРУЖИ; вглубь ровно depth, иначе +20 после -20
+  // не сходится
+  const prism = buildPatchPrismRange(snap.pos, patchTris, n, -depth, 1.0);
   try{
     const pos = mesh.geometry.attributes.position.array;
     const bodyTris = [];
@@ -3107,9 +3129,7 @@ function commitPocketCSG(snap, patchTris, n, depth){
       for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
     }
     setMeshFromArray(new Float32Array(arr));
-    cleanupMesh();       // нулевые и совпавшие противоположные осколки
-    healTJunctions();    // Т-стыки BSP-разбиения
-    removeInvertedShells();
+    healAll();           // осколки, копланарные наложения и Т-стыки BSP
     if(!modified){ modified = true; s_mod.textContent = 'yes'; }
   }catch(err){
     console.warn('BSP-карман не удался — операция отменена', err);
@@ -3182,8 +3202,12 @@ function applyExtrudeLive(v){
   }
   paintExVal();
 }
+function releaseToolInput(){ // фокус обратно на сцену
+  const el = document.activeElement;
+  if(el && el.tagName === 'INPUT') el.blur();
+}
 function commitExtrude(){
-  hideExAxis(); exFaceDrag = null;
+  hideExAxis(); exFaceDrag = null; releaseToolInput();
   if(!exLive){ exPopup.hidden = true; return; }
   applyExtrudeLive(snapMM(+ex_val.value||0));
   const applied = exLive.applied, n = exLive.n.clone();
@@ -3191,14 +3215,31 @@ function commitExtrude(){
   exPopup.hidden = true;
   if(!applied){ undo(true); return; } // нулевая высота: откат без повтора
   const patchTris = ppPatch ? ppPatch.tris.slice() : null;
+  const patchArea = ppPatch ? (ppPatch.area || 0) : 0;
   if(applied < 0 && ppPatch){
-    // карман — булево вычитание (наш BSP): снимок до стенок наверху истории
     const snap = undoStack[undoStack.length-1];
     hidePatch(); ppPatch = null;
+    // Результат предпросмотра проверяем ДО лечилок: стенки уже растянуты,
+    // и для частого случая «опустить грань» (деталь стала тоньше) сетка уже
+    // замкнута. Лечилки вслепую тут запускать нельзя — healCoplanarOverlaps
+    // рассчитан на встречные стенки и разрушает корректную сетку, если
+    // грань просто опустилась
+    cleanupMesh();
+    if(extrudeLooksClean(snap.pos, applied, patchArea)){ extractEdges(); return; }
+    healAll();
+    if(extrudeLooksClean(snap.pos, applied, patchArea)){ extractEdges(); return; }
+    // не сошлось — карман режет соседний материал, нужен честный BSP
     commitPocketCSG(snap, patchTris, n, -applied);
     return;
   }
   hidePatch(); ppPatch = null;
+  // Если предпросмотр уже дал замкнутое тело с точным объёмом (обычный
+  // подъём грани), берём его как есть: ни булевых, ни лечилок
+  cleanupMesh();
+  if(patchTris && extrudeLooksClean(undoStack[undoStack.length-1].pos, applied, patchArea)){
+    extractEdges();
+    return;
+  }
   // Выдавливание наружу = Pad: во FreeCAD это всегда булев союз, и мы
   // делаем так же — тело ДО операции плюс замкнутая призма поднятия.
   // Локальная сшивка не справляется, когда стенки проходят сквозь другие
@@ -3236,6 +3277,15 @@ function commitExtrude(){
   if(!padded) healAll();
   extractEdges();
 }
+// Операция прошла честно? Сетка замкнута, а объём изменился ровно на
+// площадь лоскута x высоту. Если да — лечить нечего и звать булевы незачем
+function extrudeLooksClean(snapPos, applied, patchArea){
+  if(!(patchArea > 0)) return false;
+  if(countBoundaryEdges() !== 0) return false;
+  const want = meshVolumeOf(snapPos) + applied * patchArea;
+  const got = meshVolumeOf(mesh.geometry.attributes.position.array);
+  return Math.abs(got - want) < Math.max(0.5, Math.abs(applied) * patchArea * 0.002);
+}
 // полный цикл заживления до сходимости: одиночный прогон оставляет сотни
 // Т-стыков, когда стенки новой экструзии скользят вдоль старых стенок
 // (например, поднятые донья гравировки); healTJunctions чинит ≤16 за вызов
@@ -3248,6 +3298,15 @@ function healAll(){
     if(mesh.geometry.attributes.position.array.length === len0) break;
   }
   removeInvertedShells();
+}
+// знаковый объём меша по массиву позиций (дивергентная формула)
+function meshVolumeOf(arr){
+  let v = 0;
+  for(let i=0;i<arr.length;i+=9)
+    v += (arr[i]   * (arr[i+4]*arr[i+8] - arr[i+5]*arr[i+7])
+        - arr[i+1] * (arr[i+3]*arr[i+8] - arr[i+5]*arr[i+6])
+        + arr[i+2] * (arr[i+3]*arr[i+7] - arr[i+4]*arr[i+6])) / 6;
+  return v;
 }
 // сколько рёбер сетки встречается ровно один раз (дыры/Т-стыки).
 // Ключи СТРОГИЕ (0.001): keyOf с шагом 0.01 «склеивает» реальные щели,
@@ -3269,6 +3328,9 @@ function countBoundaryEdges(){
 // замкнутая призма поднятия лоскута: низ — сами треугольники (нормаль -n),
 // верх — подняты на h (+n), стенки — на граничных рёбрах лоскута
 function buildPatchPrism(pos, trisIdx, n, h){
+  return buildPatchPrismRange(pos, trisIdx, n, 0, h);
+}
+function buildPatchPrismRange(pos, trisIdx, n, hLow, hHigh){
   const V = o => new THREE.Vector3(pos[o], pos[o+1], pos[o+2]);
   const cnt = new Map();
   for(const t of trisIdx) for(let e=0;e<3;e++){
@@ -3279,21 +3341,22 @@ function buildPatchPrism(pos, trisIdx, n, h){
     if(r) r.n++;
     else cnt.set(ek, {n:1, a:V(o1), b:V(o2)});
   }
-  const up = v => v.clone().addScaledVector(n, h);
+  const lo = v => v.clone().addScaledVector(n, hLow);
+  const up = v => v.clone().addScaledVector(n, hHigh);
   const out = [];
   for(const t of trisIdx){
     const A=V(t*9), B=V(t*9+3), C=V(t*9+6);
-    out.push([A.clone(), C.clone(), B.clone()]);      // низ наружу (-n)
+    out.push([lo(A), lo(C), lo(B)]);                  // низ наружу (-n)
     out.push([up(A), up(B), up(C)]);                  // верх наружу (+n)
   }
   for(const w of cnt.values()) if(w.n===1){
-    out.push([w.a.clone(), w.b.clone(), up(w.b)]);    // стенка наружу
-    out.push([w.a.clone(), up(w.b), up(w.a)]);
+    out.push([lo(w.a), lo(w.b), up(w.b)]);            // стенка наружу
+    out.push([lo(w.a), up(w.b), up(w.a)]);
   }
   return out;
 }
 function closeExtrude(){ // Esc: стенки уже врезаны — откат всей сессии окна
-  hideExAxis(); exFaceDrag = null;
+  hideExAxis(); exFaceDrag = null; releaseToolInput();
   if(exLive){ exLive = null; undo(true); }
   exPopup.hidden = true;
 }
@@ -3393,6 +3456,7 @@ function selectAnchor(a){
   clearEdgeSel();
   if(!ppMode){ hidePatch(); ppPatch = null; }
   selAnchor = a;
+  if(a.marker) a.marker.visible = false; // вместо неё — зелёный маркер выбора
   selMarker.position.copy(a.pos); selMarker.visible = true;
   updateVPanel(); // окно ввода откроет G,V
   showPointPalette();
@@ -3511,7 +3575,11 @@ function deleteSelAnchor(){
   if(i >= 0) anchors.splice(i, 1);
   deselect(); hideChordHint();
 }
-function deselect(){ sel = null; selAnchor = null; selMarker.visible = false; vpanel.hidden = true; clearRingMarkers(); }
+function deselect(){
+  sel = null; selAnchor = null; selMarker.visible = false;
+  for(const a of anchors) if(a.marker) a.marker.visible = true;
+  vpanel.hidden = true; clearRingMarkers();
+}
 
 // перенос всех совпадающих вершин буфера в новую позицию
 function moveVerticesByKey(oldPos, newPos){
