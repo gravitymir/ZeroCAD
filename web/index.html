@@ -1417,41 +1417,44 @@ function placeTextAt(P, n){
     ci++;
   }
   if(!cells.size) return;
+  // контур букв — граничные рёбра клеток, слитые в длинные отрезки по
+  // строкам/столбцам; врезается в грань линиями-хордами (noExt: сегменты
+  // замкнутого контура не продлеваются при заливке; режем только в
+  // пределах сегмента — wholeLine резал бы соседние буквы)
+  const carveOutline = ()=>{
+    const H = new Map(), Vg = new Map(); // линия gy -> {gx}, линия gx -> {gy}
+    const put = (m,k,x)=>{ if(!m.has(k)) m.set(k,new Set()); m.get(k).add(x); };
+    for(const key of cells){
+      const [gx,gy] = key.split(',').map(Number);
+      if(!cells.has(gx+','+(gy-1))) put(H, gy,   gx);
+      if(!cells.has(gx+','+(gy+1))) put(H, gy+1, gx);
+      if(!cells.has((gx-1)+','+gy)) put(Vg, gx,   gy);
+      if(!cells.has((gx+1)+','+gy)) put(Vg, gx+1, gy);
+    }
+    const runs = set => { // подряд идущие клетки -> интервалы [a, b+1]
+      const a = [...set].sort((x,y)=>x-y), r = [];
+      let s0 = a[0], prev = a[0];
+      for(let i=1;i<=a.length;i++){
+        if(a[i] === prev+1){ prev = a[i]; continue; }
+        r.push([s0, prev+1]); s0 = a[i]; prev = a[i];
+      }
+      return r;
+    };
+    const pt = (gx,gy)=>P.clone().addScaledVector(u,gx*s).addScaledVector(v,gy*s);
+    for(const [gy,set] of H) for(const [x0,x1] of runs(set)){
+      const A = pt(x0,gy), B = pt(x1,gy);
+      addGuide(A, B, true); splitMeshByChord(A, B, false);
+    }
+    for(const [gx,set] of Vg) for(const [y0,y1] of runs(set)){
+      const A = pt(gx,y0), B = pt(gx,y1);
+      addGuide(A, B, true); splitMeshByChord(A, B, false);
+    }
+  };
   pushUndo();
   try{
     if(d === 0){
-      // чертёжный набросок: контуры букв врезаются в грань линиями-хордами
-      // (как линия/окружность) — области букв потом можно выдавить выбором.
-      // Граничные рёбра клеток сливаются в длинные отрезки по строкам/столбцам.
-      const H = new Map(), Vg = new Map(); // линия gy -> {gx}, линия gx -> {gy}
-      const put = (m,k,x)=>{ if(!m.has(k)) m.set(k,new Set()); m.get(k).add(x); };
-      for(const key of cells){
-        const [gx,gy] = key.split(',').map(Number);
-        if(!cells.has(gx+','+(gy-1))) put(H, gy,   gx);
-        if(!cells.has(gx+','+(gy+1))) put(H, gy+1, gx);
-        if(!cells.has((gx-1)+','+gy)) put(Vg, gx,   gy);
-        if(!cells.has((gx+1)+','+gy)) put(Vg, gx+1, gy);
-      }
-      const runs = set => { // подряд идущие клетки -> интервалы [a, b+1]
-        const a = [...set].sort((x,y)=>x-y), r = [];
-        let s0 = a[0], prev = a[0];
-        for(let i=1;i<=a.length;i++){
-          if(a[i] === prev+1){ prev = a[i]; continue; }
-          r.push([s0, prev+1]); s0 = a[i]; prev = a[i];
-        }
-        return r;
-      };
-      const pt = (gx,gy)=>P.clone().addScaledVector(u,gx*s).addScaledVector(v,gy*s);
-      // noExt: сегменты замкнутого контура не продлеваются при заливке;
-      // режем только в пределах сегмента (wholeLine резал бы соседние буквы)
-      for(const [gy,set] of H) for(const [x0,x1] of runs(set)){
-        const A = pt(x0,gy), B = pt(x1,gy);
-        addGuide(A, B, true); splitMeshByChord(A, B, false);
-      }
-      for(const [gx,set] of Vg) for(const [y0,y1] of runs(set)){
-        const A = pt(gx,y0), B = pt(gx,y1);
-        addGuide(A, B, true); splitMeshByChord(A, B, false);
-      }
+      // чертёжный набросок: только контур — области потом выдавит выбор
+      carveOutline();
       if(!modified){ modified = true; s_mod.textContent = 'yes'; }
       extractEdges();
       return;
@@ -1461,8 +1464,12 @@ function placeTextAt(P, n){
     const letters = buildTextSolid(P, u, v, n, cells, s, above, below);
     const q = x => Math.round(x*1000)/1000;
     if(d > 0){
-      // выдавить: буквы — цельная оболочка, вросшая в тело (копланарного
+      // выдавить: сначала контур основания врезается в грань — видна
+      // линия соприкосновения буквы с плоскостью (как в SketchUp), и
+      // основание остаётся адресуемой областью; затем добавляется
+      // цельная оболочка буквы, вросшая в тело на 0.5 мм (копланарного
       // дна нет — нет мерцания; слайсеры такие союзы понимают)
+      carveOutline();
       const arr = Array.from(mesh.geometry.attributes.position.array);
       for(const t of letters) for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
       setMeshFromArray(new Float32Array(arr));
