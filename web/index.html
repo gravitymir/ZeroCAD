@@ -1042,6 +1042,27 @@ function showHintFor(pt){
 
 // ---------- «Тяни-толкай» (клавиша P, как Push/Pull в SketchUp) ----------
 let ppMode=false, ppPatch=null, ppHi=null, ppDrag=null;
+// мультивыбор областей одной плоскости (Ctrl+клик, FreeCAD: несколько
+// профилей — одна экструзия); ppPatch становится композитом частей
+let ppParts = null;
+function compositeParts(){
+  if(!ppParts || !ppParts.length) return null;
+  if(ppParts.length === 1) return ppParts[0];
+  const tris = [], set = new Set(), keys = new Set();
+  let area = 0;
+  for(const p of ppParts){
+    for(const t of p.tris) if(!set.has(t)){ set.add(t); tris.push(t); }
+    for(const k of (p.keys || [])) keys.add(k);
+    area += p.area || 0;
+  }
+  return {tris, set, keys, normal: ppParts[0].normal.clone(),
+          area, parts: ppParts.length};
+}
+// плоскость области: смещение вдоль нормали (для проверки копланарности)
+function patchPlaneD(p){
+  const pos = mesh.geometry.attributes.position.array, o = p.tris[0]*9;
+  return p.normal.x*pos[o] + p.normal.y*pos[o+1] + p.normal.z*pos[o+2];
+}
 // курсор «поворот камеры»: кружок-стрелка, пока в инструменте зажат Ctrl
 // (Ctrl+ЛКМ — временная орбита); отпустил Ctrl — снова крестик рисования
 const ORBIT_CURSOR = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(
@@ -2079,7 +2100,9 @@ function showFacePalette(){
   const areaStr = ppPatch && ppPatch.area
     ? (Math.round(ppPatch.area*10)/10) + ' mm²' : null;
   let info = 'Face' + (areaStr ? '<br>' + areaStr : '');
-  if(ppPatch && ppPatch.rectDims){
+  if(ppPatch && ppPatch.parts > 1)
+    info = 'Faces × ' + ppPatch.parts + (areaStr ? '<br>' + areaStr : '');
+  else if(ppPatch && ppPatch.rectDims){
     const [a, b] = ppPatch.rectDims;
     const area = (Math.round(a*b*10)/10).toString();
     info = Math.abs(a - b) < 0.05
@@ -2093,6 +2116,7 @@ function showFacePalette(){
     (!hintsChk.checked ? '' :
     '<div><span class="key">P</span> — Push/Pull (drag)</div>' +
     '<div><span class="key">E</span> — Extrude by value</div>' +
+    '<div><span class="key">Ctrl+click</span> — multi-select (same plane)</div>' +
     '<div><span class="key">Del</span> — Delete face</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
@@ -3038,16 +3062,24 @@ function selectAnchor(a){
   showPointPalette();
 }
 function showPointPalette(){
-  if(!hintsChk.checked) return;
   tipHide();
+  // шапка с данными — всегда: тип и координаты построчно в цветах осей
+  const p = selAnchor && selAnchor.pos;
+  const info = 'Point' + (p
+    ? '<br><span style="color:'+AXIS_CSS.x+';font-weight:600">X ' + p.x.toFixed(1) + '</span>' +
+      '<br><span style="color:'+AXIS_CSS.y+';font-weight:600">Y ' + p.y.toFixed(1) + '</span>' +
+      '<br><span style="color:'+AXIS_CSS.z+';font-weight:600">Z ' + p.z.toFixed(1) + '</span>'
+    : '');
   const vr = view.getBoundingClientRect();
   chordHint.innerHTML = CH_GRIP +
+    '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
+    (!hintsChk.checked ? '' :
     '<div><span class="key">Drag</span> — move point</div>' +
     '<div><span class="key">G,V</span> — edit X/Y/Z</div>' +
     '<div><span class="key">Del</span> — delete point</div>' +
-    '<div style="opacity:.55">Esc — deselect</div>';
+    '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
-  chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 150) + 'px';
+  chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 180) + 'px';
   chordHint.hidden = false;
   clearTimeout(showChordHint._t); // живёт, пока выбор жив
 }
@@ -4269,7 +4301,24 @@ canvas.addEventListener('pointerup', e=>{
     if(f){
       if(exLive) closeExtrude(); // выбрана другая грань — окно закрывается
       clearEdgeSel(); deselect(); // грань снимает выбор рёбер и точки
-      ppPatch = facePatchCached(f.faceIndex); // кэш знает и размеры (rectDims)
+      if(e.ctrlKey && ppPatch && ppParts && ppParts.length){
+        // Ctrl+клик: собрать несколько областей ОДНОЙ плоскости (FreeCAD);
+        // повторный Ctrl+клик по выбранной области снимает её
+        const k = ppParts.findIndex(p=>p.set.has(f.faceIndex));
+        if(k >= 0){
+          if(ppParts.length > 1) ppParts.splice(k, 1);
+        } else {
+          const np = facePatchCached(f.faceIndex);
+          const base = ppParts[0];
+          if(np.normal.dot(base.normal) > 0.999
+             && Math.abs(patchPlaneD(np) - patchPlaneD(base)) < 0.05)
+            ppParts.push(np);
+          else ppParts = [np]; // другая плоскость — новый выбор
+        }
+      } else {
+        ppParts = [facePatchCached(f.faceIndex)]; // кэш знает размеры (rectDims)
+      }
+      ppPatch = compositeParts();
       showPatch(ppPatch, C_SEL);
       showFacePalette();
     } else if(!exLive){ // пустой клик при открытом окне ничего не трогает
@@ -4769,6 +4818,7 @@ canvas.addEventListener('dblclick', e=>{
   if(hf){
     clearEdgeSel(); deselect();
     ppPatch = facePatchCached(hf.faceIndex);
+    ppParts = [ppPatch]; // мультивыбор стартует с этой области
     showPatch(ppPatch, C_SEL); // выбранная грань — зелёная
     showFacePalette();         // список доступных операций (P / E / Esc)
   }
