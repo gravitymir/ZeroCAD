@@ -2025,9 +2025,12 @@ function showPatch(patch, color){
   for(const t of patch.tris) for(let j=0;j<9;j++) arr[o++] = pos[t*9+j];
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(arr,3));
+  // подсветка лежит ТОЧНО на грани: приподнимаем её только в буфере
+  // глубины (polygonOffset). Прежний сдвиг по нормали на 0.05 мм на
+  // сильном зуме «отслаивался» от грани и закрывал её рёбра
   ppHi = new THREE.Mesh(g, new THREE.MeshBasicMaterial(
-    {color: color || C_EDGE, transparent:true, opacity:0.35, side:THREE.DoubleSide}));
-  ppHi.position.copy(patch.normal).multiplyScalar(0.05); // чуть над гранью
+    {color: color || C_EDGE, transparent:true, opacity:0.35, side:THREE.DoubleSide,
+     polygonOffset:true, polygonOffsetFactor:-2, polygonOffsetUnits:-2}));
   scene.add(ppHi);
 }
 function hidePatch(){
@@ -2130,6 +2133,128 @@ function showFacePalette(){
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 150) + 'px';
   chordHint.hidden = false;
   clearTimeout(showChordHint._t); // живёт, пока выбор жив
+}
+// ---------- стирание рёбер и линий (Del) ----------
+// Нарисованная линия стирается всегда: это разметка, а не форма — ластик
+// режет её до ближайших перекрёстков, как в SketchUp.
+// Ребро СЕТКИ убираем, только если оно лишнее: по обе стороны одна и та же
+// плоскость (Refine shape во FreeCAD, Limited Dissolve в Blender). Ребро с
+// изломом держит форму — куб без ребра развалился бы, поэтому отказываем
+// и называем угол, из-за которого ребро формообразующее.
+const DISSOLVE_DEG = 0.5;
+function trisOnEdge(ka, kb){
+  const pos = mesh.geometry.attributes.position.array;
+  const out = [];
+  for(let i=0;i<pos.length;i+=9){
+    const k = [keyOf(pos[i],pos[i+1],pos[i+2]),
+               keyOf(pos[i+3],pos[i+4],pos[i+5]),
+               keyOf(pos[i+6],pos[i+7],pos[i+8])];
+    if(k.indexOf(ka)>=0 && k.indexOf(kb)>=0) out.push({i, k});
+  }
+  return out;
+}
+function triNormalAtOffset(o){
+  const pos = mesh.geometry.attributes.position.array;
+  const a = new THREE.Vector3(pos[o],pos[o+1],pos[o+2]);
+  const b = new THREE.Vector3(pos[o+3],pos[o+4],pos[o+5]);
+  const c = new THREE.Vector3(pos[o+6],pos[o+7],pos[o+8]);
+  return new THREE.Vector3().subVectors(b,a)
+    .cross(new THREE.Vector3().subVectors(c,a)).normalize();
+}
+// двугранный угол на ребре в градусах; null — ребро не парное (край дырки)
+function edgeDihedral(A, B){
+  const t = trisOnEdge(keyOf(A.x,A.y,A.z), keyOf(B.x,B.y,B.z));
+  if(t.length !== 2) return null;
+  const d = Math.max(-1, Math.min(1,
+    triNormalAtOffset(t[0].i).dot(triNormalAtOffset(t[1].i))));
+  return Math.acos(d)*180/Math.PI;
+}
+// убрать лишнее ребро: два копланарных треугольника перетриангулировать по
+// другой диагонали (flip). Допустимо, только когда C-D реально пересекает
+// A-B — иначе четырёхугольник невыпуклый и треугольники наложились бы
+function dissolveMeshEdge(A, B){
+  const ka = keyOf(A.x,A.y,A.z), kb = keyOf(B.x,B.y,B.z);
+  const t = trisOnEdge(ka, kb);
+  if(t.length !== 2) return false;
+  const pos = mesh.geometry.attributes.position.array;
+  const other = rec => {
+    for(let j=0;j<3;j++) if(rec.k[j]!==ka && rec.k[j]!==kb)
+      return new THREE.Vector3(pos[rec.i+j*3], pos[rec.i+j*3+1], pos[rec.i+j*3+2]);
+    return null;
+  };
+  const C = other(t[0]), D = other(t[1]);
+  if(!C || !D) return false;
+  const n0 = triNormalAtOffset(t[0].i);
+  const u = new THREE.Vector3().subVectors(B,A).normalize();
+  const v = new THREE.Vector3().crossVectors(n0, u);
+  const to2 = P => [P.dot(u), P.dot(v)];
+  if(!segCross2(to2(A), to2(B), to2(C), to2(D))) return false;
+  const orient = (p,q,r) => new THREE.Vector3().subVectors(q,p)
+    .cross(new THREE.Vector3().subVectors(r,p)).dot(n0) >= 0 ? [p,q,r] : [p,r,q];
+  const keep = [];
+  for(let i=0;i<pos.length;i+=9)
+    if(i!==t[0].i && i!==t[1].i) for(let j=0;j<9;j++) keep.push(pos[i+j]);
+  for(const tri of [orient(A,D,C), orient(D,B,C)])
+    for(const p of tri) keep.push(p.x, p.y, p.z);
+  setMeshFromArray(new Float32Array(keep));
+  return true;
+}
+// вырезать участок нарисованной линии, оставив хвосты за перекрёстками
+function eraseGuideSegment(A, B){
+  for(let i=0;i<guides.length;i++){
+    const g = guides[i];
+    const d = new THREE.Vector3().subVectors(g.b, g.a);
+    const L = d.length();
+    if(L < 1e-6) continue;
+    const u = d.multiplyScalar(1/L);
+    const vA = new THREE.Vector3().subVectors(A, g.a);
+    const vB = new THREE.Vector3().subVectors(B, g.a);
+    const tA = vA.dot(u), tB = vB.dot(u);
+    if(vA.addScaledVector(u,-tA).length() > 0.02) continue; // не на этой прямой
+    if(vB.addScaledVector(u,-tB).length() > 0.02) continue;
+    const t0 = Math.min(tA,tB), t1 = Math.max(tA,tB);
+    if(t1 < 0.05 || t0 > L-0.05) continue;                  // мимо этого отрезка
+    const tails = [], noExt = g.noExt;
+    if(t0 > 0.05)   tails.push([g.a.clone(), g.a.clone().addScaledVector(u, t0)]);
+    if(t1 < L-0.05) tails.push([g.a.clone().addScaledVector(u, t1), g.b.clone()]);
+    scene.remove(g.line); g.line.geometry.dispose();
+    guides.splice(i,1);
+    for(const [pa,pb] of tails) addGuide(pa, pb, noExt);
+    return true;
+  }
+  return false;
+}
+function deleteSelEdges(){
+  if(!edgeSel.length) return;
+  const warn = msg => {
+    tipAt({clientX:lastMX, clientY:lastMY},
+      '<span style="color:#d9534f;font-weight:700">'+msg+'</span>');
+    clearTimeout(deleteSelEdges._t);
+    deleteSelEdges._t = setTimeout(tipHide, 2000);
+  };
+  // сначала проверяем все сегменты: стираем либо всё, либо ничего
+  const jobs = [];
+  for(const s of edgeSel){
+    for(let i=0;i+1<s.pts.length;i++){
+      const A = s.pts[i], B = s.pts[i+1];
+      if(s.isGuide){ jobs.push({guide:true, A, B}); continue; }
+      const ang = edgeDihedral(A, B);
+      if(ang === null){ warn('Border of a hole — nothing to merge'); return; }
+      if(ang > DISSOLVE_DEG){
+        warn('Edge holds the shape (∠ ' + ang.toFixed(1) + '°) — can’t erase');
+        return;
+      }
+      jobs.push({guide:false, A, B});
+    }
+  }
+  pushUndo();
+  let done = 0;
+  for(const j of jobs)
+    done += (j.guide ? eraseGuideSegment(j.A, j.B) : dissolveMeshEdge(j.A, j.B)) ? 1 : 0;
+  if(!done){ undo(true); warn('Nothing to erase'); return; }
+  clearEdgeSel(); hideChordHint();
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  extractEdges();
 }
 // удаление выбранной грани (ластик/Del в SketchUp): дырка в оболочке — норма,
 // модель перестаёт быть замкнутой, пока дырку не закроют
@@ -2275,7 +2400,7 @@ function toggleEdgeSel(ch){
     const g = new THREE.BufferGeometry().setFromPoints(ch.pts);
     const l = new THREE.Line(g, new THREE.LineBasicMaterial({color:C_SEL}));
     scene.add(l);
-    edgeSel.push({pts: ch.pts.map(p=>p.clone()), key, line:l});
+    edgeSel.push({pts: ch.pts.map(p=>p.clone()), key, line:l, isGuide: !!ch.isGuide});
   }
   updateSelPreview();
 }
@@ -3234,6 +3359,7 @@ function showEdgePalette(ch){
     '<div><span class="key">M</span> — move edge</div>' +
     '<div><span class="key">G,V</span> — move by X/Y/Z</div>' +
     '<div><span class="key">G,Y</span> — point / divide</div>' +
+    '<div><span class="key">Del</span> — erase edge / line</div>' +
     '<div><span class="key">Ctrl+click</span> — multi-select</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
@@ -3988,6 +4114,11 @@ window.addEventListener('keydown', e=>{
     const selLoop = edgeSelLoop();
     if(selLoop && fillLoop(selLoop)){ clearEdgeSel(); hideChordHint(); e.preventDefault(); return; }
     if(fillHole()){ e.preventDefault(); return; }
+  }
+  // Del — стереть выбранное ребро/линию (Refine shape во FreeCAD)
+  if((e.key==='Delete' || e.key==='Backspace') && edgeSel.length && !dragPt && !ppDrag
+     && !edgeDrag && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); deleteSelEdges(); return;
   }
   // Del — удалить выбранную точку (как удаление вершины во FreeCAD)
   if((e.key==='Delete' || e.key==='Backspace') && selAnchor && !dragPt && !ppDrag
