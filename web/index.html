@@ -4210,30 +4210,36 @@ canvas.addEventListener('pointerdown', e=>{
   if(textMode){ // режим «3D Text»: клик ставит красную стартовую точку,
     // зажатая ЛКМ тащит её по грани (сетка 0.1), отпускание фиксирует
     if(e.button===0 && q.inside){
-      const f = raycastFace(q);
-      if(f){
-        const p = readTextParams();
-        if(p){
-          textParams = p;
-          const n = triNormalAt(f.faceIndex);
-          // якорь = низ центра строки; снап к сетке 0.1 в плоскости грани
-          const P = new THREE.Vector3(snapMM(f.point.x), snapMM(f.point.y), snapMM(f.point.z));
-          P.addScaledVector(n, -new THREE.Vector3().subVectors(P, f.point).dot(n));
-          if(txtLive) undo(true);
-          const C = planeCentroid(n, f.point); // центр грани (чистой)
-          const sn = txCenterSnap(P, n, C, p); // магнит к центру грани
-          placeTextAt(txLeftFromAnchor(P, n, p), n);
-          txtLive = {P: P.clone(), n: n.clone(), C};
-          showTxAnchor(P);
-          showTxCenter(C);
-          txSnapTip(e, sn);
-          txPlaceDrag = {
-            q0: {cam: q.cam, ox: q.ox, oy: q.oy, w: q.w, h: q.h},
-            plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, f.point),
-            n: n.clone(), lastT: performance.now(), dirty: false
-          };
-          try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+      const p = readTextParams();
+      if(p){
+        textParams = p;
+        // предпросмотр — наша же геометрия, и луч попадал бы в сами буквы
+        // (якорь уезжал от грани наружу с каждым кликом). Снимаем его ДО
+        // луча: целимся всегда в чистое тело, как SketchUp целится мимо
+        // собственного превью
+        if(txtLive) undo(true);
+        const f = raycastFace(q);
+        if(!f){ // мимо тела: вернуть предпросмотр на прежнее место
+          if(txtLive) placeTextAt(txLeftFromAnchor(txtLive.P, txtLive.n, p), txtLive.n);
+          return;
         }
+        const n = triNormalAt(f.faceIndex);
+        // якорь = низ центра строки; снап к сетке 0.1 в плоскости грани
+        const P = new THREE.Vector3(snapMM(f.point.x), snapMM(f.point.y), snapMM(f.point.z));
+        P.addScaledVector(n, -new THREE.Vector3().subVectors(P, f.point).dot(n));
+        const C = planeCentroid(n, f.point); // центр грани (чистой)
+        const sn = txCenterSnap(P, n, C, p); // магнит к центру грани
+        placeTextAt(txLeftFromAnchor(P, n, p), n);
+        txtLive = {P: P.clone(), n: n.clone(), C};
+        showTxAnchor(P);
+        showTxCenter(C);
+        txSnapTip(e, sn);
+        txPlaceDrag = {
+          q0: {cam: q.cam, ox: q.ox, oy: q.oy, w: q.w, h: q.h},
+          plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, f.point),
+          n: n.clone(), lastT: performance.now(), dirty: false
+        };
+        try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
       }
     }
     return;
@@ -4893,7 +4899,10 @@ canvas.addEventListener('pointermove', e=>{
 // по грани — выбрать плоскую область (границы: рёбра модели + линии)
 canvas.addEventListener('dblclick', e=>{
   const q = quadPos(e);
-  if(!q.inside || lineMode || ppMode || placing) return;
+  // пока работает инструмент, двойной клик ничего не выбирает: в SketchUp
+  // и FreeCAD активный инструмент забирает клики себе целиком
+  if(!q.inside || lineMode || ppMode || placing
+     || textMode || pointMode || circleMode || exLive || divCtx) return;
   const c = pickCorner(q);
   if(c){
     selectVertex(c.pos);
