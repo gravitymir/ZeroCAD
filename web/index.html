@@ -100,17 +100,28 @@
     font-size:22px;line-height:1.6;color:var(--muted);pointer-events:none}
   #chordHint[hidden]{display:none}
   #chordHint .key{color:var(--accent2);font-weight:700}
+  /* зажатый модификатор — его строка в палитре вспыхивает белым */
+  body.altHeld .key.kAlt, body.shiftHeld .key.kShift{color:#fff}
   /* ручка перетаскивания палитры (правый верхний угол) */
   #chordHint .chgrip{position:absolute;top:2px;right:4px;cursor:move;
     pointer-events:auto;color:var(--muted);font-size:30px;line-height:1;padding:8px 12px}
   #chordHint .chgrip:hover{color:var(--text)}
   /* окна точного выдавливания (E) и деления ребра точками */
-  #exPopup,#divPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
+  #exPopup,#divPopup,#txtPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
     border-radius:10px;padding:10px 12px;font-size:12px}
-  #exPopup[hidden],#divPopup[hidden]{display:none}
-  #exPopup .prow,#divPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
-  #exPopup input,#divPopup input{width:80px;background:var(--panel2);color:var(--text);
+  #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden]{display:none}
+  #exPopup .prow,#divPopup .prow,#txtPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
+  #exPopup input,#divPopup input,#txtPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
+  /* окно 3D-текста (G,T): крупное, перетаскивается, как остальные окна */
+  #txtPopup{cursor:move;padding:14px 16px}
+  #txtPopup .prow{font-size:19px;gap:10px}
+  #txtPopup input{font-size:22px;padding:6px 10px}
+  #txtPopup #tx_str{width:250px;text-transform:uppercase;letter-spacing:2px}
+  #txtPopup #tx_h,#txtPopup #tx_d{width:110px;font-variant-numeric:tabular-nums}
+  #txtPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
+    border:1px solid var(--line);background:var(--panel2);color:var(--text)}
+  #txtPopup #tx_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
   /* окно выдавливания: крупные надпись и цифры — читается без очков;
      целые мм — зелёные, дробные — белые */
   #exPopup .prow{font-size:24px}
@@ -144,7 +155,7 @@
       <div class="vplabel quadonly" style="left:10px;top:calc(50% + 10px)"><b>+Y</b> view (side) · grid 1/10 mm</div>
       <div class="vplabel quadonly" style="left:calc(50% + 10px);top:calc(50% + 10px)"><b>+Z</b> view (top) · grid 1/10 mm</div>
     </div>
-    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>PUSH/PULL · drag a face · P/Esc — exit<br></b><b id="lnb" style="color:var(--accent2)" hidden>LINE · click–click — chord · type length + Enter · Esc/L — exit<br></b><b id="fps"></b></div>
+    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>PUSH/PULL · drag a face · P/Esc — exit<br></b><b id="lnb" style="color:var(--accent2)" hidden>LINE · click–click — chord · type length + Enter · Esc/L — exit<br></b><b id="txb" style="color:var(--accent2)" hidden>3D TEXT · click a face to place · Esc — cancel<br></b><b id="fps"></b></div>
     <div id="popup" hidden>
       <div class="prow">Edge: <b id="p_len">–</b> mm</div>
       <div class="prow">Offset: <input id="p_off" type="number" step="0.1" min="0"> mm</div>
@@ -168,6 +179,14 @@
         <button id="dv_ok" class="primary" style="flex:1">OK</button>
         <button id="dv_cancel" style="flex:1">Cancel</button>
       </div>
+    </div>
+    <div id="txtPopup" hidden>
+      <div class="prow"><b style="color:#2ecc40">3D Text</b><span style="font-size:13px">(SketchUp 3D Text)</span></div>
+      <div class="prow">Text <input id="tx_str" type="text" value="ZERO"></div>
+      <div class="prow">Height <input id="tx_h" type="number" step="1" min="3" value="10"> mm</div>
+      <div class="prow">Extrude <input id="tx_d" type="number" step="0.5" value="2"> mm</div>
+      <div class="prow" style="font-size:13px">negative Extrude — engrave into the face</div>
+      <div class="prow" style="gap:10px;margin-top:8px"><button id="tx_ok">Place</button><button id="tx_cancel">Cancel</button></div>
     </div>
     <div id="exPopup" hidden>
       <div class="prow">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
@@ -1002,11 +1021,22 @@ const ORBIT_CURSOR = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(
   '<path d="M6.2 2.2l-1.9 5.6 5.8-1.2z" fill="#f2f5fa" stroke="#10131a" stroke-width="1"/>' +
   '</svg>') + '") 11 11, grab';
 function updateOrbitCursor(on){
-  const toolActive = pointMode || lineMode || circleMode || ppMode;
+  const toolActive = pointMode || lineMode || circleMode || ppMode
+    || (typeof textMode !== 'undefined' && textMode);
   if(!toolActive && !exLive) return; // окно Extrude тоже даёт Ctrl-орбиту
   canvas.style.cursor = on ? ORBIT_CURSOR : (toolActive ? 'crosshair' : '');
 }
 window.addEventListener('keydown', e=>{ if(e.key === 'Control') updateOrbitCursor(true); });
+// зажатые Alt/Shift подсвечивают свои строки в палитрах (класс на body)
+window.addEventListener('keydown', e=>{
+  if(e.key === 'Alt') document.body.classList.add('altHeld');
+  if(e.key === 'Shift') document.body.classList.add('shiftHeld');
+});
+window.addEventListener('keyup', e=>{
+  if(e.key === 'Alt') document.body.classList.remove('altHeld');
+  if(e.key === 'Shift') document.body.classList.remove('shiftHeld');
+});
+window.addEventListener('blur', ()=>document.body.classList.remove('altHeld','shiftHeld'));
 window.addEventListener('keyup',   e=>{ if(e.key === 'Control') updateOrbitCursor(false); });
 window.addEventListener('blur', ()=>updateOrbitCursor(false)); // Alt+Tab с зажатым Ctrl
 
@@ -1286,6 +1316,166 @@ function commitCircle(){
   circleCenter = null; circleRStr = '';
   tipHide();
 }
+
+// ---------- «3D Text» (G,T — 3D Text из SketchUp) ----------
+// Свой вшитый пиксельный шрифт 5x7 (8-битная классика): программа не зависит
+// от шрифтов системы, а прямоугольные глифы дружат с BSP и слайсерами.
+// Биты строки: бит 4 — левая колонка, бит 0 — правая.
+const FONT57 = {
+  'A':[0x0E,0x11,0x11,0x1F,0x11,0x11,0x11],'B':[0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E],
+  'C':[0x0E,0x11,0x10,0x10,0x10,0x11,0x0E],'D':[0x1E,0x11,0x11,0x11,0x11,0x11,0x1E],
+  'E':[0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F],'F':[0x1F,0x10,0x10,0x1E,0x10,0x10,0x10],
+  'G':[0x0E,0x11,0x10,0x17,0x11,0x11,0x0F],'H':[0x11,0x11,0x11,0x1F,0x11,0x11,0x11],
+  'I':[0x0E,0x04,0x04,0x04,0x04,0x04,0x0E],'J':[0x07,0x02,0x02,0x02,0x02,0x12,0x0C],
+  'K':[0x11,0x12,0x14,0x18,0x14,0x12,0x11],'L':[0x10,0x10,0x10,0x10,0x10,0x10,0x1F],
+  'M':[0x11,0x1B,0x15,0x15,0x11,0x11,0x11],'N':[0x11,0x19,0x15,0x13,0x11,0x11,0x11],
+  'O':[0x0E,0x11,0x11,0x11,0x11,0x11,0x0E],'P':[0x1E,0x11,0x11,0x1E,0x10,0x10,0x10],
+  'Q':[0x0E,0x11,0x11,0x11,0x15,0x12,0x0D],'R':[0x1E,0x11,0x11,0x1E,0x14,0x12,0x11],
+  'S':[0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E],'T':[0x1F,0x04,0x04,0x04,0x04,0x04,0x04],
+  'U':[0x11,0x11,0x11,0x11,0x11,0x11,0x0E],'V':[0x11,0x11,0x11,0x11,0x11,0x0A,0x04],
+  'W':[0x11,0x11,0x11,0x15,0x15,0x15,0x0A],'X':[0x11,0x11,0x0A,0x04,0x0A,0x11,0x11],
+  'Y':[0x11,0x11,0x0A,0x04,0x04,0x04,0x04],'Z':[0x1F,0x01,0x02,0x04,0x08,0x10,0x1F],
+  '0':[0x0E,0x11,0x13,0x15,0x19,0x11,0x0E],'1':[0x04,0x0C,0x04,0x04,0x04,0x04,0x0E],
+  '2':[0x0E,0x11,0x01,0x02,0x04,0x08,0x1F],'3':[0x1F,0x02,0x04,0x02,0x01,0x11,0x0E],
+  '4':[0x02,0x06,0x0A,0x12,0x1F,0x02,0x02],'5':[0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E],
+  '6':[0x06,0x08,0x10,0x1E,0x11,0x11,0x0E],'7':[0x1F,0x01,0x02,0x04,0x08,0x08,0x08],
+  '8':[0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E],'9':[0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C],
+  '-':[0x00,0x00,0x00,0x0E,0x00,0x00,0x00],'.':[0x00,0x00,0x00,0x00,0x00,0x0C,0x0C],
+  ' ':[0,0,0,0,0,0,0]
+};
+// Тело текста строится НАПРЯМУЮ по клеточной сетке (без булевых): крышка и
+// дно — по 2 треугольника на закрашенную клетку, стенки — только на границе
+// с пустыми клетками. Все вершины на узлах сетки — сетка водонепроницаема
+// по построению (0 boundary, 0 T-стыков), в отличие от BSP-union призм.
+function buildTextSolid(P, u, v, n, cells, s, above, below){
+  const at = (gx,gy,h)=>P.clone().addScaledVector(u,gx*s).addScaledVector(v,gy*s).addScaledVector(n,h);
+  const has = (gx,gy)=>cells.has(gx+','+gy);
+  const tris = [];
+  for(const key of cells){
+    const [gx,gy] = key.split(',').map(Number);
+    const t00=at(gx,gy,above),t10=at(gx+1,gy,above),t11=at(gx+1,gy+1,above),t01=at(gx,gy+1,above);
+    const b00=at(gx,gy,-below),b10=at(gx+1,gy,-below),b11=at(gx+1,gy+1,-below),b01=at(gx,gy+1,-below);
+    tris.push([t00,t10,t11],[t00,t11,t01]);  // крышка наружу (+n)
+    tris.push([b00,b11,b10],[b00,b01,b11]);  // дно наружу (-n)
+    if(!has(gx,gy-1)) tris.push([b00,b10,t10],[b00,t10,t00]); // стенка -v
+    if(!has(gx+1,gy)) tris.push([b10,b11,t11],[b10,t11,t10]); // стенка +u
+    if(!has(gx,gy+1)) tris.push([b11,b01,t01],[b11,t01,t11]); // стенка +v
+    if(!has(gx-1,gy)) tris.push([b01,b00,t00],[b01,t00,t01]); // стенка -u
+  }
+  return tris;
+}
+let textMode = false, textParams = null;
+function setTextMode(on){
+  textMode = on;
+  if(on){
+    setLineMode(false);
+    if(circleMode) setCircleMode(false);
+    if(ppMode) setPPMode(false);
+    if(pointMode) setPointMode(false);
+    setHover(null); tipHide();
+  }
+  txb.hidden = !on;
+  canvas.style.cursor = on ? 'crosshair' : '';
+  updateToolTag();
+}
+function openTextPopup(){
+  const vr = view.getBoundingClientRect();
+  txtPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 400) + 'px';
+  txtPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 300) + 'px';
+  txtPopup.hidden = false;
+  tx_str.focus(); tx_str.select();
+}
+function closeTextPopup(){ txtPopup.hidden = true; }
+// тело минус/плюс призмы прямоугольников шрифта; врезаем в кликнутую грань
+function placeTextAt(P, n){
+  const {str, h, d} = textParams;
+  const s = h/7; // клетка; шаг букв — 6 клеток (5 колонок + 1 просвет)
+  const u = Math.abs(n.z) > 0.9
+    ? new THREE.Vector3(1,0,0)
+    : new THREE.Vector3(0,0,1).cross(n).normalize();
+  const v = new THREE.Vector3().crossVectors(n, u).normalize(); // «вверх» по грани
+  // закрашенные клетки в глобальной сетке текста: gx вдоль строки, gy вверх
+  const cells = new Set();
+  let ci = 0;
+  for(const chr of str){
+    const g = FONT57[chr];
+    if(g && chr !== ' ')
+      for(let r=0;r<7;r++) for(let c=0;c<5;c++)
+        if(g[r] & (1<<(4-c))) cells.add((ci*6+c)+','+(6-r));
+    ci++;
+  }
+  if(!cells.size) return;
+  pushUndo();
+  try{
+    const above = d > 0 ? d : 1.0;   // гравировка: 1 мм запаса наружу
+    const below = d > 0 ? 0.5 : -d;  // выдавливание: врастаем на 0.5 мм
+    const letters = buildTextSolid(P, u, v, n, cells, s, above, below);
+    const q = x => Math.round(x*1000)/1000;
+    if(d > 0){
+      // выдавить: буквы — цельная оболочка, вросшая в тело (копланарного
+      // дна нет — нет мерцания; слайсеры такие союзы понимают)
+      const arr = Array.from(mesh.geometry.attributes.position.array);
+      for(const t of letters) for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
+      setMeshFromArray(new Float32Array(arr));
+    } else {
+      // вдавить: одно честное вычитание, как commitPocketCSG
+      const pos = mesh.geometry.attributes.position.array;
+      const body = [];
+      for(let i=0;i<pos.length;i+=9)
+        body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]),
+                   new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
+                   new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
+      const res = csgSubtract(body, letters);
+      const arr = [];
+      for(const t of res){
+        const ar = new THREE.Vector3().subVectors(t[1],t[0])
+          .cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
+        if(ar < 1e-6) continue;
+        for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
+      }
+      setMeshFromArray(new Float32Array(arr));
+      // Т-стыков после BSP у текста сотни (healTJunctions чинит до 16 за
+      // вызов) — гоняем до полной сходимости
+      for(let i=0;i<80;i++){
+        const len0 = mesh.geometry.attributes.position.array.length;
+        cleanupMesh(); healTJunctions();
+        if(mesh.geometry.attributes.position.array.length === len0) break;
+      }
+      removeInvertedShells();
+    }
+  }catch(err){
+    console.warn('BSP-текст не удался — операция отменена', err);
+    undo(true);
+    return;
+  }
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  extractEdges();
+}
+tx_ok.addEventListener('click', ()=>{
+  const str = (tx_str.value || '').toUpperCase();
+  const h = Math.max(3, +tx_h.value || 10);
+  const d = +tx_d.value || 0;
+  if(!str.trim() || !d) return; // нечего ставить / нулевая глубина
+  textParams = {str, h, d};
+  closeTextPopup();
+  setTextMode(true);
+});
+tx_cancel.addEventListener('click', closeTextPopup);
+// окно перетаскивается за пустое место, как остальные окна
+let txDrag = null;
+txtPopup.addEventListener('pointerdown', ev=>{
+  if(ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON') return;
+  const r = txtPopup.getBoundingClientRect();
+  txDrag = {dx: ev.clientX - r.left, dy: ev.clientY - r.top};
+  ev.preventDefault();
+});
+window.addEventListener('pointermove', ev=>{
+  if(!txDrag) return;
+  const vr = view.getBoundingClientRect();
+  txtPopup.style.left = (ev.clientX - vr.left - txDrag.dx) + 'px';
+  txtPopup.style.top  = (ev.clientY - vr.top - txDrag.dy) + 'px';
+});
+window.addEventListener('pointerup', ()=>{ txDrag = null; });
 
 // Врезка отрезка A-B в копланарные треугольники меша: каждый пересечённый
 // треугольник делится по линии хорды на 2-3. После этого вдоль хорды есть
@@ -1647,6 +1837,7 @@ function showChordHint(){
     row('L', 'Line (single segments)', true) +
     row('M', 'Polyline (chained)', true) +
     row('C', 'Circle on face', true) +
+    row('T', '3D Text on face', true) +
     row('Y', 'Point (with snaps)', true) +
     row('P', 'Push/Pull mode', true) +
     row('E', 'Extrude face ±mm', !!ppPatch) +
@@ -2316,6 +2507,23 @@ function csgInvert(node){
   if(node.back) csgInvert(node.back);
 }
 // A минус B; входы — массивы треугольников [V3,V3,V3]
+// объединение A∪B тем же BSP (порядок клипов — как union в csg.js);
+// нужно 3D-тексту: срастить призмы букв в одно тело без внутренних стенок
+function csgUnion(aTris, bTris){
+  const mk = ts => ts.map(t=>csgPoly([t[0].clone(),t[1].clone(),t[2].clone()]))
+                     .filter(Boolean);
+  const a = csgNode(mk(aTris)), b = csgNode(mk(bTris));
+  csgClipTo(a, b);
+  csgClipTo(b, a);
+  csgInvert(b);
+  csgClipTo(b, a);
+  csgInvert(b);
+  csgBuild(a, csgAllPolys(b, []));
+  const out = [];
+  for(const p of csgAllPolys(a, []))
+    for(let i=2;i<p.v.length;i++) out.push([p.v[0], p.v[i-1], p.v[i]]);
+  return out;
+}
 function csgSubtract(aTris, bTris){
   const mk = ts => ts.map(t=>csgPoly([t[0].clone(),t[1].clone(),t[2].clone()]))
                      .filter(Boolean);
@@ -2574,8 +2782,8 @@ function showVertexPalette(){
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     (!hintsChk.checked ? '' :
     '<div><span class="key">G,V</span> — edit X/Y/Z</div>' +
-    '<div><span class="key">Alt+drag</span> — ring</div>' +
-    '<div><span class="key">Shift</span> — column</div>' +
+    '<div><span class="key kAlt">Alt+drag</span> — ring</div>' +
+    '<div><span class="key kShift">Shift</span> — column</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
@@ -2648,10 +2856,14 @@ function showEdgePalette(ch){
     ? (ch.isGuide ? 'Line' : 'Edge') + ' · ' + ch.total.toFixed(1) + ' mm'
       + (arc ? ' · R ' + arc.R.toFixed(1) + ' mm' : '')
     : 'Edge';
-  const fmt = p => p.x.toFixed(1) + ' · ' + p.y.toFixed(1) + ' · ' + p.z.toFixed(1);
+  // цифры координат — в цветах осей; сама точка-маркер золотая/серебряная
+  const fmt = p =>
+    '<span style="color:'+AXIS_CSS.x+'">'+p.x.toFixed(1)+'</span> · ' +
+    '<span style="color:'+AXIS_CSS.y+'">'+p.y.toFixed(1)+'</span> · ' +
+    '<span style="color:'+AXIS_CSS.z+'">'+p.z.toFixed(1)+'</span>';
   const ends = (ch && !ch.closed)
-    ? '<div><span style="color:#f5c542;font-weight:600">● ' + fmt(ch.pts[0]) + '</span></div>' +
-      '<div><span style="color:#c9d1dc;font-weight:600">● ' + fmt(ch.pts[ch.pts.length-1]) + '</span></div>'
+    ? '<div style="font-weight:600"><span style="color:#f5c542">●</span> ' + fmt(ch.pts[0]) + '</div>' +
+      '<div style="font-weight:600"><span style="color:#c9d1dc">●</span> ' + fmt(ch.pts[ch.pts.length-1]) + '</div>'
     : '';
   const vr = view.getBoundingClientRect();
   // размеры и координаты — данные, видны всегда; команды гасятся флагом
@@ -3394,6 +3606,13 @@ window.addEventListener('keydown', e=>{
     e.preventDefault(); chordG = 0; hideChordHint();
     setPointMode(true); return;
   }
+  // G,T — 3D-текст на грани
+  if((e.code==='KeyT' || e.key.toLowerCase()==='t') && chordG
+     && performance.now() - chordG < 4000 && !e.ctrlKey && !e.altKey && !e.metaKey
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    openTextPopup(); return;
+  }
   // G,C — окружность
   if((e.code==='KeyC' || e.key.toLowerCase()==='c') && chordG
      && performance.now() - chordG < 4000 && !e.ctrlKey && !e.altKey && !e.metaKey
@@ -3403,7 +3622,7 @@ window.addEventListener('keydown', e=>{
   }
   // F — залить выбранный контур, а без выбора — дырку (Fill, как F в Blender)
   if((e.code==='KeyF' || e.key.toLowerCase()==='f') && !e.ctrlKey && !e.altKey && !e.metaKey
-     && !dragPt && !ppDrag && !lineMode && !pointMode && !circleMode && !ppMode
+     && !dragPt && !ppDrag && !lineMode && !pointMode && !circleMode && !ppMode && !textMode
      && document.activeElement.tagName!=='INPUT'){
     const selLoop = edgeSelLoop();
     if(selLoop && fillLoop(selLoop)){ clearEdgeSel(); hideChordHint(); e.preventDefault(); return; }
@@ -3471,6 +3690,8 @@ window.addEventListener('keydown', e=>{
       else setLineMode(false);
     }
     if(ppMode) setPPMode(false);
+    closeTextPopup();
+    if(textMode) setTextMode(false);
   }
 });
 
@@ -3579,7 +3800,7 @@ canvas.addEventListener('pointerdown', e=>{
   // в режимах инструментов камера не отнимается: ПКМ — сдвиг, СКМ — вращение,
   // а Ctrl+ЛКМ — временная орбита (отпустил — инструмент снова в руке)
   if((e.button === 2 || e.button === 1 || (e.button === 0 && e.ctrlKey))
-     && (pointMode || circleMode || lineMode || ppMode) && q.is3D){
+     && (pointMode || circleMode || lineMode || ppMode || textMode) && q.is3D){
     drag = {x: e.clientX, y: e.clientY, b: e.button === 0 ? 1 : e.button};
     try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
     return;
@@ -3602,6 +3823,16 @@ canvas.addEventListener('pointerdown', e=>{
       // здесь уже стоит точка — не дублируем её второй такой же
       if(anchors.some(a=>a.pos.distanceTo(pt.pos) < 1e-3)) return;
       pushUndo(); makeAnchor(pt.pos); extractEdges();
+    }
+    return;
+  }
+  if(textMode){ // режим «3D Text»: клик по грани ставит текст
+    if(e.button===0 && q.inside){
+      const f = raycastFace(q);
+      if(f){
+        placeTextAt(f.point.clone(), triNormalAt(f.faceIndex));
+        setTextMode(false); // как одиночная линия: поставил — вышел
+      }
     }
     return;
   }
@@ -3741,7 +3972,7 @@ canvas.addEventListener('pointerup', e=>{
     selectVertex(pv.pos);
     showVertexPalette();
   }
-  if(drag && drag.click && !pointMode && !lineMode && !circleMode && !ppMode && !divCtx
+  if(drag && drag.click && !pointMode && !lineMode && !circleMode && !ppMode && !textMode && !divCtx
      && Math.hypot(e.clientX-drag.click.x, e.clientY-drag.click.y) < 3){
     // клик ЛКМ без движения: по грани — выбрать её, в пустоту — снять весь выбор
     const q = quadPos(e);
