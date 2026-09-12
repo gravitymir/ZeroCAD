@@ -1372,6 +1372,7 @@ function buildTextSolid(P, u, v, n, cells, s, above, below){
 let textMode = false, textParams = null;
 let txtLive = null;    // текст уже стоит как предпросмотр: {P, n}
 let txReTimer = null;  // перестройка предпросмотра при правке полей
+let txPlaceDrag = null; // зажатая ЛКМ тащит стартовую точку по грани
 function setTextMode(on){
   textMode = on;
   if(on){
@@ -3960,17 +3961,27 @@ canvas.addEventListener('pointerdown', e=>{
     return;
   }
   if(textMode){ // режим «3D Text»: клик ставит красную стартовую точку,
-    // предпросмотр перестраивается от неё; повторный клик — перенос
+    // зажатая ЛКМ тащит её по грани (сетка 0.1), отпускание фиксирует
     if(e.button===0 && q.inside){
       const f = raycastFace(q);
       if(f){
         const p = readTextParams();
         if(p){
           textParams = p;
+          const n = triNormalAt(f.faceIndex);
+          // снап к сетке 0.1 без ухода с плоскости грани
+          const P = new THREE.Vector3(snapMM(f.point.x), snapMM(f.point.y), snapMM(f.point.z));
+          P.addScaledVector(n, -new THREE.Vector3().subVectors(P, f.point).dot(n));
           if(txtLive) undo(true);
-          placeTextAt(f.point.clone(), triNormalAt(f.faceIndex));
-          txtLive = {P: f.point.clone(), n: triNormalAt(f.faceIndex)};
-          showTxAnchor(f.point);
+          placeTextAt(P.clone(), n);
+          txtLive = {P: P.clone(), n: n.clone()};
+          showTxAnchor(P);
+          txPlaceDrag = {
+            q0: {cam: q.cam, ox: q.ox, oy: q.oy, w: q.w, h: q.h},
+            plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, f.point),
+            n: n.clone(), lastT: performance.now(), dirty: false
+          };
+          try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
         }
       }
     }
@@ -4094,6 +4105,14 @@ canvas.addEventListener('pointerdown', e=>{
   }
 });
 canvas.addEventListener('pointerup', e=>{
+  if(txPlaceDrag){ // отпустили точку текста — финальная перестройка
+    if(txPlaceDrag.dirty && txtLive){
+      undo(true);
+      placeTextAt(txtLive.P.clone(), txtLive.n.clone());
+    }
+    txPlaceDrag = null;
+    return;
+  }
   if(exFaceDrag){ // отпустили лоскут — значение остаётся, окно живёт
     exFaceDrag = null;
     return;
@@ -4219,6 +4238,31 @@ canvas.addEventListener('pointermove', e=>{
       +'<span style="color:'+AXIS_CSS.y+';font-weight:600">Y '+d.y.toFixed(1)+'</span> · '
       +'<span style="color:'+AXIS_CSS.z+';font-weight:600">Z '+d.z.toFixed(1)+'</span>');
     if(!modified){ modified=true; s_mod.textContent='yes'; }
+    return;
+  }
+  if(txPlaceDrag){ // 3D-текст: точка старта едет за курсором по грани
+    const rc = canvas.getBoundingClientRect();
+    const q0 = txPlaceDrag.q0;
+    const lx=(e.clientX-rc.left)-q0.ox, ly=(e.clientY-rc.top)-q0.oy;
+    raycaster.setFromCamera({x:lx/q0.w*2-1, y:-(ly/q0.h*2-1)}, q0.cam);
+    const hit = new THREE.Vector3();
+    if(!raycaster.ray.intersectPlane(txPlaceDrag.plane, hit)) return;
+    const P = new THREE.Vector3(snapMM(hit.x), snapMM(hit.y), snapMM(hit.z));
+    P.addScaledVector(txPlaceDrag.n, -new THREE.Vector3().subVectors(P, hit).dot(txPlaceDrag.n));
+    if(txtLive && P.distanceTo(txtLive.P) > 0.05){
+      txtLive.P.copy(P);
+      if(txAnchor) txAnchor.position.copy(P);
+      txPlaceDrag.dirty = true;
+      // контур/выдавливание перестраиваем на лету; гравировка (BSP,
+      // сотни мс) — только при отпускании кнопки
+      const now = performance.now();
+      if(textParams.d >= 0 && now - txPlaceDrag.lastT > 120){
+        txPlaceDrag.lastT = now;
+        txPlaceDrag.dirty = false;
+        undo(true);
+        placeTextAt(P.clone(), txtLive.n.clone());
+      }
+    }
     return;
   }
   if(exFaceDrag){ // окно Extrude: лоскут едет за мышью, цифры — за ним
@@ -4521,6 +4565,11 @@ canvas.addEventListener('pointermove', e=>{
       }
       tipAt(e, 'Face · drag with LMB');
     } else { ppPatch=null; hidePatch(); tipHide(); }
+    return;
+  }
+  if(textMode){ // 3D-текст: никаких жёлтых подсветок — только точка старта
+    setHover(null); vGhost.visible = false; cornerHover = null;
+    if(!ppMode){ hidePatch(); ppPatch = null; }
     return;
   }
   // приоритет привязок как в SketchUp: вершина > середина > ребро
