@@ -2952,16 +2952,102 @@ function commitExtrude(){
   exLive = null;
   exPopup.hidden = true;
   if(!applied){ undo(true); return; } // нулевая высота: откат без повтора
+  const patchTris = ppPatch ? ppPatch.tris.slice() : null;
   if(applied < 0 && ppPatch){
     // карман — булево вычитание (наш BSP): снимок до стенок наверху истории
     const snap = undoStack[undoStack.length-1];
-    const patchTris = ppPatch.tris;
     hidePatch(); ppPatch = null;
     commitPocketCSG(snap, patchTris, n, -applied);
     return;
   }
   hidePatch(); ppPatch = null;
-  cleanupMesh(); healCoplanarOverlaps(); healTJunctions(); removeInvertedShells(); extractEdges();
+  healAll();
+  // стенки прошли сквозь другие грани (поднятые донья кармана и т.п.) —
+  // локальное заживление оставило дыры: переигрываем честным BSP-union
+  // тела ДО операции с призмой поднятия (как Pad во FreeCAD)
+  if(patchTris && countBoundaryEdges() > 0){
+    const snap = undoStack[undoStack.length-1];
+    try{
+      setMeshFromArray(snap.pos.slice());
+      const prism = buildPatchPrism(snap.pos, patchTris, n, applied);
+      const pos = mesh.geometry.attributes.position.array;
+      const body = [];
+      for(let i=0;i<pos.length;i+=9)
+        body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]),
+                   new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
+                   new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
+      const res = csgUnion(body, prism);
+      const q = x => Math.round(x*1000)/1000;
+      const arr = [];
+      for(const t of res){
+        const ar = new THREE.Vector3().subVectors(t[1],t[0])
+          .cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
+        if(ar < 1e-6) continue;
+        for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
+      }
+      setMeshFromArray(new Float32Array(arr));
+      healAll();
+    }catch(err){
+      console.warn('BSP-union не удался — операция отменена', err);
+      undo(true);
+      return;
+    }
+  }
+  extractEdges();
+}
+// полный цикл заживления до сходимости: одиночный прогон оставляет сотни
+// Т-стыков, когда стенки новой экструзии скользят вдоль старых стенок
+// (например, поднятые донья гравировки); healTJunctions чинит ≤16 за вызов
+function healAll(){
+  for(let i=0;i<80;i++){
+    const len0 = mesh.geometry.attributes.position.array.length;
+    cleanupMesh(); healCoplanarOverlaps(); healTJunctions();
+    if(mesh.geometry.attributes.position.array.length === len0) break;
+  }
+  removeInvertedShells();
+}
+// сколько рёбер сетки встречается ровно один раз (дыры/Т-стыки).
+// Ключи СТРОГИЕ (0.001): keyOf с шагом 0.01 «склеивает» реальные щели,
+// и рваная после сквозной экструзии сетка выглядела бы здоровой
+function countBoundaryEdges(){
+  const pos = mesh.geometry.attributes.position.array;
+  const k = (x,y,z) => x.toFixed(3)+','+y.toFixed(3)+','+z.toFixed(3);
+  const em = new Map();
+  for(let i=0;i<pos.length;i+=9) for(let e=0;e<3;e++){
+    const a=i+e*3, b=i+((e+1)%3)*3;
+    const k1=k(pos[a],pos[a+1],pos[a+2]), k2=k(pos[b],pos[b+1],pos[b+2]);
+    const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+    em.set(ek,(em.get(ek)||0)+1);
+  }
+  let n = 0;
+  for(const c of em.values()) if(c===1) n++;
+  return n;
+}
+// замкнутая призма поднятия лоскута: низ — сами треугольники (нормаль -n),
+// верх — подняты на h (+n), стенки — на граничных рёбрах лоскута
+function buildPatchPrism(pos, trisIdx, n, h){
+  const V = o => new THREE.Vector3(pos[o], pos[o+1], pos[o+2]);
+  const cnt = new Map();
+  for(const t of trisIdx) for(let e=0;e<3;e++){
+    const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+    const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+    const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+    const r = cnt.get(ek);
+    if(r) r.n++;
+    else cnt.set(ek, {n:1, a:V(o1), b:V(o2)});
+  }
+  const up = v => v.clone().addScaledVector(n, h);
+  const out = [];
+  for(const t of trisIdx){
+    const A=V(t*9), B=V(t*9+3), C=V(t*9+6);
+    out.push([A.clone(), C.clone(), B.clone()]);      // низ наружу (-n)
+    out.push([up(A), up(B), up(C)]);                  // верх наружу (+n)
+  }
+  for(const w of cnt.values()) if(w.n===1){
+    out.push([w.a.clone(), w.b.clone(), up(w.b)]);    // стенка наружу
+    out.push([w.a.clone(), up(w.b), up(w.a)]);
+  }
+  return out;
 }
 function closeExtrude(){ // Esc: стенки уже врезаны — откат всей сессии окна
   hideExAxis(); exFaceDrag = null;
@@ -4339,7 +4425,7 @@ canvas.addEventListener('pointerup', e=>{
     ppDrag=null; tipHide(); hidePatch(); ppPatch=null;
     if(revert) applySnapshot(snap); // не тянули: убрать стенки нулевой высоты
     else if(t < 0) commitPocketCSG(snap, patchTris, pn, -t); // карман — BSP
-    else { normalsFlush(); cleanupMesh(); healCoplanarOverlaps(); healTJunctions(); removeInvertedShells(); extractEdges(); }
+    else { normalsFlush(); healAll(); extractEdges(); }
   }
   if(dragPt){
     normalsFlush();
