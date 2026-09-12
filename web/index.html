@@ -1090,18 +1090,20 @@ function showAngleMark(at, hostDir, newDir, len){
   angleMark = new THREE.Line(g, new THREE.LineBasicMaterial({color:0xd9534f}));
   scene.add(angleMark);
 }
-function addGuide(A, B){
+function addGuide(A, B, noExt){
   const g = new THREE.BufferGeometry().setFromPoints([A, B]);
   // сплошная, как обычные рёбра: нарисованная линия — настоящая геометрия
   // (пунктир и в SketchUp, и во FreeCAD — только у вспомогательных построений)
   const l = new THREE.Line(g, new THREE.LineBasicMaterial({color:0x23262c}));
   scene.add(l);
-  guides.push({a:A.clone(), b:B.clone(), line:l});
+  // noExt: сегмент замкнутого контура (текст) — при расчёте областей его
+  // НЕ продлевают на 1 мм за концы (продление рвёт соседние области)
+  guides.push({a:A.clone(), b:B.clone(), line:l, noExt: !!noExt});
 }
 function restoreGuides(list){
   for(const g of guides){ scene.remove(g.line); g.line.geometry.dispose(); }
   guides = [];
-  for(const s of list) addGuide(s.a, s.b);
+  for(const s of list) addGuide(s.a, s.b, s.noExt);
 }
 // точка для рисования: вершина > точка на ребре (0.1 мм) > точка на грани
 function linePickPoint(q){
@@ -1440,13 +1442,15 @@ function placeTextAt(P, n){
         return r;
       };
       const pt = (gx,gy)=>P.clone().addScaledVector(u,gx*s).addScaledVector(v,gy*s);
+      // noExt: сегменты замкнутого контура не продлеваются при заливке;
+      // режем только в пределах сегмента (wholeLine резал бы соседние буквы)
       for(const [gy,set] of H) for(const [x0,x1] of runs(set)){
         const A = pt(x0,gy), B = pt(x1,gy);
-        addGuide(A, B); splitMeshByChord(A, B, true);
+        addGuide(A, B, true); splitMeshByChord(A, B, false);
       }
       for(const [gx,set] of Vg) for(const [y0,y1] of runs(set)){
         const A = pt(gx,y0), B = pt(gx,y1);
-        addGuide(A, B); splitMeshByChord(A, B, true);
+        addGuide(A, B, true); splitMeshByChord(A, B, false);
       }
       if(!modified){ modified = true; s_mod.textContent = 'yes'; }
       extractEdges();
@@ -1799,8 +1803,11 @@ function facePatchAt(triIdx){
   const inPlane = P => Math.abs(P.x*n0.x+P.y*n0.y+P.z*n0.z - d0) < 0.1;
   const cuts = guides.filter(g => inPlane(g.a) && inPlane(g.b))
     .map(g => {
-      // продлеваем хорду на 1 мм за концы, чтобы заливка не «обтекала» их
+      // продлеваем хорду на 1 мм за концы, чтобы заливка не «обтекала» их;
+      // сегменты замкнутых контуров (noExt: текст) не продлеваем — концы
+      // стыкуются с соседними сегментами, а продление рвёт чужие области
       const A = to2(g.a.x,g.a.y,g.a.z), B = to2(g.b.x,g.b.y,g.b.z);
+      if(g.noExt) return [A, B];
       const dx = B[0]-A[0], dy = B[1]-A[1];
       const L = Math.hypot(dx,dy) || 1;
       const ex = dx/L, ey = dy/L;
@@ -3082,7 +3089,7 @@ function takeSnapshot(){
     pos: mesh.geometry.attributes.position.array.slice(),
     anchors: anchors.map(a=>({pos: a.pos.clone(),
       bend: a.bend ? {pts0: a.bend.pts0.map(p=>p.clone()), t: a.bend.t.slice(), j: a.bend.j} : null})),
-    guides: guides.map(g=>({a: g.a.clone(), b: g.b.clone()}))
+    guides: guides.map(g=>({a: g.a.clone(), b: g.b.clone(), noExt: g.noExt}))
   };
 }
 let redoStack = [];
