@@ -1542,10 +1542,13 @@ function placeTextAt(P, n){
       }
       setMeshFromArray(new Float32Array(arr));
       // Т-стыков после BSP у текста сотни (healTJunctions чинит до 16 за
-      // вызов) — гоняем до полной сходимости
+      // вызов) — гоняем до полной сходимости. healCoplanarOverlaps
+      // обязателен: при сквозной гравировке (глубина = толщине тела) дно
+      // призмы копланарно задней грани — без взаимной подрезки остаются
+      // мембраны и вывернутые куски
       for(let i=0;i<80;i++){
         const len0 = mesh.geometry.attributes.position.array.length;
-        cleanupMesh(); healTJunctions();
+        cleanupMesh(); healCoplanarOverlaps(); healTJunctions();
         if(mesh.geometry.attributes.position.array.length === len0) break;
       }
       removeInvertedShells();
