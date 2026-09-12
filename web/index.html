@@ -68,14 +68,20 @@
     border-radius:6px;padding:4px 6px;font-size:12px}
   #popup .pbtns{display:flex;gap:6px;margin-top:8px}
   #popup .pbtns button{padding:5px 10px;font-size:12px;flex:1}
-  /* окно точного ввода координат (открывается по G,V у курсора) */
-  #vpanel{position:absolute;z-index:7;
+  /* окно точного ввода координат (G,V): крупное, перетаскивается */
+  #vpanel{position:absolute;z-index:7;cursor:move;
     background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
-    padding:8px 12px;font-size:12px}
+    padding:14px 18px;font-size:24px}
   #vpanel[hidden]{display:none}
-  #vpanel .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
-  #vpanel input{width:76px;background:var(--panel2);color:var(--text);border:1px solid var(--line);
-    border-radius:6px;padding:3px 6px;font-size:12px;font-variant-numeric:tabular-nums}
+  #vpanel .prow{display:flex;align-items:center;gap:10px;margin:6px 0;color:var(--muted)}
+  #vpanel .prow span{font-size:14px}
+  #vpanel input{width:150px;background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:6px 10px;font-size:24px;font-variant-numeric:tabular-nums}
+  /* строки X/Y/Z в цветах осей: буква, цифры в поле и «mm» — одним цветом */
+  #vpanel .ax{font-weight:600}
+  #vpanel .ax-x, #vpanel .ax-x input{color:#d9534f}
+  #vpanel .ax-y, #vpanel .ax-y input{color:#4cbb5c}
+  #vpanel .ax-z, #vpanel .ax-z input{color:#4d7dff}
   #vpanel b{color:#2ecc40}
   /* полупрозрачный тултип при перетаскивании */
   #dragTip{position:absolute;z-index:6;background:rgba(30,33,40,.78);border:1px solid var(--line);
@@ -146,10 +152,10 @@
       <div class="prow" style="font-size:10px;color:var(--muted)">click the dot — place &amp; drag · Alt — bend as arc</div>
     </div>
     <div id="vpanel" hidden>
-      <div class="prow"><b>Vertex</b><span style="font-size:10px">(Esc — deselect)</span></div>
-      <div class="prow">X <input id="vx" type="number" step="0.1"> mm</div>
-      <div class="prow">Y <input id="vy" type="number" step="0.1"> mm</div>
-      <div class="prow">Z <input id="vz" type="number" step="0.1"> mm</div>
+      <div class="prow"><b id="vp_t">Vertex</b><span>(Esc — deselect)</span></div>
+      <div class="prow ax ax-x">X <input id="vx" type="number" step="0.1"> mm</div>
+      <div class="prow ax ax-y">Y <input id="vy" type="number" step="0.1"> mm</div>
+      <div class="prow ax ax-z">Z <input id="vz" type="number" step="0.1"> mm</div>
     </div>
     <div id="dragTip" hidden></div>
     <div id="toolTag" hidden></div>
@@ -545,6 +551,7 @@ let dragPt = null;      // текущее перетаскивание {a?, isSe
 let pendingEdge = null; // нажатие на ребро: клик => выбор, движение => камера
 let pendingVertex = null; // нажатие на вершину: клик => выбор, движение => камера
 let edgeDrag = null;    // перенос целого ребра (как перетаскивание линии в Sketcher)
+let vpEdge = null;      // окно G,V в режиме ребра: {pts0, idx, mid} — двигаем середину
 let modified = false;
 // нормали при драге пересчитываем не чаще раза в 120 мс (иначе fps проседает)
 let normalsDirty = false, lastNormalsAt = 0;
@@ -1810,6 +1817,7 @@ function clearEdgeSel(){
   edgeSel = [];
   killSelPreview();
   hideSelEnds();
+  if(vpEdge){ vpEdge = null; vpanel.hidden = true; } // окно G,V ребра живёт, пока живо ребро
 }
 function toggleEdgeSel(ch){
   // выбор взаимоисключающий: рёбра снимают выбор грани и точки
@@ -2483,7 +2491,7 @@ ex_val.addEventListener('keydown', e=>{
 });
 document.getElementById('ex_ok').addEventListener('click', commitExtrude);
 document.getElementById('ex_cancel').addEventListener('click', closeExtrude);
-const vpanel = document.getElementById('vpanel'),
+const vpanel = document.getElementById('vpanel'), vp_t = document.getElementById('vp_t'),
       vx=document.getElementById('vx'), vy=document.getElementById('vy'), vz=document.getElementById('vz');
 
 // «в центре» — салатовым: пойманную середину/центр видно с одного взгляда
@@ -2502,7 +2510,7 @@ function tipAt(e, html){
 function tipHide(){ dragTip.hidden = true; }
 
 function updateVPanel(){
-  const p = selAnchor ? selAnchor.pos : (sel && sel.pos);
+  const p = vpEdge ? vpEdge.mid : (selAnchor ? selAnchor.pos : (sel && sel.pos));
   if(!p) return;
   vx.value = p.x.toFixed(1);
   vy.value = p.y.toFixed(1);
@@ -2516,27 +2524,58 @@ function selectVertex(pos){
   selMarker.position.copy(sel.pos); selMarker.visible = true;
   updateVPanel(); // значения готовы, но окно ввода откроет только G,V
 }
-// окно точного ввода — у курсора, как все остальные окна
+// окно точного ввода — у курсора, как все остальные окна.
+// Для ребра/линии показываем координаты СЕРЕДИНЫ: правка двигает всё ребро
+// целиком (та же механика, что M-move, только числами — AutoCAD-стиль)
 function openVPanel(){
+  vpEdge = null;
+  if(!sel && !selAnchor && edgeSel.length === 1){
+    const ch = edgeSel[0];
+    const pts = ch.pts.map(p=>p.clone());
+    const mid = pts[0].clone().add(pts[pts.length-1]).multiplyScalar(0.5);
+    const im = buildIndexMap(pts);
+    vpEdge = {pts0: pts, idx: pts.map(p=>im.get(keyOf(p.x,p.y,p.z))||[]), mid};
+    vp_t.textContent = ch.isGuide ? 'Line' : 'Edge';
+  } else {
+    vp_t.textContent = 'Vertex';
+  }
   const vr = view.getBoundingClientRect();
-  vpanel.style.left = Math.min(lastMX - vr.left + 20, vr.width - 200) + 'px';
-  vpanel.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 150) + 'px';
+  vpanel.style.left = Math.min(lastMX - vr.left + 20, vr.width - 300) + 'px';
+  vpanel.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 240) + 'px';
   updateVPanel();
   vpanel.hidden = false;
 }
+// окно перетаскивается за любое пустое место (как окно Divide)
+let vpDrag = null;
+vpanel.addEventListener('pointerdown', ev=>{
+  if(ev.target.tagName === 'INPUT') return;
+  const r = vpanel.getBoundingClientRect();
+  vpDrag = {dx: ev.clientX - r.left, dy: ev.clientY - r.top};
+  ev.preventDefault();
+});
+window.addEventListener('pointermove', ev=>{
+  if(!vpDrag) return;
+  const vr = view.getBoundingClientRect();
+  vpanel.style.left = (ev.clientX - vr.left - vpDrag.dx) + 'px';
+  vpanel.style.top  = (ev.clientY - vr.top - vpDrag.dy) + 'px';
+});
+window.addEventListener('pointerup', ()=>{ vpDrag = null; });
 // палитра выбранной вершины: координаты — данные, команды — подсказка
 function showVertexPalette(){
   tipHide();
   const p = sel && sel.pos;
-  const info = p
-    ? 'Vertex · X ' + p.x.toFixed(1) + ' · Y ' + p.y.toFixed(1) + ' · Z ' + p.z.toFixed(1)
-    : 'Vertex';
+  const info = 'Vertex' + (p
+    ? '<br><span style="color:'+AXIS_CSS.x+';font-weight:600">X ' + p.x.toFixed(1) + '</span>' +
+      '<br><span style="color:'+AXIS_CSS.y+';font-weight:600">Y ' + p.y.toFixed(1) + '</span>' +
+      '<br><span style="color:'+AXIS_CSS.z+';font-weight:600">Z ' + p.z.toFixed(1) + '</span>'
+    : '');
   const vr = view.getBoundingClientRect();
   chordHint.innerHTML = CH_GRIP +
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     (!hintsChk.checked ? '' :
     '<div><span class="key">G,V</span> — edit X/Y/Z</div>' +
-    '<div><span class="key">Alt+drag</span> — ring · <span class="key">Shift</span> — column</div>' +
+    '<div><span class="key">Alt+drag</span> — ring</div>' +
+    '<div><span class="key">Shift</span> — column</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
@@ -2596,7 +2635,7 @@ function startEdgeMove(){
     grabMode: true
   };
   clearEdgeSel(); hideChordHint();
-  tipAt({clientX:lastMX, clientY:lastMY}, 'Move edge · click — apply · X/Y/Z — axis · Esc — cancel');
+  tipAt({clientX:lastMX, clientY:lastMY}, 'Move edge · click — apply · X/Y/Z or Shift — axis · Esc — cancel');
 }
 
 // палитра операций для выбранного ребра — как у грани и точки;
@@ -2620,6 +2659,7 @@ function showEdgePalette(ch){
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' + ends +
     (!hintsChk.checked ? '' :
     '<div><span class="key">M</span> — move edge</div>' +
+    '<div><span class="key">G,V</span> — move by X/Y/Z</div>' +
     '<div><span class="key">G,Y</span> — point / divide</div>' +
     '<div><span class="key">Ctrl+click</span> — multi-select</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
@@ -2649,9 +2689,42 @@ function moveVerticesByKey(oldPos, newPos){
   if(!modified){ modified=true; s_mod.textContent='yes'; }
 }
 for(const inp of [vx,vy,vz]) inp.addEventListener('change', ()=>{
-  if(!sel && !selAnchor) return;
+  if(!sel && !selAnchor && !vpEdge) return;
   pushUndo();
   const np = new THREE.Vector3(snapMM(+vx.value||0), snapMM(+vy.value||0), snapMM(+vz.value||0));
+  if(vpEdge){
+    // ребро/линия: числа задают новую СЕРЕДИНУ — сдвигаем все точки на дельту
+    const d = np.clone().sub(vpEdge.mid);
+    const posE = mesh.geometry.attributes.position.array;
+    for(let i=0;i<vpEdge.pts0.length;i++){
+      const p2 = vpEdge.pts0[i].add(d);
+      for(const bi of vpEdge.idx[i]){ posE[bi]=p2.x; posE[bi+1]=p2.y; posE[bi+2]=p2.z; }
+    }
+    vpEdge.mid.copy(np);
+    mesh.geometry.attributes.position.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
+    if(!modified){ modified=true; s_mod.textContent='yes'; }
+    // extractEdges пересобирает цепочки и сбрасывает выбор — переизбираем
+    // сдвинутое ребро (по новым концам) и возвращаем окно на место
+    const a = vpEdge.pts0[0].clone(), b = vpEdge.pts0[vpEdge.pts0.length-1].clone();
+    const L = vpanel.style.left, T = vpanel.style.top;
+    extractEdges();
+    const K = p=>keyOf(p.x,p.y,p.z);
+    const nch = chains.find(c=>!c.closed &&
+      ((K(c.pts[0])===K(a) && K(c.pts[c.pts.length-1])===K(b)) ||
+       (K(c.pts[0])===K(b) && K(c.pts[c.pts.length-1])===K(a))));
+    if(nch){
+      toggleEdgeSel(nch); showSelEnds(nch);
+      const pts = nch.pts.map(p=>p.clone());
+      const im = buildIndexMap(pts);
+      vpEdge = {pts0: pts, idx: pts.map(p=>im.get(keyOf(p.x,p.y,p.z))||[]),
+                mid: pts[0].clone().add(pts[pts.length-1]).multiplyScalar(0.5)};
+      vp_t.textContent = nch.isGuide ? 'Line' : 'Edge';
+      vpanel.style.left = L; vpanel.style.top = T; vpanel.hidden = false;
+      updateVPanel();
+    }
+    return;
+  }
   if(selAnchor){
     // точка, врезанная в ребро, тянет за собой и совпадающие вершины сетки
     moveVerticesByKey(selAnchor.pos, np);
@@ -3256,8 +3329,9 @@ window.addEventListener('keydown', e=>{
     else setPPMode(!ppMode); // P — Push/Pull, как в SketchUp
     return;
   }
-  // G,V — фокус в поля X/Y/Z выбранной вершины
-  if((e.code==='KeyV' || e.key.toLowerCase()==='v') && chordG && (sel || selAnchor)
+  // G,V — фокус в поля X/Y/Z выбранной вершины/точки или ребра (середина)
+  if((e.code==='KeyV' || e.key.toLowerCase()==='v') && chordG
+     && (sel || selAnchor || edgeSel.length === 1)
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); chordG = 0; hideChordHint();
     openVPanel(); // окно ввода X/Y/Z — у курсора
@@ -3746,6 +3820,13 @@ canvas.addEventListener('pointermove', e=>{
       if(axisLock !== 'x') d.x = 0;
       if(axisLock !== 'y') d.y = 0;
       if(axisLock !== 'z') d.z = 0;
+    } else if(e.shiftKey){
+      // Shift — прилипание к доминирующей оси (SketchUp: куда ведёшь, туда и ось)
+      const ax = Math.abs(d.x) >= Math.abs(d.y) && Math.abs(d.x) >= Math.abs(d.z) ? 'x'
+               : Math.abs(d.y) >= Math.abs(d.z) ? 'y' : 'z';
+      if(ax !== 'x') d.x = 0;
+      if(ax !== 'y') d.y = 0;
+      if(ax !== 'z') d.z = 0;
     }
     if(!edgeDrag.snapPushed){
       pushHistory(edgeDrag.snap);
@@ -3758,7 +3839,10 @@ canvas.addEventListener('pointermove', e=>{
     }
     mesh.geometry.attributes.position.needsUpdate = true;
     normalsThrottled();
-    tipAt(e, 'edge Δ X '+d.x.toFixed(1)+' · Y '+d.y.toFixed(1)+' · Z '+d.z.toFixed(1));
+    tipAt(e, 'edge Δ '
+      +'<span style="color:'+AXIS_CSS.x+';font-weight:600">X '+d.x.toFixed(1)+'</span> · '
+      +'<span style="color:'+AXIS_CSS.y+';font-weight:600">Y '+d.y.toFixed(1)+'</span> · '
+      +'<span style="color:'+AXIS_CSS.z+';font-weight:600">Z '+d.z.toFixed(1)+'</span>');
     if(!modified){ modified=true; s_mod.textContent='yes'; }
     return;
   }
