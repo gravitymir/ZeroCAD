@@ -157,7 +157,7 @@
       <div class="vplabel quadonly" style="left:10px;top:calc(50% + 10px)"><b>+Y</b> view (side) · grid 1/10 mm</div>
       <div class="vplabel quadonly" style="left:calc(50% + 10px);top:calc(50% + 10px)"><b>+Z</b> view (top) · grid 1/10 mm</div>
     </div>
-    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>PUSH/PULL · drag a face · P/Esc — exit<br></b><b id="lnb" style="color:var(--accent2)" hidden>LINE · click–click — chord · type length + Enter · Esc/L — exit<br></b><b id="txb" style="color:var(--accent2)" hidden>3D TEXT · click a face — anchor (bottom-center) · Esc — cancel<br></b><b id="fps"></b></div>
+    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>PUSH/PULL · drag a face · P/Esc — exit<br></b><b id="lnb" style="color:var(--accent2)" hidden>LINE · click–click — chord · type length + Enter · Esc/L — exit<br></b><b id="txb" style="color:var(--accent2)" hidden>3D TEXT · click a face — anchor (center of text) · Esc — cancel<br></b><b id="fps"></b></div>
     <div id="popup" hidden>
       <div class="prow">Edge: <b id="p_len">–</b> mm</div>
       <div class="prow">Offset: <input id="p_off" type="number" step="0.1" min="0"> mm</div>
@@ -188,7 +188,7 @@
       <div class="prow">Text <input id="tx_str" type="text" value="ZERO"></div>
       <div class="prow">Height <input id="tx_h" type="number" step="1" min="3" value="10"> mm</div>
       <div class="prow">Extrude <input id="tx_d" type="number" step="0.1" value="0"> mm</div>
-      <div class="prow" style="font-size:13px">click a face — anchor point (bottom-center of text)</div>
+      <div class="prow" style="font-size:13px">click a face — anchor point (center of text)</div>
       <div class="prow" style="font-size:13px">Extrude: + out · − engrave · 0 outline only</div>
       <div class="prow" style="gap:10px;margin-top:8px"><button id="tx_ok">OK</button><button id="tx_cancel">Cancel</button></div>
     </div>
@@ -1514,12 +1514,13 @@ function readTextParams(){
   if(![...str].some(ch => FONT57[ch] && ch !== ' ')) return null;
   return {str, h, d};
 }
-// красная точка-якорь текста: НИЗ ЦЕНТРА строки (текст центрируется по ней)
+// красная точка-якорь текста: ЦЕНТР текста по горизонтали и вертикали;
+// стиль — как точки-кандидаты центров (постоянный экранный размер, обводка)
 let txAnchor = null;
 function showTxAnchor(P){
   hideTxAnchor();
-  txAnchor = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0xd9302e}));
-  txAnchor.position.copy(P); // обычный размер, как все точки
+  txAnchor = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0xd9302e})));
+  txAnchor.position.copy(P);
   scene.add(txAnchor);
 }
 function hideTxAnchor(){ if(txAnchor){ scene.remove(txAnchor); txAnchor = null; } }
@@ -1548,48 +1549,33 @@ function planeCentroid(n, P0){
   }
   return aSum > 1e-9 ? acc.multiplyScalar(1/aSum) : P0.clone();
 }
-// центр грани (салатовая точка) + вертикальная ось текста; ось вспыхивает
-// салатовым, когда центр текста намагничен на центр грани
-let txCenterDot = null, txCenterLine = null;
+// центр грани — салатовая точка в том же стиле, что точки-кандидаты
+let txCenterDot = null;
 function showTxCenter(C){
   hideTxCenter();
-  txCenterDot = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x6aff3d}));
+  txCenterDot = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:0x6aff3d})));
   txCenterDot.position.copy(C);
   scene.add(txCenterDot);
 }
-function updateTxCenterLine(snapped){
-  if(txCenterLine){ scene.remove(txCenterLine); txCenterLine.geometry.dispose(); txCenterLine = null; }
-  if(!txtLive) return;
-  const p = textParams; if(!p) return;
-  const {v} = textBasis(txtLive.n);
-  // ось центра: от точки-якоря (низ центра строки) на всю высоту текста
-  const A = txtLive.P.clone();
-  const B = txtLive.P.clone().addScaledVector(v, p.h);
-  txCenterLine = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints([A, B]),
-    new THREE.LineDashedMaterial({color: snapped ? 0x6aff3d : 0xffffff,
-      dashSize: 1.0, gapSize: 0.7, transparent: true, opacity: snapped ? 1 : 0.65}));
-  txCenterLine.computeLineDistances();
-  scene.add(txCenterLine);
-}
 function hideTxCenter(){
   if(txCenterDot){ scene.remove(txCenterDot); txCenterDot = null; }
-  if(txCenterLine){ scene.remove(txCenterLine); txCenterLine.geometry.dispose(); txCenterLine = null; }
 }
-// магнит центров: P — якорь (низ центра строки); подтягивает его к центру
-// грани по горизонтали (u) и/или вертикали (v); порог 1.5 мм
+// магнит центров: P — якорь (ЦЕНТР текста); подтягивает к центру грани
+// по горизонтали (u, на любой высоте) и/или вертикали (v); порог 1.5 мм.
+// Совместил красную точку с салатовой — текст ровно в центре грани.
 function txCenterSnap(P, n, C, p){
   const {u, v} = textBasis(n);
   const du = new THREE.Vector3().subVectors(P, C).dot(u);
-  const dv = new THREE.Vector3().subVectors(P, C).dot(v) + p.h/2;
+  const dv = new THREE.Vector3().subVectors(P, C).dot(v);
   const sU = Math.abs(du) < 1.5, sV = Math.abs(dv) < 1.5;
   if(sU) P.addScaledVector(u, -du);
   if(sV) P.addScaledVector(v, -dv);
   return {sU, sV};
 }
-// левый нижний угол первой буквы из якоря (низ центра строки)
+// левый нижний угол первой буквы из якоря-центра текста
 function txLeftFromAnchor(A, n, p){
-  return A.clone().addScaledVector(textBasis(n).u, -textWidth(p)/2);
+  const {u, v} = textBasis(n);
+  return A.clone().addScaledVector(u, -textWidth(p)/2).addScaledVector(v, -p.h/2);
 }
 // живой предпросмотр: текст стоит в модели, правки полей перестраивают его
 // (якорь — низ центра строки, текст растёт от центра в обе стороны)
@@ -1600,7 +1586,6 @@ function rebuildTextLive(){
   textParams = p;
   undo(true); // снять старый предпросмотр
   placeTextAt(txLeftFromAnchor(txtLive.P, txtLive.n, p), txtLive.n.clone());
-  updateTxCenterLine(false); // ширина/высота могли измениться
 }
 function finishText(){ // OK: предпросмотр уже в модели и в истории
   txtLive = null;
@@ -4062,7 +4047,6 @@ canvas.addEventListener('pointerdown', e=>{
           txtLive = {P: P.clone(), n: n.clone(), C};
           showTxAnchor(P);
           showTxCenter(C);
-          updateTxCenterLine(sn.sU);
           if(sn.sU || sn.sV)
             tipAt(e, '<span style="color:#6aff3d;font-weight:700">center</span>');
           txPlaceDrag = {
@@ -4344,7 +4328,6 @@ canvas.addEventListener('pointermove', e=>{
     if(txtLive && P.distanceTo(txtLive.P) > 0.05){
       txtLive.P.copy(P);
       if(txAnchor) txAnchor.position.copy(P);
-      updateTxCenterLine(sn.sU);
       if(sn.sU || sn.sV)
         tipAt(e, '<span style="color:#6aff3d;font-weight:700">center</span>');
       else tipHide();
@@ -4795,6 +4778,8 @@ function loop(t){
   for(const m of divDots) dot(m);
   for(const a of anchors) dot(a.marker);
   for(const d of hintDots) dot(d, 0.0035);
+  if(txAnchor) dot(txAnchor, 0.0035);       // якорь текста (красный центр)
+  if(txCenterDot) dot(txCenterDot, 0.0035); // центр грани (салатовый)
   dot(selEndA); dot(selEndB);
   for(const m of selCenterDots) dot(m, 0.0035);
   // билборды масштабируются от реального расстояния до камеры —
