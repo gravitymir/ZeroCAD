@@ -68,8 +68,8 @@
     border-radius:6px;padding:4px 6px;font-size:12px}
   #popup .pbtns{display:flex;gap:6px;margin-top:8px}
   #popup .pbtns button{padding:5px 10px;font-size:12px;flex:1}
-  /* окно точного ввода координат (G,V): крупное, перетаскивается */
-  #vpanel{position:absolute;z-index:7;cursor:move;
+  /* окно точного ввода координат (G,V): крупное, перетаскивается за ⠿ */
+  #vpanel{position:absolute;z-index:7;
     background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
     padding:14px 18px;font-size:24px}
   #vpanel[hidden]{display:none}
@@ -165,7 +165,8 @@
       <div class="prow" style="font-size:10px;color:var(--muted)">click the dot — place &amp; drag · Alt — bend as arc</div>
     </div>
     <div id="vpanel" hidden>
-      <div class="prow"><b id="vp_t">Vertex</b><span>(Esc — deselect)</span></div>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b id="vp_t">Vertex</b><span>(Esc — deselect)</span></div>
       <div class="prow ax ax-x">X <input id="vx" type="number" step="0.1"> mm</div>
       <div class="prow ax ax-y">Y <input id="vy" type="number" step="0.1"> mm</div>
       <div class="prow ax ax-z">Z <input id="vz" type="number" step="0.1"> mm</div>
@@ -1463,13 +1464,18 @@ function placeTextAt(P, n){
       return r;
     };
     const pt = (gx,gy)=>P.clone().addScaledVector(u,gx*s).addScaledVector(v,gy*s);
+    // wholeLine=true обязателен: с false треугольник, чья линия пересечения
+    // ШИРЕ сегмента (середина за концами), не режется — недорез, и заливка
+    // протекает сквозь границу буквы. true режет всех, кого сегмент задел;
+    // лишние резы копланарны и невидимы, а барьером служит точный тест
+    // «ребро на сегменте» в facePatchAt
     for(const [gy,set] of H) for(const [x0,x1] of runs(set)){
       const A = pt(x0,gy), B = pt(x1,gy);
-      addGuide(A, B, true); splitMeshByChord(A, B, false);
+      addGuide(A, B, true); splitMeshByChord(A, B, true);
     }
     for(const [gx,set] of Vg) for(const [y0,y1] of runs(set)){
       const A = pt(gx,y0), B = pt(gx,y1);
-      addGuide(A, B, true); splitMeshByChord(A, B, false);
+      addGuide(A, B, true); splitMeshByChord(A, B, true);
     }
   };
   pushUndo();
@@ -1593,6 +1599,14 @@ function txCenterSnap(P, n, C, p){
   if(sU) P.addScaledVector(u, -du);
   if(sV) P.addScaledVector(v, -dv);
   return {sU, sV};
+}
+// подсказка магнита: обе оси — «center», одна ось — «midpoint»
+function txSnapTip(e, sn){
+  if(sn.sU && sn.sV)
+    tipAt(e, '<span style="color:#6aff3d;font-weight:700">center</span>');
+  else if(sn.sU || sn.sV)
+    tipAt(e, '<span style="color:#6aff3d;font-weight:700">midpoint</span>');
+  else tipHide();
 }
 // левый нижний угол первой буквы из якоря-центра текста
 function txLeftFromAnchor(A, n, p){
@@ -1896,16 +1910,25 @@ function facePatchAt(triIdx){
       const ex = dx/L, ey = dy/L;
       return {a:[A[0]-ex, A[1]-ey], b:[B[0]+ex, B[1]+ey], noExt:false};
     });
-  // середина отрезка лежит на сегменте cut (в пределах 0.05 мм)?
+  // ребро лежит на сегменте cut? Оба конца на его прямой (0.05 мм) и
+  // проекции перекрываются с сегментом — ловит и рёбра, лишь частично
+  // накрывающие сегмент (середина такого ребра может быть за концом)
   const midOnCut = (A2, B2, cut) => {
-    const mx=(A2[0]+B2[0])/2, my=(A2[1]+B2[1])/2;
     const ax=cut.a[0], ay=cut.a[1];
     const dx=cut.b[0]-ax, dy=cut.b[1]-ay;
-    const L2 = dx*dx+dy*dy;
-    if(L2 < 1e-12) return false;
-    const tt = ((mx-ax)*dx + (my-ay)*dy) / L2;
-    if(tt < 0 || tt > 1) return false;
-    return Math.hypot(mx-(ax+dx*tt), my-(ay+dy*tt)) < 0.05;
+    const L = Math.hypot(dx,dy);
+    if(L < 1e-9) return false;
+    const ux=dx/L, uy=dy/L;
+    if(Math.abs((A2[0]-ax)*uy - (A2[1]-ay)*ux) > 0.05) return false;
+    if(Math.abs((B2[0]-ax)*uy - (B2[1]-ay)*ux) > 0.05) return false;
+    let tA = (A2[0]-ax)*ux + (A2[1]-ay)*uy;
+    let tB = (B2[0]-ax)*ux + (B2[1]-ay)*uy;
+    if(tA > tB){ const t=tA; tA=tB; tB=t; }
+    // порог перекрытия — относительный: микроребро-осколок (0.02 мм),
+    // целиком лежащее на сегменте, тоже барьер; а касание соседнего
+    // коллинеарного ребра кончиком (перекрытие ~0) — нет
+    const eLen = tB - tA;
+    return Math.min(tB, L) - Math.max(tA, 0) > Math.min(0.04, eLen*0.45);
   };
   // смежность по рёбрам
   const eAdj = new Map();
@@ -2048,7 +2071,8 @@ function hideChordHint(){ chordHint.hidden = true; clearTimeout(showChordHint._t
 // палитра операций для выбранной грани
 function showFacePalette(){
   tipHide(); // информация объекта — в шапке палитры
-  showSelCenters(ppPatch); // центры грани видны, пока она выбрана
+  // точки центров при простом выборе грани не показываем (только в
+  // инструментах, где центр — снап-цель: линия, точка, окружность, текст)
   // информация в столбик: тип, сторона (у квадрата), площадь
   const areaStr = ppPatch && ppPatch.area
     ? (Math.round(ppPatch.area*10)/10) + ' mm²' : null;
@@ -2977,21 +3001,7 @@ function openVPanel(){
   updateVPanel();
   vpanel.hidden = false;
 }
-// окно перетаскивается за любое пустое место (как окно Divide)
-let vpDrag = null;
-vpanel.addEventListener('pointerdown', ev=>{
-  if(ev.target.tagName === 'INPUT') return;
-  const r = vpanel.getBoundingClientRect();
-  vpDrag = {dx: ev.clientX - r.left, dy: ev.clientY - r.top};
-  ev.preventDefault();
-});
-window.addEventListener('pointermove', ev=>{
-  if(!vpDrag) return;
-  const vr = view.getBoundingClientRect();
-  vpanel.style.left = (ev.clientX - vr.left - vpDrag.dx) + 'px';
-  vpanel.style.top  = (ev.clientY - vr.top - vpDrag.dy) + 'px';
-});
-window.addEventListener('pointerup', ()=>{ vpDrag = null; });
+makeGripDrag(vpanel); // ручка ⠿, как у остальных окон
 // палитра выбранной вершины: координаты — данные, команды — подсказка
 function showVertexPalette(){
   tipHide();
@@ -4089,8 +4099,7 @@ canvas.addEventListener('pointerdown', e=>{
           txtLive = {P: P.clone(), n: n.clone(), C};
           showTxAnchor(P);
           showTxCenter(C);
-          if(sn.sU || sn.sV)
-            tipAt(e, '<span style="color:#6aff3d;font-weight:700">center</span>');
+          txSnapTip(e, sn);
           txPlaceDrag = {
             q0: {cam: q.cam, ox: q.ox, oy: q.oy, w: q.w, h: q.h},
             plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, f.point),
@@ -4370,9 +4379,7 @@ canvas.addEventListener('pointermove', e=>{
     if(txtLive && P.distanceTo(txtLive.P) > 0.05){
       txtLive.P.copy(P);
       if(txAnchor) txAnchor.position.copy(P);
-      if(sn.sU || sn.sV)
-        tipAt(e, '<span style="color:#6aff3d;font-weight:700">center</span>');
-      else tipHide();
+      txSnapTip(e, sn);
       txPlaceDrag.dirty = true;
       // контур/выдавливание перестраиваем на лету; гравировка (BSP,
       // сотни мс) — только при отпускании кнопки
