@@ -2647,9 +2647,13 @@ function healCoplanarOverlaps(){
     const pos = mesh.geometry.attributes.position.array;
     const segs = [];
     for(const g of planeGroups().values()){
-      if(!g.tris.some(x=>x.orient>0) || !g.tris.some(x=>x.orient<0)) continue;
+      const pl = g.tris.filter(x=>x.orient>0), mn = g.tris.filter(x=>x.orient<0);
+      if(!pl.length || !mn.length) continue;
+      // режем крупную сторону рёбрами МЕНЬШЕЙ: у гладкой крышки колеса
+      // тысячи треугольников, и врезка всех её рёбер (каждая — проход по
+      // сетке) стоила бы минут. Вторгшаяся стенка всегда мала
       const seen = new Set();
-      for(const {t} of g.tris){
+      for(const {t} of (pl.length <= mn.length ? pl : mn)){
         for(let e=0;e<3;e++){
           const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
           const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
@@ -2661,7 +2665,8 @@ function healCoplanarOverlaps(){
         }
       }
     }
-    for(const s of segs) splitMeshByChord(s[0], s[1]);
+    // предохранитель по времени: сотни врезок — уже не «заживление»
+    if(segs.length <= 400) for(const s of segs) splitMeshByChord(s[0], s[1]);
   }
   { // фаза 2: аннигиляция накрытых треугольников
     const pos = mesh.geometry.attributes.position.array;
@@ -2682,6 +2687,7 @@ function healCoplanarOverlaps(){
         const s1=cr(T[0],T[1]), s2=cr(T[1],T[2]), s3=cr(T[2],T[0]);
         return (s1>=-1e-6 && s2>=-1e-6 && s3>=-1e-6) || (s1<=1e-6 && s2<=1e-6 && s3<=1e-6);
       };
+      if(pls.length * mns.length > 2e6) continue; // пара крупных плоскостей — мимо
       const P2 = pls.map(x=>({x, T:tri2(x.t)}));
       const M2 = mns.map(x=>({x, T:tri2(x.t)}));
       for(const a of P2){
@@ -3086,21 +3092,23 @@ function commitExtrude(){
     return;
   }
   hidePatch(); ppPatch = null;
-  healAll();
-  // стенки прошли сквозь другие грани (поднятые донья кармана и т.п.) —
-  // локальное заживление оставило дыры: переигрываем честным BSP-union
-  // тела ДО операции с призмой поднятия (как Pad во FreeCAD)
-  if(patchTris && countBoundaryEdges() > 0){
+  // Выдавливание наружу = Pad: во FreeCAD это всегда булев союз, и мы
+  // делаем так же — тело ДО операции плюс замкнутая призма поднятия.
+  // Локальная сшивка не справляется, когда стенки проходят сквозь другие
+  // грани (поднятые донья кармана): получается тело внутри тела.
+  // На крупных сетках (колесо — 26 000 треугольников) BSP слишком дорог,
+  // там остаётся локальный путь: пересечений с чужими гранями почти не бывает
+  let padded = false;
+  if(patchTris && mesh.geometry.attributes.position.array.length/9 <= 6000){
+    const before = mesh.geometry.attributes.position.array.slice();
     const snap = undoStack[undoStack.length-1];
     try{
-      setMeshFromArray(snap.pos.slice());
       const prism = buildPatchPrism(snap.pos, patchTris, n, applied);
-      const pos = mesh.geometry.attributes.position.array;
       const body = [];
-      for(let i=0;i<pos.length;i+=9)
-        body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]),
-                   new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
-                   new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
+      for(let i=0;i<snap.pos.length;i+=9)
+        body.push([new THREE.Vector3(snap.pos[i],snap.pos[i+1],snap.pos[i+2]),
+                   new THREE.Vector3(snap.pos[i+3],snap.pos[i+4],snap.pos[i+5]),
+                   new THREE.Vector3(snap.pos[i+6],snap.pos[i+7],snap.pos[i+8])]);
       const res = csgUnion(body, prism);
       const q = x => Math.round(x*1000)/1000;
       const arr = [];
@@ -3112,21 +3120,24 @@ function commitExtrude(){
       }
       setMeshFromArray(new Float32Array(arr));
       healAll();
+      padded = true;
     }catch(err){
-      console.warn('BSP-union не удался — операция отменена', err);
-      undo(true);
-      return;
+      console.warn('BSP-union не удался — локальная сшивка', err);
+      setMeshFromArray(before);
     }
   }
+  if(!padded) healAll();
   extractEdges();
 }
 // полный цикл заживления до сходимости: одиночный прогон оставляет сотни
 // Т-стыков, когда стенки новой экструзии скользят вдоль старых стенок
 // (например, поднятые донья гравировки); healTJunctions чинит ≤16 за вызов
 function healAll(){
-  for(let i=0;i<80;i++){
+  cleanupMesh();
+  healCoplanarOverlaps(); // самый дорогой проход — ровно один раз
+  for(let i=0;i<40;i++){  // Т-стыки: healTJunctions чинит ≤16 за вызов
     const len0 = mesh.geometry.attributes.position.array.length;
-    cleanupMesh(); healCoplanarOverlaps(); healTJunctions();
+    cleanupMesh(); healTJunctions();
     if(mesh.geometry.attributes.position.array.length === len0) break;
   }
   removeInvertedShells();
@@ -5160,13 +5171,23 @@ function loop(t){
   document.getElementById(id).addEventListener('input', rebuild);
 });
 document.querySelectorAll('input[name=engine]').forEach(r=>r.addEventListener('change', rebuild));
+// у каждой фигуры своя стартовая конфигурация: куб — заготовка 40 мм,
+// колесо — рабочая шестерёнка дозатора
+const SHAPE_PRESET = {
+  cube:  {dia:40},
+  wheel: {dia:140, thk:11, sh:5, n:4, dep:10, w:4}
+};
+function applyShapePreset(){
+  const kind = document.querySelector('input[name=shape]:checked').value;
+  for(const id in SHAPE_PRESET[kind]) document.getElementById(id).value = SHAPE_PRESET[kind][id];
+}
 function applyShapeUI(){
   const cube = document.querySelector('input[name=shape]:checked').value === 'cube';
   document.getElementById('wheelOnly').hidden = cube;
   document.getElementById('dia_label').childNodes[0].nodeValue = cube ? 'Size ' : 'Diameter ';
 }
 document.querySelectorAll('input[name=shape]').forEach(r=>r.addEventListener('change', ()=>{
-  applyShapeUI(); rebuild();
+  applyShapePreset(); applyShapeUI(); rebuild();
 }));
 applyShapeUI();
 // флаг подсказок: палитра аккордов и обучающий текст; состояние запоминается
@@ -5181,8 +5202,7 @@ hintsChk.addEventListener('change', applyHints);
 applyHints();
 document.getElementById('stl').addEventListener('click', downloadSTL);
 document.getElementById('reset').addEventListener('click', ()=>{
-  const d={dia:70,thk:11,sh:5,n:12,dep:6,w:11};
-  dia.value=d.dia; thk.value=d.thk; sh.value=d.sh; n.value=d.n; dep.value=d.dep; w.value=d.w;
+  applyShapePreset(); // стартовая конфигурация текущей фигуры
   yaw=-1.1; pitch=0.55;
   rebuild(); // rebuild сам наведёт орбиту на центр модели
 });

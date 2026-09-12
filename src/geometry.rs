@@ -16,7 +16,7 @@ pub struct WheelParams {
 
 impl Default for WheelParams {
     fn default() -> Self {
-        WheelParams { dia: 70.0, thk: 11.0, shaft: 5.0, n: 12, depth: 6.0, mouth_deg: 11.0 }
+        WheelParams { dia: 140.0, thk: 11.0, shaft: 5.0, n: 4, depth: 10.0, mouth_deg: 4.0 }
     }
 }
 
@@ -90,7 +90,18 @@ fn contour_r(p: &WheelParams, a: f64) -> f64 {
         d -= sector; // -sector/2..sector/2, центр кармана = 0
     }
     if d.abs() < hw {
-        r_out - (r_out - apex) * (1.0 - d.abs() / hw)
+        // Стенки кармана — ПРЯМЫЕ: берём пересечение луча с отрезком
+        // «точка устья -> апекс». Линейная зависимость радиуса от угла
+        // (как было) даёт дугу, а нужна честная буква V, врезанная в диск.
+        let (s_hw, c_hw) = hw.sin_cos();
+        let (mx, my) = (r_out * c_hw, r_out * s_hw); // точка устья на ободе
+        let (s_d, c_d) = d.abs().sin_cos();
+        let den = c_d * my - s_d * (mx - apex);
+        if den.abs() < 1e-12 {
+            r_out
+        } else {
+            (apex * my / den).clamp(apex.min(r_out), r_out)
+        }
     } else {
         r_out
     }
