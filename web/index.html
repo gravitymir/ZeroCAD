@@ -1436,6 +1436,10 @@ function setTextMode(on){
 }
 function openTextPopup(){
   txtLive = null;
+  // каждый вызов начинается с нулевой экструзии: запомненное «-40» от
+  // прошлого раза запускало бы тяжёлое сквозное BSP первым же кликом
+  // точки (страница «зависает»); текст и высота — запоминаются
+  tx_d.value = '0';
   const vr = view.getBoundingClientRect();
   txtPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 400) + 'px';
   txtPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 300) + 'px';
