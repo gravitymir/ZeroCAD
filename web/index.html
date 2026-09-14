@@ -1390,6 +1390,9 @@ const MOD_CLASS = {Ctrl: 'mod-ctrl', Cmd: 'mod-ctrl', Shift: 'mod-shift', Alt: '
 function markModifierWords(root){
   for(const k of root.querySelectorAll('.key')){
     if(k.querySelector('.mod')) continue;
+    // подсвечиваются только строки-команды («Ctrl — cut», «Ctrl+click — …»);
+    // в описательных подсказках (.phint, .exline) слова остаются обычным текстом
+    if(k.closest('.phint, .exline')) continue;
     const text = k.textContent;
     MOD_RE.lastIndex = 0;
     if(!MOD_RE.test(text)) continue;
