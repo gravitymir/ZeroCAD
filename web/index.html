@@ -479,14 +479,20 @@ for(const ax of ['x','y','z']){
   sp.userData.dir = v;
   scene.add(sp); axisLabels.push(sp);
 }
-// версия сборки в начале координат — чёрный билборд (всегда лицом к камере)
+// версия сборки в начале координат — билборд (всегда лицом к камере).
+// Оранжевый текст с тёмной обводкой: читается и на белой грани, и на чёрном
+// фоне сцены (как подписи поверх видео). Холст вдвое крупнее — края чёткие
 const buildSprite = (()=>{
-  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 48;
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 96;
   const ctx = cv.getContext('2d');
-  ctx.font = 'bold 24px system-ui, sans-serif';
+  ctx.font = 'bold 46px system-ui, sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#111';
-  ctx.fillText((window.ZC_BUILD && window.ZC_BUILD.indexOf('__')<0) ? window.ZC_BUILD : 'dev', 128, 26);
+  const label = (window.ZC_BUILD && window.ZC_BUILD.indexOf('__')<0) ? window.ZC_BUILD : 'dev';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 10; ctx.strokeStyle = 'rgba(12,14,18,0.95)';
+  ctx.strokeText(label, 256, 52);
+  ctx.fillStyle = '#ffa31a';
+  ctx.fillText(label, 256, 52);
   const sp = new THREE.Sprite(new THREE.SpriteMaterial(
     {map: new THREE.CanvasTexture(cv), transparent:true, depthTest:false}));
   sp.position.set(0, 0, 0);
