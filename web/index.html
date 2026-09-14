@@ -3785,7 +3785,11 @@ function earClip(loop){
 }
 // F — залить ближайшую к курсору дырку (Fill, как F в Blender)
 function fillHole(){
-  const loops = boundaryLoops();
+  // край листа в воздухе (залитое кольцо) — не дырка: внутри уже грань
+  const loops = boundaryLoops().filter(L => {
+    const f = loopFillPieces(L);
+    return !(f && f.covered && !f.air.length);
+  });
   if(!loops.length) return false;
   let bestL = loops[0];
   if(loops.length > 1){
@@ -6680,6 +6684,12 @@ window.addEventListener('keydown', e=>{
     }
     if(fill && fill.covered && fillLoopAir(fill)){ clearEdgeSel(); hideChordHint(); e.preventDefault(); return; }
     if(selLoop && fillLoop(selLoop)){ clearEdgeSel(); hideChordHint(); e.preventDefault(); return; }
+    // что-то выбрано, но это не один замкнутый контур — F ничего не делает
+    // (палитра F и не предлагает); «ближайшая дырка» — только без выбора
+    if(edgeSel.length || ppPatch || selAnchor || sel){
+      if(edgeSel.length) warnTip('F fills one closed contour — select only its edges');
+      e.preventDefault(); return;
+    }
     if(fillHole()){ e.preventDefault(); return; }
   }
   // Del — стереть выбранное ребро/линию (Refine shape во FreeCAD)
