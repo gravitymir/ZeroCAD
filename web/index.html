@@ -111,16 +111,19 @@
   .chgrip:hover{color:var(--text)}
   #chordHint .chgrip:hover{color:var(--text)}
   /* окна точного выдавливания (E) и деления ребра точками */
-  #exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
+  #exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup,#bevPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
     border-radius:10px;padding:10px 12px;font-size:12px}
-  #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden],#arrPopup[hidden]{display:none}
-  #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow,#arrPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
-  #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#arrPopup input{width:80px;background:var(--panel2);color:var(--text);
+  #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden],#arrPopup[hidden],#bevPopup[hidden]{display:none}
+  #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow,#arrPopup .prow,#bevPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
+  #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#arrPopup input,#bevPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
   /* окно окружности (G,C): число сегментов, перетаскивается за ⠿ */
-  #circPopup,#arrPopup{padding:14px 16px}
-  #arrPopup .prow{font-size:19px;gap:10px}
-  #arrPopup input{font-size:22px;padding:6px 10px;width:110px}
+  #circPopup,#arrPopup,#bevPopup{padding:14px 16px}
+  #arrPopup .prow,#bevPopup .prow{font-size:19px;gap:10px}
+  #arrPopup input,#bevPopup input{font-size:22px;padding:6px 10px;width:110px}
+  #bevPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
+    border:1px solid var(--line);background:var(--panel2);color:var(--text)}
+  #bevPopup #bev_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
   #arrPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
   #arrPopup #arr_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
@@ -193,6 +196,14 @@
         <button id="dv_ok" class="primary" style="flex:1">OK</button>
         <button id="dv_cancel" style="flex:1">Cancel</button>
       </div>
+    </div>
+    <div id="bevPopup" hidden>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Bevel</b><span id="bev_kind" style="font-size:14px">chamfer</span></div>
+      <div class="prow">Size <input id="bev_d" type="number" step="0.1" min="0.1" value="2"> mm</div>
+      <div class="prow">Segments <input id="bev_s" type="number" step="1" min="1" max="32" value="1"></div>
+      <div class="prow" id="bev_info" style="font-size:13px">1 segment — chamfer · 2+ — round</div>
+      <div class="prow" style="gap:10px;margin-top:8px"><button id="bev_ok">OK</button><button id="bev_cancel">Cancel</button></div>
     </div>
     <div id="arrPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
@@ -291,6 +302,7 @@
     <div class="btns" style="margin-top:10px">
       <button id="f_open" title="Ctrl+O">Open…</button>
       <button id="f_save" class="primary" title="Ctrl+S · Ctrl+Shift+S — save as">Save</button>
+      <button id="f_import" title="Import an STL file (or drop it onto the view)">Import…</button>
       <button id="reset" title="Start over from the shape preset">Reset</button>
     </div>
     <div class="sec">Export</div>
@@ -301,6 +313,7 @@
       <button id="x_step" title="Faceted STEP (AP214): a solid of flat faces, no exact cylinders">STEP</button>
     </div>
     <input type="file" id="f_file" accept=".zcad,application/json" hidden>
+    <input type="file" id="f_stl" accept=".stl,model/stl" hidden>
 
     <p class="hint"><b>L</b> — Line (SketchUp pencil): click a vertex, edge or
     face to place a point; the second click draws a dashed guide chord (it is
@@ -1824,6 +1837,145 @@ const rotTool = {
   }
 };
 
+// ---------- Ctrl+B — Bevel (как в Blender): фаска и скругление ребра ----------
+// Одно ребро или несколько (Ctrl+клик). 1 сегмент — фаска, 2+ — дуга,
+// касательная к обеим граням. Size — отступ от ребра вдоль каждой грани
+// (для прямого угла это и есть радиус). Вырез строится профилем, вытянутым
+// вдоль ребра, и вычитается нашим BSP — как карман
+function analyzeBevelEdge(pts){
+  const A = pts[0], B = pts[pts.length-1];
+  const e = new THREE.Vector3().subVectors(B, A);
+  const L = e.length();
+  if(L < 0.2) return {err: 'Edge is too short'};
+  e.multiplyScalar(1/L);
+  for(const P of pts){
+    const off = new THREE.Vector3().subVectors(P, A);
+    if(off.addScaledVector(e, -off.dot(e)).length() > 0.02) return {err: 'Only straight edges can be beveled'};
+  }
+  const ka = keyOf(pts[0].x, pts[0].y, pts[0].z), kb = keyOf(pts[1].x, pts[1].y, pts[1].z);
+  const tr = trisOnEdge(ka, kb);
+  if(tr.length !== 2) return {err: 'Edge must join exactly two faces'};
+  const pos = mesh.geometry.attributes.position.array;
+  const side = rec => { // наружная нормаль грани и направление от ребра в глубь грани
+    const n = triNormalAtOffset(rec.i);
+    const t = new THREE.Vector3().crossVectors(n, e).normalize();
+    for(let j=0;j<3;j++) if(rec.k[j] !== ka && rec.k[j] !== kb){
+      const C = new THREE.Vector3(pos[rec.i+j*3], pos[rec.i+j*3+1], pos[rec.i+j*3+2]);
+      if(t.dot(C.sub(A)) < 0) t.negate();
+    }
+    return {n, t};
+  };
+  const s1 = side(tr[0]), s2 = side(tr[1]);
+  const alpha = Math.acos(Math.max(-1, Math.min(1, s1.t.dot(s2.t))));
+  if(alpha < 5*Math.PI/180 || alpha > 175*Math.PI/180) return {err: 'Faces are almost flat — nothing to bevel'};
+  if(s1.t.dot(s2.n) > -1e-6) return {err: 'Only convex edges for now'};
+  return {A: A.clone(), B: B.clone(), e, L, t1: s1.t, n1: s1.n, t2: s2.t, n2: s2.n, alpha};
+}
+// профиль выреза в точке P ребра. Стороны вдоль граней вынесены на eps в
+// воздух: копланарные с гранями плоскости BSP разрезает ненадёжно
+function bevelProfile(ed, P, size, segs){
+  const eps = 0.5;
+  const T1 = P.clone().addScaledVector(ed.t1, size);
+  const T2 = P.clone().addScaledVector(ed.t2, size);
+  const arc = [T1];
+  if(segs >= 2){
+    const r = size * Math.tan(ed.alpha / 2);
+    const C = T1.clone().addScaledVector(ed.n1, -r);
+    const phi = Math.acos(Math.max(-1, Math.min(1, ed.n1.dot(ed.n2))));
+    for(let k=1;k<segs;k++){
+      const f = k / segs;
+      const dir = ed.n1.clone().multiplyScalar(Math.sin((1-f)*phi))
+        .addScaledVector(ed.n2, Math.sin(f*phi)).multiplyScalar(1 / Math.sin(phi));
+      arc.push(C.clone().addScaledVector(dir, r));
+    }
+  }
+  arc.push(T2);
+  return {arc, loop: [T1.clone().addScaledVector(ed.n1, eps), ...arc,
+    T2.clone().addScaledVector(ed.n2, eps),
+    P.clone().addScaledVector(ed.n1, eps).addScaledVector(ed.n2, eps)]};
+}
+function bevelPrism(ed, size, segs){
+  const m = 1.0; // за концы ребра на 1 мм: у выпуклого угла там воздух
+  const P0 = ed.A.clone().addScaledVector(ed.e, -m);
+  let loop = bevelProfile(ed, P0, size, segs).loop;
+  const nw = new THREE.Vector3(); // Ньюэлл: профиль должен обходиться против часовой вокруг e
+  for(let i=0;i<loop.length;i++){
+    const a = loop[i], b = loop[(i+1)%loop.length];
+    nw.x += (a.y-b.y)*(a.z+b.z); nw.y += (a.z-b.z)*(a.x+b.x); nw.z += (a.x-b.x)*(a.y+b.y);
+  }
+  if(nw.dot(ed.e) < 0) loop = loop.reverse();
+  return buildPrismTris(loop, ed.e, ed.L + 2*m, 0);
+}
+const bevelTool = {
+  hud: 'BEVEL · size and segments in the window (1 — chamfer, 2+ — round) · Enter — OK · Esc',
+  edges: [], ghosts: [],
+  on(){
+    const vr = view.getBoundingClientRect();
+    bevPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 340) + 'px';
+    bevPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 320) + 'px';
+    bevPopup.hidden = false;
+    this.preview();
+    bev_d.focus(); bev_d.select();
+  },
+  off(){ killObjs(this.ghosts); bevPopup.hidden = true; releaseToolInput(); tipHide(); },
+  params(){
+    return {size: Math.max(0.1, snapMM(+bev_d.value || 0.1)),
+            segs: Math.max(1, Math.min(32, Math.round(+bev_s.value || 1)))};
+  },
+  down(){}, move(){},
+  key(e){ if(e.key === 'Enter'){ this.commit(); e.preventDefault(); return true; } return false; },
+  preview(){
+    killObjs(this.ghosts);
+    const {size, segs} = this.params();
+    const ed0 = this.edges[0];
+    if(segs === 1) bev_kind.textContent = 'chamfer';
+    else bev_kind.textContent = 'round';
+    bev_info.textContent = segs === 1
+      ? '1 segment — chamfer · 2+ — round'
+      : 'R ' + (size * Math.tan(ed0.alpha / 2)).toFixed(2) + ' mm · ' + segs + ' segments';
+    const mat = new THREE.LineDashedMaterial({color: C_EDGE, dashSize: 1.0, gapSize: 0.6});
+    for(const ed of this.edges){
+      const a = bevelProfile(ed, ed.A, size, segs).arc, b = bevelProfile(ed, ed.B, size, segs).arc;
+      const pts = [];
+      for(let i=0;i+1<a.length;i++) pts.push(a[i], a[i+1], b[i], b[i+1]);
+      pts.push(a[0], b[0], a[a.length-1], b[b.length-1]); // новые рёбра вдоль граней
+      const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), mat);
+      l.computeLineDistances(); scene.add(l); this.ghosts.push(l);
+    }
+  },
+  commit(){
+    const {size, segs} = this.params();
+    pushUndo();
+    try{
+      const pos = mesh.geometry.attributes.position.array;
+      let body = [];
+      for(let i=0;i<pos.length;i+=9)
+        body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]),
+                   new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
+                   new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
+      for(const ed of this.edges){
+        body = csgSubtract(body, bevelPrism(ed, size, segs));
+        body = body.filter(t => new THREE.Vector3().subVectors(t[1],t[0])
+          .cross(new THREE.Vector3().subVectors(t[2],t[0])).length() > 1e-6);
+      }
+      const q = x => Math.round(x*1000)/1000;
+      const arr = [];
+      for(const t of body) for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
+      setMeshFromArray(new Float32Array(arr));
+      healAll();
+    }catch(err){
+      console.warn('bevel failed', err);
+      undo(true);
+      warnTip('Bevel failed on this edge');
+      return;
+    }
+    if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+    clearEdgeSel(); hideChordHint();
+    setActiveTool(null);
+    extractEdges();
+  }
+};
+
 // G,A — Круговой массив (PolarPattern во FreeCAD): выбранные линии/точка
 // размножаются вокруг центра. Угол 360 — копии ровно по кругу, меньше —
 // веером от исходника до крайней копии включительно
@@ -2261,6 +2413,17 @@ function makeGripDrag(win){
 makeGripDrag(txtPopup);
 makeGripDrag(circPopup);
 makeGripDrag(arrPopup);
+makeGripDrag(bevPopup);
+for(const inp of [bev_d, bev_s]){
+  inp.addEventListener('input', ()=>{ if(activeTool === bevelTool) bevelTool.preview(); });
+  inp.addEventListener('keydown', e=>{
+    if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === bevelTool) bevelTool.commit(); }
+    if(e.key === 'Escape'){ e.preventDefault(); setActiveTool(null); }
+    e.stopPropagation();
+  });
+}
+bev_ok.addEventListener('click', ()=>{ if(activeTool === bevelTool) bevelTool.commit(); });
+bev_cancel.addEventListener('click', ()=>setActiveTool(null));
 for(const inp of [arr_n, arr_a]){
   inp.addEventListener('input', ()=>{ if(activeTool === arrTool) arrTool.preview(); });
   inp.addEventListener('keydown', e=>{
@@ -3080,11 +3243,39 @@ function edgeSelLoop(){
   }
   return usedCount === segs.length ? loop : null; // куски вне цикла — не контур
 }
+// Контур уже закрыт гранью? Берём точки заведомо внутри контура (центры
+// его триангуляции) и ищем треугольник сетки в той же плоскости, который
+// их накрывает. Если есть — заливать нечего, «стекло» с F не предлагаем
+function loopAlreadyFilled(loop){
+  const tris = earClip(loop);
+  if(!tris.length || !mesh) return false;
+  const n = new THREE.Vector3().subVectors(tris[0][1], tris[0][0])
+    .cross(new THREE.Vector3().subVectors(tris[0][2], tris[0][0]));
+  if(n.lengthSq() < 1e-12) return false;
+  n.normalize();
+  const d0 = n.dot(loop[0]);
+  const samples = tris.map(t => t[0].clone().add(t[1]).add(t[2]).multiplyScalar(1/3));
+  const pos = mesh.geometry.attributes.position.array;
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+  const side = (P, Q, R) => new THREE.Vector3().subVectors(Q, P).cross(new THREE.Vector3().subVectors(R, P)).dot(n);
+  for(let i=0;i<pos.length;i+=9){
+    A.set(pos[i],pos[i+1],pos[i+2]); B.set(pos[i+3],pos[i+4],pos[i+5]); C.set(pos[i+6],pos[i+7],pos[i+8]);
+    if(Math.abs(n.dot(A)-d0) > 0.02 || Math.abs(n.dot(B)-d0) > 0.02 || Math.abs(n.dot(C)-d0) > 0.02) continue;
+    const area = side(A, B, C);
+    if(Math.abs(area) < 1e-9) continue;
+    for(const P of samples){
+      const c1 = side(A, B, P), c2 = side(B, C, P), c3 = side(C, A, P);
+      if(area > 0 ? (c1 >= -1e-6 && c2 >= -1e-6 && c3 >= -1e-6)
+                  : (c1 <= 1e-6 && c2 <= 1e-6 && c3 <= 1e-6)) return true;
+    }
+  }
+  return false;
+}
 function updateSelPreview(){
   killSelPreview();
   hideChordHint();
   const loop = edgeSelLoop();
-  if(!loop) return;
+  if(!loop || loopAlreadyFilled(loop)) return; // грань уже есть — заливать нечего
   const tris = earClip(loop);
   if(!tris.length) return;
   // «стекло»: еле заметная плёнка — место, которое можно залить
@@ -3835,7 +4026,40 @@ function extrudeLooksClean(snapPos, applied, patchArea){
 // полный цикл заживления до сходимости: одиночный прогон оставляет сотни
 // Т-стыков, когда стенки новой экструзии скользят вдоль старых стенок
 // (например, поднятые донья гравировки); healTJunctions чинит ≤16 за вызов
+// Сварка вершин ближе eps. BSP выдаёт одну и ту же точку пересечения с
+// разницей в один квант округления (0.001 мм): ключи вершин расходятся, и в
+// сетке остаются щели (два скругления с общим углом давали 6 открытых рёбер)
+function weldVertices(eps){
+  const pos = mesh.geometry.attributes.position.array;
+  const grid = new Map();
+  const cellKey = (i, j, k) => i + ',' + j + ',' + k;
+  let changed = false;
+  for(let i=0;i<pos.length;i+=3){
+    const x = pos[i], y = pos[i+1], z = pos[i+2];
+    const ci = Math.floor(x/eps), cj = Math.floor(y/eps), ck = Math.floor(z/eps);
+    let hit = null;
+    for(let a=-1;a<=1 && !hit;a++) for(let b=-1;b<=1 && !hit;b++) for(let c=-1;c<=1 && !hit;c++){
+      const arr = grid.get(cellKey(ci+a, cj+b, ck+c));
+      if(!arr) continue;
+      for(const r of arr)
+        if(Math.abs(r[0]-x) <= eps && Math.abs(r[1]-y) <= eps && Math.abs(r[2]-z) <= eps){ hit = r; break; }
+    }
+    if(hit){
+      if(hit[0] !== x || hit[1] !== y || hit[2] !== z){
+        pos[i] = hit[0]; pos[i+1] = hit[1]; pos[i+2] = hit[2]; changed = true;
+      }
+    } else {
+      const kk = cellKey(ci, cj, ck);
+      let arr = grid.get(kk);
+      if(!arr){ arr = []; grid.set(kk, arr); }
+      arr.push([x, y, z]);
+    }
+  }
+  if(changed) mesh.geometry.attributes.position.needsUpdate = true;
+  return changed;
+}
 function healAll(){
+  weldVertices(0.0015); // полтора кванта: сшивает только «расщеплённые» точки
   cleanupMesh();
   healCoplanarOverlaps(); // самый дорогой проход — ровно один раз
   for(let i=0;i<40;i++){  // Т-стыки: healTJunctions чинит ≤16 за вызов
@@ -4106,6 +4330,7 @@ function showEdgePalette(ch){
     '<div><span class="key">G,V</span> — move by X/Y/Z</div>' +
     '<div><span class="key">G,Y</span> — point / divide</div>' +
     '<div><span class="key">Del</span> — erase edge / line</div>' +
+    (ch && !ch.isGuide ? '<div><span class="key">Ctrl+B</span> — chamfer / fillet</div>' : '') +
     (ch && ch.isGuide ? '<div><span class="key">Q</span> — rotate / copy</div>'
       + '<div><span class="key">G,A</span> — polar array</div>' : '') +
     '<div><span class="key">Ctrl+click</span> — multi-select</div>' +
@@ -4613,6 +4838,58 @@ async function openProject(){
   f_file.click();
 }
 
+// --- импорт STL: бинарный и текстовый (ASCII); единицы — миллиметры ---
+function parseSTLAny(buf){
+  const dv = new DataView(buf);
+  if(buf.byteLength >= 84){
+    const cnt = dv.getUint32(80, true);
+    if(84 + cnt*50 === buf.byteLength) return parseSTL(buf); // бинарный: размер сходится
+  }
+  const text = new TextDecoder().decode(new Uint8Array(buf));
+  const nums = [];
+  const re = /vertex\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)/g;
+  let m;
+  while((m = re.exec(text))) nums.push(+m[1], +m[2], +m[3]);
+  if(nums.length && nums.length % 9 === 0) return new Float32Array(nums);
+  if(buf.byteLength >= 84) return parseSTL(buf); // размер не сошёлся — пробуем как бинарный
+  return new Float32Array(0);
+}
+function importSTL(buf, name){
+  const raw = parseSTLAny(buf);
+  if(!raw.length || raw.length % 9 !== 0 || raw.some(v => !isFinite(v))){
+    alert('Cannot import: no valid triangles in ' + (name || 'the file'));
+    return;
+  }
+  pushUndo(); // Ctrl+Z вернёт прежнюю модель
+  closeExtrude(); cancelText(); closePopup(); deselect(); clearEdgeSel(); hideChordHint(); tipHide();
+  if(ppMode) setPPMode(false);
+  if(lineMode) setLineMode(false);
+  if(circleMode) setCircleMode(false);
+  if(pointMode) setPointMode(false);
+  if(activeTool) setActiveTool(null);
+  hidePatch(); ppPatch = null; ppParts = null;
+  const q = x => Math.round(x*1000)/1000; // та же сетка ключей, что у правок
+  const arr = new Float32Array(raw.length);
+  for(let i=0;i<raw.length;i++) arr[i] = q(raw[i]);
+  setMeshFromArray(arr);
+  restoreGuides([]); clearAnchors(); curveSeq = 0;
+  cleanupMesh();
+  modified = true; s_mod.textContent = 'yes';
+  extractEdges();
+  // камера на модель
+  const box = new THREE.Box3().setFromBufferAttribute(mesh.geometry.attributes.position);
+  const size = box.getSize(new THREE.Vector3()), maxd = Math.max(size.x, size.y, size.z, 1);
+  box.getCenter(camTarget);
+  camDist = Math.max(maxd * 1.9, 60);
+  orthoFit = maxd * 0.62;
+  updateOrthoFrusta(); updateOrthoPoses();
+  projectHandle = null;
+  projectName = (name || 'imported').replace(/\.stl$/i, '');
+  setProjectDirty(true);
+  const open = countBoundaryEdges();
+  if(open) warnTip('Imported mesh is not closed: ' + open + ' open edges');
+}
+
 // --- геометрия для экспорта: вершины без дублей (ключ 0.001 мм) ---
 function indexedMesh(){
   const pos = mesh.geometry.attributes.position.array;
@@ -5057,6 +5334,23 @@ window.addEventListener('keydown', e=>{
     else setPPMode(!ppMode); // P — Push/Pull, как в SketchUp
     return;
   }
+  // Ctrl+B — фаска/скругление выбранных рёбер (Bevel в Blender)
+  if((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyB'
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault();
+    if(activeTool === bevelTool){ setActiveTool(null); return; }
+    const mesheEdges = edgeSel.filter(x=>!x.isGuide);
+    if(!mesheEdges.length){ warnTip('Select an edge of the body to bevel'); return; }
+    const eds = [];
+    for(const es of mesheEdges){
+      const ed = analyzeBevelEdge(es.pts);
+      if(ed.err){ warnTip(ed.err); return; }
+      eds.push(ed);
+    }
+    hideChordHint();
+    bevelTool.edges = eds; setActiveTool(bevelTool);
+    return;
+  }
   // Q — поворот/копия выбранных линий или точки (Rotate в SketchUp)
   if((e.code==='KeyQ' || e.key.toLowerCase()==='q') && !chordG && !e.ctrlKey && !e.altKey && !e.metaKey
      && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
@@ -5178,6 +5472,9 @@ window.addEventListener('keydown', e=>{
      && !dragPt && !ppDrag && !lineMode && !pointMode && !circleMode && !ppMode && !textMode && !activeTool
      && document.activeElement.tagName!=='INPUT'){
     const selLoop = edgeSelLoop();
+    if(selLoop && loopAlreadyFilled(selLoop)){
+      warnTip('This contour is already a face'); e.preventDefault(); return;
+    }
     if(selLoop && fillLoop(selLoop)){ clearEdgeSel(); hideChordHint(); e.preventDefault(); return; }
     if(fillHole()){ e.preventDefault(); return; }
   }
@@ -6289,6 +6586,21 @@ document.getElementById('x_obj').addEventListener('click', ()=>exportAs('obj'));
 document.getElementById('x_step').addEventListener('click', ()=>exportAs('step'));
 document.getElementById('f_save').addEventListener('click', e=>saveProject(e.shiftKey));
 document.getElementById('f_open').addEventListener('click', openProject);
+document.getElementById('f_import').addEventListener('click', ()=>{ f_stl.value = ''; f_stl.click(); });
+f_stl.addEventListener('change', async ()=>{
+  const file = f_stl.files && f_stl.files[0];
+  if(file) importSTL(await file.arrayBuffer(), file.name);
+});
+// перетаскивание файла на сцену: .stl — импорт, .zcad — открыть проект
+view.addEventListener('dragover', e=>{ e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+view.addEventListener('drop', async e=>{
+  e.preventDefault();
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if(!file) return;
+  if(/\.stl$/i.test(file.name)) importSTL(await file.arrayBuffer(), file.name);
+  else if(/\.zcad$/i.test(file.name)) loadProjectText(await file.text(), file.name);
+  else warnTip('Drop an .stl or .zcad file');
+});
 f_file.addEventListener('change', async ()=>{
   const file = f_file.files && f_file.files[0];
   if(file) loadProjectText(await file.text(), file.name);
