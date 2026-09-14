@@ -126,10 +126,8 @@
     border-radius:10px;padding:10px 12px;font-size:12px}
   #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden],#arrPopup[hidden],#bevPopup[hidden],#rotPopup[hidden]{display:none}
   #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow,#arrPopup .prow,#bevPopup .prow,#rotPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
-  /* главная строка окна: Ctrl — вычитание; пока операция Cut — строка красная */
-  #exPopup #ex_ctrl{color:var(--text)}
-  #exPopup #ex_ctrl.cut{color:#ff4d4d}
-  #exPopup #ex_ctrl.cut .key{color:#ff4d4d}
+  /* короткие строки-подсказки окна Extrude, по одной строке */
+  #exPopup .exline{font-size:16px;color:var(--muted);margin:3px 0;white-space:nowrap}
   #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
   /* окно окружности (G,C): число сегментов, перетаскивается за ⠿ */
@@ -182,6 +180,8 @@
   #exPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
   #exPopup #ex_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
+  /* кнопка говорит, что сделает: Add — синяя, Cut — белая с чёрным текстом */
+  #exPopup #ex_ok.cut{background:#fff;color:#10131a;border-color:#fff}
   #divPopup{cursor:move;padding:14px 16px}
   #divPopup .prow{font-size:19px}
   #divPopup .dvs{padding:6px 16px;font-size:19px;flex:none;
@@ -284,11 +284,11 @@
     </div>
     <div id="exPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
-      <div class="prow" style="padding-right:44px">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
-      <div class="prow" id="ex_ctrl"><span class="key">Ctrl</span>+drag / Enter — Cut</div>
-      <div id="ex_state" style="font-size:14px;margin:2px 0;color:var(--text)"></div>
-      <div id="ex_hint" style="font-size:12px;max-width:330px;color:var(--muted);margin:4px 0">Without Ctrl: into a solid — Cut, out of it or from a sheet — Join · works in either direction (− against the normal)</div>
-      <div class="prow" style="gap:10px"><button id="ex_ok">OK</button><button id="ex_cancel">Cancel</button></div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Extrude</b></div>
+      <div class="prow"><input id="ex_val" type="number" step="0.1" value="5"> mm</div>
+      <div class="exline">Drag the face with the mouse</div>
+      <div class="exline" id="ex_ctrl">Hold <span class="key">Ctrl</span> — cut</div>
+      <div class="prow" style="gap:10px;margin-top:8px"><button id="ex_ok">Add</button><button id="ex_cancel">Cancel</button></div>
     </div>
     <div id="vcnav">
       <button data-act="home" title="Home view">⌂</button>
@@ -4686,13 +4686,10 @@ function exOp(){
   return (!exLive.sheet && exLive.applied < 0) ? 'cut' : 'join';
 }
 function paintExOp(){
-  const op = exOp();
-  ex_ctrl.classList.toggle('cut', op === 'cut');
-  ex_state.innerHTML = op === 'cut'
-    ? '<span style="color:#ff4d4d;font-weight:700">Cut</span> — removes material'
-    : '<span style="color:#2ecc40;font-weight:700">Join</span> — adds material';
-  ex_state.innerHTML += exOpManual || exCtrl ? '' : ' <span style="color:var(--muted)">(auto)</span>';
-  ex_hint.hidden = !hintsChk.checked;
+  const cut = exOp() === 'cut';
+  ex_ok.textContent = cut ? 'Cut' : 'Add';
+  ex_ok.classList.toggle('cut', cut);
+  for(const el of exPopup.querySelectorAll('.exline')) el.hidden = !hintsChk.checked; // подсказки — под флагом
 }
 function setExOp(op){ exOpManual = op; paintExOp(); }
 // лоскут — лист (у контура есть открытое ребро: с обратной стороны воздух)?
