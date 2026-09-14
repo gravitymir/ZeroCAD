@@ -228,7 +228,7 @@
     <div id="circPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
       <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Circle</b><span id="circ_state" style="font-size:14px">center</span></div>
-      <div class="prow dim"><span class="plab">Ø</span><input id="circ_d" type="number" step="0.1" min="0.2" placeholder="—"> mm</div>
+      <div class="prow dim"><span class="plab">Ø</span><input id="circ_d" type="number" step="0.2" min="0.2" placeholder="—"> mm</div>
       <div class="prow dim"><span class="plab">R</span><input id="circ_r" type="number" step="0.1" min="0.1" placeholder="—"> mm</div>
       <div class="pinfo" id="circ_info">&nbsp;</div>
       <div class="pinfo" id="circ_typed" hidden></div>
@@ -638,6 +638,95 @@ const CHAIN_COS   = Math.cos(25*Math.PI/180); // поворот >25° => кон�
 // скругление: рёбра между его гранями должны быть видны, а боковина
 // выдавленного круга остаётся гладкой. Хранятся в проекте и истории
 let hardEdges = [];      // [{a:Vector3, b:Vector3}]
+// Лежит ли точка на какой-нибудь грани сетки (сетка треугольников в ячейках
+// 5 мм). Нужна, чтобы отличать линии на теле от линий в воздухе
+let faceTester = null;
+function getFaceTester(){
+  if(faceTester) return faceTester;
+  const pos = mesh ? mesh.geometry.attributes.position.array : new Float32Array(0);
+  const CELL = 5, grid = new Map();
+  const cell = (x,y,z) => Math.floor(x/CELL) + ',' + Math.floor(y/CELL) + ',' + Math.floor(z/CELL);
+  for(let t=0;t<pos.length/9;t++){
+    const o = t*9;
+    const lo = [0,1,2].map(k => Math.floor((Math.min(pos[o+k], pos[o+3+k], pos[o+6+k]) - 0.02)/CELL));
+    const hi = [0,1,2].map(k => Math.floor((Math.max(pos[o+k], pos[o+3+k], pos[o+6+k]) + 0.02)/CELL));
+    for(let i=lo[0];i<=hi[0];i++) for(let j=lo[1];j<=hi[1];j++) for(let k=lo[2];k<=hi[2];k++){
+      const key = i+','+j+','+k;
+      let a = grid.get(key); if(!a){ a = []; grid.set(key, a); } a.push(t);
+    }
+  }
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+  const v0 = new THREE.Vector3(), v1 = new THREE.Vector3(), v2 = new THREE.Vector3(), nrm = new THREE.Vector3();
+  faceTester = P => {
+    for(const t of (grid.get(cell(P.x, P.y, P.z)) || [])){
+      const o = t*9;
+      A.fromArray(pos, o); B.fromArray(pos, o+3); C.fromArray(pos, o+6);
+      v0.subVectors(B, A); v1.subVectors(C, A); v2.subVectors(P, A);
+      nrm.crossVectors(v0, v1);
+      const L = nrm.length();
+      if(L < 1e-9) continue;
+      if(Math.abs(v2.dot(nrm)) / L > 0.02) continue; // не в плоскости треугольника
+      const d00 = v0.dot(v0), d01 = v0.dot(v1), d11 = v1.dot(v1), d20 = v2.dot(v0), d21 = v2.dot(v1);
+      const den = d00*d11 - d01*d01;
+      if(Math.abs(den) < 1e-12) continue;
+      const v = (d11*d20 - d01*d21) / den, w = (d00*d21 - d01*d20) / den;
+      const e = 0.01 / Math.sqrt(Math.max(d00, d11)); // ~0.01 мм допуска на границе
+      if(v >= -e && w >= -e && v + w <= 1 + e) return true;
+    }
+    return false;
+  };
+  return faceTester;
+}
+// Линия в воздухе — ярко-красная: чёрная на тёмном фоне сцены не видна, а
+// красная ещё и честно говорит, что эта часть не лежит на теле
+const C_AIR = 0xff4d4d, C_GUIDE = 0x23262c;
+const AIR_RGB = new THREE.Color(C_AIR), GUIDE_RGB = new THREE.Color(C_GUIDE);
+function airColoredLine(pts, onColor, closed){
+  const test = getFaceTester();
+  const onRGB = new THREE.Color(onColor);
+  const out = [], cols = [];
+  let anyAir = false;
+  const push = (P, air) => { out.push(P); const c = air ? AIR_RGB : onRGB; cols.push(c.r, c.g, c.b); };
+  const list = closed ? [...pts, pts[0]] : pts;
+  for(let i=0;i+1<list.length;i++){
+    const a = list[i], b = list[i+1];
+    const N = Math.max(1, Math.min(24, Math.ceil(a.distanceTo(b) / 1.5)));
+    let prevP = a, prevAir = !test(a);
+    if(i === 0) push(a, prevAir);
+    for(let k=1;k<=N;k++){
+      const P = a.clone().lerp(b, k/N), air = !test(P);
+      if(air !== prevAir){ // граница грани: делением пополам, цвет меняется резко
+        let lo = prevP, hi = P;
+        for(let it=0;it<6;it++){
+          const m = lo.clone().lerp(hi, 0.5);
+          if((!test(m)) === prevAir) lo = m; else hi = m;
+        }
+        const M = lo.clone().lerp(hi, 0.5);
+        push(M, prevAir); push(M.clone(), air);
+      }
+      if(air) anyAir = true;
+      push(P, air);
+      prevP = P; prevAir = air;
+    }
+  }
+  const g = new THREE.BufferGeometry().setFromPoints(out);
+  g.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  return {geometry: g, anyAir};
+}
+const guideAirMat = new THREE.LineBasicMaterial({vertexColors: true});
+function recolorGuides(){
+  for(const g of guides){
+    const r = airColoredLine([g.a, g.b], C_GUIDE, false);
+    g.line.geometry.dispose();
+    if(r.anyAir){ g.line.geometry = r.geometry; g.line.material = guideAirMat; }
+    else {
+      r.geometry.dispose();
+      g.line.geometry = new THREE.BufferGeometry().setFromPoints([g.a, g.b]);
+      if(g.line.material === guideAirMat) g.line.material = new THREE.LineBasicMaterial({color: C_GUIDE});
+    }
+    g.air = r.anyAir;
+  }
+}
 function onHardEdge(P, Q){
   for(const h of hardEdges){
     const d = new THREE.Vector3().subVectors(h.b, h.a);
@@ -724,7 +813,12 @@ function extractEdges(){
   for(let i=0;i<pos.length;i+=9){
     a.fromArray(pos,i); b.fromArray(pos,i+3); c.fromArray(pos,i+6);
     ab.subVectors(b,a); ac.subVectors(c,a);
-    const n = new THREE.Vector3().crossVectors(ab,ac).normalize();
+    const n = new THREE.Vector3().crossVectors(ab,ac);
+    // вырожденный треугольник (две вершины совпали после врезки хорды) —
+    // не грань: его «нормаль» добавляла ребру третью грань, и посреди
+    // круга рисовалось лишнее режущее ребро
+    if(n.length() < 1e-6) continue;
+    n.normalize();
     const vs=[a,b,c];
     for(let e=0;e<3;e++){
       const P=vs[e], Q=vs[(e+1)%3];
@@ -830,6 +924,7 @@ function extractEdges(){
     chains.push({pts:[gd.a.clone(), gd.b.clone()], cum:[0,len], total:len,
                  closed:false, isGuide:true, curve: gd.curve || 0});
   }
+  faceTester = null; recolorGuides(); // сетка сменилась — линии в воздухе заново
   splitChainsByAnchors(); // точки на ребре делят его на выбираемые куски
   cornerHover = null;
   // оси всегда выходят за габарит модели (буквы не «поглощаются» фигурой)
@@ -2226,28 +2321,16 @@ function circLastValid(){ // правка возможна, пока после 
 }
 // часть круга вне области грани, на которой стоит центр? Черчение в воздухе
 // разрешено (как вся плоскость эскиза во FreeCAD), окно лишь предупреждает
-function circleBeyondFace(){
-  if(!circleCenter || !circPatch || circleR <= 0.1) return false;
-  const pos = mesh.geometry.attributes.position.array;
-  const n = circlePlane;
-  const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize();
-  const v = n.clone().cross(u);
-  const tris = circPatch.tris.map(t => {
-    const o = t*9, r = [];
-    for(let j=0;j<3;j++) r.push([pos[o+j*3]*u.x + pos[o+j*3+1]*u.y + pos[o+j*3+2]*u.z,
-                                 pos[o+j*3]*v.x + pos[o+j*3+1]*v.y + pos[o+j*3+2]*v.z]);
-    return r;
-  });
-  const inside = (x, y) => tris.some(([a, b, c]) => {
-    const d = (b[1]-c[1])*(a[0]-c[0]) + (c[0]-b[0])*(a[1]-c[1]);
-    if(Math.abs(d) < 1e-12) return false;
-    const l1 = ((b[1]-c[1])*(x-c[0]) + (c[0]-b[0])*(y-c[1])) / d;
-    const l2 = ((c[1]-a[1])*(x-c[0]) + (a[0]-c[0])*(y-c[1])) / d;
-    const e = 1e-4;
-    return l1 >= -e && l2 >= -e && 1 - l1 - l2 >= -e;
-  });
-  for(const P of circlePoints(circleCenter, circlePlane, circleR))
-    if(!inside(P.dot(u), P.dot(v))) return true;
+// часть круга не лежит ни на одной грани (в воздухе)? Черчение в воздухе
+// разрешено (как вся плоскость эскиза во FreeCAD), окно лишь предупреждает
+function circleBeyondFace(center, normal, R){
+  if(!center || !(R > 0.1)) return false;
+  const test = getFaceTester();
+  const pts = circlePoints(center, normal, R);
+  for(let i=0;i<pts.length;i++){
+    const a = pts[i], b = pts[(i+1)%pts.length];
+    if(!test(a) || !test(a.clone().lerp(b, 0.5))) return true;
+  }
   return false;
 }
 // привязка словами: сильные магниты — ярко-салатовым, как в тултипах
@@ -2265,11 +2348,14 @@ function updateCircInfo(snapKind, beyond){
     circ_d.value = shown > 0.1 ? +(2*shown).toFixed(3) : '';
     circ_r.value = shown > 0.1 ? +shown.toFixed(3) : '';
   }
+  if(beyond === undefined) beyond = live ? circleBeyondFace(circleCenter, circlePlane, circleR)
+    : (circLastValid() ? circleBeyondFace(circLast.center, circLast.plane, circLast.R) : false);
   let h = '';
   if(snapKind) h += snapKind;
   if(circRLock && live) h += (h ? ' · ' : '') + '<span style="color:#6aff3d">typed size · Enter — place</span>';
   if(!live && circFixedR) h += (h ? ' · ' : '') + '<span style="color:#6aff3d">click — place Ø ' + (2*circFixedR).toFixed(1) + '</span>';
-  if(beyond) h += (h ? '<br>' : '') + '<span style="color:#ffb347">beyond the face — part in the air</span>';
+  if(beyond) h += (h ? '<br>' : '') + '<span style="color:#ff4d4d;font-weight:700">beyond the face</span>'
+    + ' <span style="color:var(--muted)">— the red part is in the air</span>';
   if(!h) h = '&nbsp;';
   circ_info.innerHTML = h;
   circ_typed.hidden = !circleRStr;
@@ -2377,6 +2463,7 @@ function commitCircle(){
     addGuide(a, b, false, cid);
     splitMeshByChord(a, b, true); // замкнутый контур: рез по всей линии хорды
   }
+  cleanupMesh(); // врезка оставляет треугольники нулевой площади
   extractEdges();
   killRing(); hidePlaneTargets(); ghost.visible = false;
   circleCenter = null; circleRStr = ''; circleDown = null; circRLock = false;
@@ -2385,11 +2472,11 @@ function commitCircle(){
 }
 function drawCircleRing(center, normal, R){
   killRing();
-  if(!(R > 0.1)) return;
-  const cps = circlePoints(center, normal, R);
-  circleRing = new THREE.Line(new THREE.BufferGeometry().setFromPoints([...cps, cps[0]]),
-    new THREE.LineBasicMaterial({color:C_EDGE}));
+  if(!(R > 0.1)) return false;
+  const r = airColoredLine(circlePoints(center, normal, R), C_EDGE, true);
+  circleRing = new THREE.Line(r.geometry, new THREE.LineBasicMaterial({vertexColors: true}));
   scene.add(circleRing);
+  return r.anyAir;
 }
 
 // ---------- «3D Text» (G,T — 3D Text из SketchUp) ----------
@@ -2742,13 +2829,7 @@ circ_seg.addEventListener('input', ()=>{
   if(!circleMode) return;
   circAuto = false; // выбрал сам — больше не подставляем
   if(!circleCenter){ recommitCircle(circLast ? circLast.R : 0); updateCircInfo(); return; }
-  updateCircInfo();
-  if(circleR <= 0.1) return;
-  killRing();
-  const cps = circlePoints(circleCenter, circlePlane, circleR);
-  circleRing = new THREE.Line(new THREE.BufferGeometry().setFromPoints([...cps, cps[0]]),
-    new THREE.LineBasicMaterial({color:C_EDGE}));
-  scene.add(circleRing);
+  updateCircInfo('', drawCircleRing(circleCenter, circlePlane, circleR));
 });
 // Ø и R — одно число в двух видах. До центра размер фиксируется (FreeCAD:
 // радиус в панели, клик ставит круг), при растягивании перебивает мышь,
@@ -2762,9 +2843,9 @@ function applyCircField(R, final){
     if(!ok){ circRLock = false; updateCircInfo(); return; }
     circleR = R; circRLock = true;
     if(circAuto) circ_seg.value = autoCircSegs(R);
-    drawCircleRing(circleCenter, circlePlane, R);
+    const air = drawCircleRing(circleCenter, circlePlane, R);
     if(final) commitCircle();
-    updateCircInfo('', circleBeyondFace());
+    updateCircInfo('', final ? undefined : air);
     return;
   }
   if(!ok){ circFixedR = null; killRing(); updateCircInfo(); return; }
@@ -2776,11 +2857,20 @@ function applyCircField(R, final){
   }
   updateCircInfo();
 }
-for(const [inp, other, toR] of [[circ_d, circ_r, v => v/2], [circ_r, circ_d, v => v]]){
+// шаг движка 0.1 мм — это шаг радиуса; диаметр тогда кратен 0.2, иначе
+// Ø 42.1 дал бы радиус 21.05. Введённое число округляется до этой сетки
+const circFieldR = (inp, v) => snapMM(inp === circ_d ? v/2 : v);
+for(const inp of [circ_d, circ_r]){
+  const other = inp === circ_d ? circ_r : circ_d;
+  const toR = v => circFieldR(inp, v);
   inp.addEventListener('input', ()=>{
     const v = parseFloat(inp.value);
-    other.value = v > 0 ? +(inp === circ_d ? v/2 : v*2).toFixed(3) : '';
+    other.value = v > 0 ? +(inp === circ_d ? toR(v) : 2*toR(v)).toFixed(1) : '';
     applyCircField(v > 0 ? toR(v) : 0, false);
+  });
+  inp.addEventListener('blur', ()=>{ // показать округлённое: 42.1 → 42.2
+    const v = parseFloat(inp.value);
+    if(v > 0) inp.value = +(inp === circ_d ? 2*toR(v) : toR(v)).toFixed(1);
   });
   inp.addEventListener('keydown', e=>{
     if(e.key === 'Enter'){
@@ -5932,12 +6022,12 @@ window.addEventListener('keydown', e=>{
       const d = parseFloat(circleRStr); // с клавиатуры вводится диаметр
       circleRStr = '';
       if(circleCenter){
-        if(d > 0.4) circleR = d/2;
+        if(d > 0.4) circleR = snapMM(d/2); // радиус на сетке 0.1
         if(circAuto) circ_seg.value = autoCircSegs(circleR);
         commitCircle();
       } else if(d > 0.4){ // Ø после постановки — перерисовать круг (как в SketchUp)
-        if(circAuto) circ_seg.value = autoCircSegs(d/2);
-        recommitCircle(d/2);
+        if(circAuto) circ_seg.value = autoCircSegs(snapMM(d/2));
+        recommitCircle(snapMM(d/2));
       }
       updateCircInfo();
       e.preventDefault(); return;
@@ -6834,14 +6924,7 @@ canvas.addEventListener('pointermove', e=>{
       if(p) circleR = Math.max(0.1, snapMM(p.distanceTo(circleCenter)));
     }
     if(circAuto) circ_seg.value = autoCircSegs(circleR);
-    killRing();
-    if(circleR > 0.1){
-      const cps = circlePoints(circleCenter, circlePlane, circleR);
-      const rg = new THREE.BufferGeometry().setFromPoints([...cps, cps[0]]);
-      circleRing = new THREE.Line(rg, new THREE.LineBasicMaterial({color:C_EDGE}));
-      scene.add(circleRing);
-    }
-    updateCircInfo(snapKind, circleBeyondFace());
+    updateCircInfo(snapKind, drawCircleRing(circleCenter, circlePlane, circleR));
     return;
   }
   if(lineMode){ // резинка и привязки в режиме «Линия»
