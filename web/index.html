@@ -5342,8 +5342,8 @@ function showEdgePalette(ch){
   const arc = ch && fitArc(ch);
   const cur = ch && ch.curve ? curveInfo(ch.curve) : null;
   const info = cur
-    ? 'Circle · <b>Ø ' + (cur.R*2).toFixed(1) + '</b> mm'
-      + '<br>R ' + cur.R.toFixed(1) + ' mm · ' + cur.segs + ' segments'
+    ? 'Circle<br>Ø <b>' + (cur.R*2).toFixed(1) + '</b> mm'
+      + '<br>R ' + cur.R.toFixed(1) + ' mm<br>' + cur.segs + ' segments'
     : (ch
       ? (ch.isGuide ? 'Line' : 'Edge') + ' · ' + ch.total.toFixed(1) + ' mm'
         + (arc ? ' · R ' + arc.R.toFixed(1) + ' mm' : '')
@@ -5385,8 +5385,11 @@ function showEdgePalette(ch){
 }
 function showEdgeSelSummary(d){
   tipHide(); hideSelEnds();
-  const circ = c => 'Circle · <b>Ø ' + (2*c.R).toFixed(1) + '</b> mm · R ' + c.R.toFixed(1) + ' mm'
-    + ' · ' + c.segs + ' segments' + (c.body ? ' <span style="opacity:.6">(edge of the body)</span>' : '');
+  // каждый параметр — своей строкой, с отступом под маркером
+  const circ = c => 'Circle' + (c.body ? ' <span style="opacity:.6">(edge of the body)</span>' : '')
+    + '<div style="padding-left:18px">Ø <b>' + (2*c.R).toFixed(1) + '</b> mm</div>'
+    + '<div style="padding-left:18px">R ' + c.R.toFixed(1) + ' mm</div>'
+    + '<div style="padding-left:18px">' + c.segs + ' segments</div>';
   const len = d.rest.reduce((sum, c) => sum + c.total, 0);
   const restLabel = n => {
     const lines = d.rest.filter(c => c.isGuide).length, edges = n - lines;
