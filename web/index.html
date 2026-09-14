@@ -949,8 +949,13 @@ function extractEdges(){
   // видимые рёбра: граница или излом
   const feats=[];
   for(const ent of eMap.values()){
-    const dt = ent.normals.length===2 ? ent.normals[0].dot(ent.normals[1]) : -1;
-    if(ent.normals.length!==2 || dt < FEATURE_COS
+    let dt = ent.normals.length===2 ? ent.normals[0].dot(ent.normals[1]) : -1;
+    // три и больше треугольника на ребре, но все в одной плоскости и смотрят
+    // в одну сторону (перекрывающиеся осколки врезки) — складки нет, ребро
+    // не видимое; стык листа с гранью (разные плоскости) остаётся ребром
+    if(ent.normals.length >= 3 && ent.normals.every(nn => nn.dot(ent.normals[0]) > 0.9999)) dt = 1;
+    const coplanarMany = ent.normals.length >= 3 && dt === 1;
+    if((ent.normals.length!==2 && !coplanarMany) || dt < FEATURE_COS
        || (hardEdges.length && dt < 0.99999 && onHardEdge(ent.A, ent.B))){ ent.feat = true; feats.push(ent); }
   }
   // Поверхности: треугольники, связанные невидимыми (гладкими) рёбрами.
@@ -3375,7 +3380,9 @@ circ_seg.addEventListener('keydown', e=>{
 function splitMeshByChord(A, B, wholeLine){
   // wholeLine === 'segment' — точный рез строго по отрезку (сегменты круга):
   // без продления за концы и без допусков против осколков
-  const exact = wholeLine === 'segment' || wholeLine === true;
+  // точные пороги — только сегментам круга; тексту и прямоугольнику точный
+  // рез на веерном дне кармана давал вырожденные осколки и щели
+  const exact = wholeLine === 'segment';
   if(wholeLine === 'segment') wholeLine = false;
   const posArr = mesh.geometry.attributes.position.array;
   const dir = new THREE.Vector3().subVectors(B, A);
@@ -3688,7 +3695,7 @@ function facePatchAt(triIdx){
       // ребро, у которого больше двух граней (грань, пришитая к краю другой:
       // залитый круг вокруг верхней грани куба), — видимое ребро и граница
       // области: квадрат и кольцо вокруг выбираются по отдельности
-      if(adj.length > 2) continue;
+      if(adj.length > 2 && adj.some(t2 => triNormalAt(t2).dot(n0) < 0.999)) continue;
       for(const t2 of adj){
         if(set.has(t2)) continue;
         if(triNormalAt(t2).dot(n0) < 0.999) continue;
