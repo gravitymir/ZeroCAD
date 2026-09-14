@@ -6665,8 +6665,10 @@ window.addEventListener('beforeunload', e=>{
 });
 document.getElementById('reset').addEventListener('click', ()=>{
   applyShapePreset(); // стартовая конфигурация текущей фигуры
-  yaw=-1.1; pitch=0.55;
-  rebuild(); // rebuild сам наведёт орбиту на центр модели
+  // тот же стартовый ракурс, что при открытии и у кнопки ⌂ ViewCube, с тем
+  // же плавным перелётом (раньше здесь был зашит старый угол yaw -1.1)
+  animateView(HOME_YAW, HOME_PITCH);
+  rebuild(); // rebuild сам наведёт орбиту на центр модели и выставит дистанцию
 });
 
 // кнопки вокруг ViewCube
