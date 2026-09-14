@@ -88,6 +88,12 @@
     border-radius:8px;padding:8px 12px;font-size:22px;line-height:1.5;color:var(--text);
     font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
   #dragTip[hidden]{display:none}
+  /* ошибка/предупреждение — свой блок: над открытым окном его же ширины,
+     не хватает места сверху — под окном; без окон — у курсора */
+  #warnBox{position:absolute;z-index:9;background:rgba(30,33,40,.95);border:1px solid #d9534f;
+    border-radius:8px;padding:8px 12px;font-size:22px;line-height:1.4;color:#ff6b6b;font-weight:700;
+    pointer-events:none;box-sizing:border-box}
+  #warnBox[hidden]{display:none}
   #dragTip .key{color:var(--accent2);font-weight:700}
   #dragTip .d{color:var(--accent2)}
   /* бейдж активного инструмента у курсора */
@@ -240,6 +246,7 @@
       <div class="prow ax ax-z">Z <input id="vz" type="number" step="0.1"> mm</div>
     </div>
     <div id="dragTip" hidden></div>
+    <div id="warnBox" hidden></div>
     <div id="toolTag" hidden></div>
     <div id="chordHint" hidden></div>
     <div id="divPopup" hidden>
@@ -1670,10 +1677,7 @@ function commitLinePoint(pos){
   else {
     if(!segmentOnSomeFace(lineStart, pos)){
       // линия ушла бы сквозь тело — не ставим, объясняем и ждём другой конец
-      tipAt({clientX: lastMX, clientY: lastMY},
-        '<span style="color:#d9534f;font-weight:700">Line must lie on a face</span>');
-      clearTimeout(commitLinePoint._warnT);
-      commitLinePoint._warnT = setTimeout(tipHide, 1600);
+      warnTip('Line must lie on a face');
       return;
     }
     pushUndo();
@@ -2145,10 +2149,48 @@ const tapeTool = {
 };
 
 // красное короткое сообщение у курсора
+// Ошибки и предупреждения. Если открыто окно или палитра, блок встаёт над
+// ним той же ширины (места сверху мало — под ним), иначе — у курсора.
+// Держится 2.8 с
+const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'bevPopup', 'rotPopup',
+  'arrPopup', 'txtPopup', 'divPopup', 'vpanel', 'popup'];
 function warnTip(msg){
-  tipAt({clientX: lastMX, clientY: lastMY}, '<span style="color:#d9534f;font-weight:700">' + msg + '</span>');
+  const box = document.getElementById('warnBox');
+  box.textContent = msg;
+  box.hidden = false;
+  delete box.dataset.placed;
+  placeWarn();
   clearTimeout(warnTip._t);
-  warnTip._t = setTimeout(tipHide, 1800);
+  warnTip._t = setTimeout(()=>{ box.hidden = true; }, 2800);
+  if(!warnTip._loop){ // пока виден — следит за окном (его ширина, перетаскивание)
+    warnTip._loop = true;
+    const tick = ()=>{ if(box.hidden){ warnTip._loop = false; return; } placeWarn(); requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  }
+}
+function placeWarn(){
+  const box = document.getElementById('warnBox');
+  const vr = view.getBoundingClientRect();
+  let anchor = null;
+  for(const id of WARN_ANCHORS){
+    const el = document.getElementById(id);
+    if(el && !el.hidden && el.offsetWidth > 0){ anchor = el.getBoundingClientRect(); break; }
+  }
+  if(anchor){
+    box.style.width = anchor.width + 'px';
+    box.style.whiteSpace = 'normal';
+    const h = box.offsetHeight, gap = 8;
+    let top = anchor.top - vr.top - h - gap;              // над окном
+    if(top < 0) top = anchor.bottom - vr.top + gap;       // сверху тесно — под окном
+    if(top + h > vr.height) top = Math.max(0, anchor.top - vr.top - h - gap); // и снизу тесно
+    box.style.left = (anchor.left - vr.left) + 'px';
+    box.style.top = top + 'px';
+  } else if(!box.dataset.placed || box.style.width){
+    box.style.width = ''; box.style.whiteSpace = 'nowrap';
+    box.style.left = Math.min(lastMX - vr.left + 16, vr.width - box.offsetWidth - 8) + 'px';
+    box.style.top = Math.min(lastMY - vr.top + 12, vr.height - box.offsetHeight - 8) + 'px';
+  }
+  box.dataset.placed = '1';
 }
 // нарисованная линия, на которой лежит отрезок A-B (линия может быть длиннее)
 function guideFor(A, B){
@@ -3883,12 +3925,7 @@ function eraseGuideSegment(A, B){
 }
 function deleteSelEdges(){
   if(!edgeSel.length) return;
-  const warn = msg => {
-    tipAt({clientX:lastMX, clientY:lastMY},
-      '<span style="color:#d9534f;font-weight:700">'+msg+'</span>');
-    clearTimeout(deleteSelEdges._t);
-    deleteSelEdges._t = setTimeout(tipHide, 2000);
-  };
+  const warn = msg => warnTip(msg);
   // сначала проверяем все сегменты: стираем либо всё, либо ничего
   const jobs = [];
   for(const s of edgeSel){
