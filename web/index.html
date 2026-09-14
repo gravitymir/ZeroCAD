@@ -130,8 +130,9 @@
   /* ширина окна постоянная: данные и подсказка — отдельными строками и не
      раздвигают окно, когда текст меняется вместе с числом сегментов */
   #bevPopup{width:300px;box-sizing:border-box}
-  #bevPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
-  #bevPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
+  #circPopup{width:330px;box-sizing:border-box}
+  #bevPopup .pinfo,#circPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
+  #bevPopup .phint,#circPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
   #arrPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
   #arrPopup #arr_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
@@ -224,9 +225,11 @@
     </div>
     <div id="circPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
-      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Circle</b></div>
-      <div class="prow">Segments <input id="circ_seg" type="number" step="1" min="3" max="360" value="24"></div>
-      <div class="prow" style="font-size:13px">click a center, then drag · type Ø + Enter</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Circle</b><span id="circ_state" style="font-size:14px">center</span></div>
+      <div class="pinfo" id="circ_info">&nbsp;</div>
+      <div class="pinfo" id="circ_typed" hidden></div>
+      <div class="prow">Segments <input id="circ_seg" type="number" step="1" min="3" max="360" value="24"><span id="circ_auto" style="font-size:13px;color:#6aff3d">auto</span></div>
+      <div class="phint" id="circ_hint">click a center, then drag or type Ø + Enter · segments follow the size until you change them · after placing: new segments or Ø + Enter redraw the circle</div>
     </div>
     <div id="txtPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
@@ -1960,7 +1963,17 @@ function analyzeBevelEdge(pts){
   const alpha = Math.acos(Math.max(-1, Math.min(1, s1.t.dot(s2.t))));
   if(alpha < 5*Math.PI/180 || alpha > 175*Math.PI/180) return {err: 'Faces are almost flat — nothing to bevel'};
   if(s1.t.dot(s2.n) > -1e-6) return {err: 'Only convex edges for now'};
-  return {A: A.clone(), B: B.clone(), e, L, t1: s1.t, n1: s1.n, t2: s2.t, n2: s2.n, alpha};
+  // Конец ребра упирается в стенку (грань смотрит назад, на ребро) — вырез
+  // там кончается. Иначе за концом воздух или соседнее скругление, укоротившее
+  // ребро: вырез продлевается, чтобы угол скруглился так же, как при
+  // скруглении обоих рёбер разом
+  const openEnd = (P, out) => {
+    for(const ti of (vertTris.get(keyOf(P.x, P.y, P.z)) || []))
+      if(triNormalAt(ti).dot(out) < -0.3) return false;
+    return true;
+  };
+  return {A: A.clone(), B: B.clone(), e, L, t1: s1.t, n1: s1.n, t2: s2.t, n2: s2.n, alpha,
+          openA: openEnd(A, e.clone().negate()), openB: openEnd(B, e)};
 }
 // профиль выреза в точке P ребра. Стороны вдоль граней вынесены на eps в
 // воздух: копланарные с гранями плоскости BSP разрезает ненадёжно
@@ -1985,9 +1998,14 @@ function bevelProfile(ed, P, size, segs){
     T2.clone().addScaledVector(ed.n2, eps),
     P.clone().addScaledVector(ed.n1, eps).addScaledVector(ed.n2, eps)]};
 }
+// запас выреза за концом ребра: у стенки — чуть-чуть, у открытого конца —
+// с перекрытием соседнего скругления того же порядка размера
+function bevelExt(ed, size, end){
+  return (end === 'A' ? ed.openA : ed.openB) ? 2*size + 1 : 0.02;
+}
 function bevelPrism(ed, size, segs){
-  const m = 1.0; // за концы ребра на 1 мм: у выпуклого угла там воздух
-  const P0 = ed.A.clone().addScaledVector(ed.e, -m);
+  const mA = bevelExt(ed, size, 'A'), mB = bevelExt(ed, size, 'B');
+  const P0 = ed.A.clone().addScaledVector(ed.e, -mA);
   let loop = bevelProfile(ed, P0, size, segs).loop;
   const nw = new THREE.Vector3(); // Ньюэлл: профиль должен обходиться против часовой вокруг e
   for(let i=0;i<loop.length;i++){
@@ -1995,7 +2013,7 @@ function bevelPrism(ed, size, segs){
     nw.x += (a.y-b.y)*(a.z+b.z); nw.y += (a.z-b.z)*(a.x+b.x); nw.z += (a.x-b.x)*(a.y+b.y);
   }
   if(nw.dot(ed.e) < 0) loop = loop.reverse();
-  return buildPrismTris(loop, ed.e, ed.L + 2*m, 0);
+  return buildPrismTris(loop, ed.e, ed.L + mA + mB, 0);
 }
 // Предпросмотр — сам результат на модели, как Bevel в Blender и Fillet во
 // Fusion: тело живьём срезается при каждом изменении окна (с короткой
@@ -2072,11 +2090,22 @@ const bevelTool = {
       for(const t of body) for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
       setMeshFromArray(new Float32Array(arr));
       healAll();
+      // стык нескольких скруглений: убрать вершины-разрезы на прямых и
+      // заново сшить Т-стыки, иначе грани расползаются на треугольники
+      if(collapseCollinearVertices()){
+        for(let i=0;i<40;i++){
+          const len0 = mesh.geometry.attributes.position.array.length;
+          cleanupMesh(); healTJunctions();
+          if(mesh.geometry.attributes.position.array.length === len0) break;
+        }
+        removeInvertedShells();
+      }
       // рёбра между гранями скругления — жёсткие: видны и выбираются при
       // любом числе сегментов. Отрезки с запасом за концы, как у выреза
       hardEdges = this.snap.hard.map(h=>({a: h.a.clone(), b: h.b.clone()}));
       if(segs >= 2) for(const ed of this.edges){
-        const P0 = ed.A.clone().addScaledVector(ed.e, -1), P1 = ed.B.clone().addScaledVector(ed.e, 1);
+        const P0 = ed.A.clone().addScaledVector(ed.e, -bevelExt(ed, size, 'A'));
+        const P1 = ed.B.clone().addScaledVector(ed.e, bevelExt(ed, size, 'B'));
         const a0 = bevelProfile(ed, P0, size, segs).arc, a1 = bevelProfile(ed, P1, size, segs).arc;
         for(let k=0;k<a0.length;k++) hardEdges.push({a: a0[k], b: a1[k]});
       }
@@ -2173,13 +2202,121 @@ const circPopup = document.getElementById('circPopup'),
 function circSegs(){
   return Math.max(3, Math.min(360, Math.round(+circ_seg.value || 24)));
 }
+// Густота по размеру: отклонение хорды от настоящей окружности не больше
+// 0.05 мм (как допуск сетки в экспорте Fusion/FreeCAD) — кратно 4, чтобы
+// вершины легли на оси круга; не меньше 12 (грани гладкие при сглаживании
+// 35°) и не больше 96 (булевым не тяжело)
+function autoCircSegs(R){
+  const a = Math.acos(Math.max(-1, 1 - 0.05 / Math.max(R, 0.05)));
+  const n = Math.ceil(Math.PI / Math.max(a, 1e-6) / 4) * 4;
+  return Math.max(12, Math.min(96, n));
+}
+let circAuto = true;   // сегменты следуют за размером, пока их не поменяли руками
+let circLast = null;   // только что поставленный круг: {center, plane, R, snap}
+let circPatch = null;  // область грани, на которой стоит центр
+function circLastValid(){ // правка возможна, пока после круга ничего не делали
+  return !!(circLast && undoStack.length && undoStack[undoStack.length-1] === circLast.snap);
+}
+// часть круга вне области грани, на которой стоит центр? Черчение в воздухе
+// разрешено (как вся плоскость эскиза во FreeCAD), окно лишь предупреждает
+function circleBeyondFace(){
+  if(!circleCenter || !circPatch || circleR <= 0.1) return false;
+  const pos = mesh.geometry.attributes.position.array;
+  const n = circlePlane;
+  const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize();
+  const v = n.clone().cross(u);
+  const tris = circPatch.tris.map(t => {
+    const o = t*9, r = [];
+    for(let j=0;j<3;j++) r.push([pos[o+j*3]*u.x + pos[o+j*3+1]*u.y + pos[o+j*3+2]*u.z,
+                                 pos[o+j*3]*v.x + pos[o+j*3+1]*v.y + pos[o+j*3+2]*v.z]);
+    return r;
+  });
+  const inside = (x, y) => tris.some(([a, b, c]) => {
+    const d = (b[1]-c[1])*(a[0]-c[0]) + (c[0]-b[0])*(a[1]-c[1]);
+    if(Math.abs(d) < 1e-12) return false;
+    const l1 = ((b[1]-c[1])*(x-c[0]) + (c[0]-b[0])*(y-c[1])) / d;
+    const l2 = ((c[1]-a[1])*(x-c[0]) + (a[0]-c[0])*(y-c[1])) / d;
+    const e = 1e-4;
+    return l1 >= -e && l2 >= -e && 1 - l1 - l2 >= -e;
+  });
+  for(const P of circlePoints(circleCenter, circlePlane, circleR))
+    if(!inside(P.dot(u), P.dot(v))) return true;
+  return false;
+}
+function updateCircInfo(snapKind, beyond){
+  const live = !!circleCenter;
+  const R = live ? circleR : (circLastValid() ? circLast.R : 0);
+  let h = R > 0.1
+    ? 'Ø <b>' + (2*R).toFixed(1) + '</b> mm · R ' + R.toFixed(1) + ' mm'
+    : '&nbsp;';
+  if(snapKind) h += ' · <span style="color:#6aff3d">' + snapKind + '</span>';
+  if(beyond) h += '<br><span style="color:#ffb347">beyond the face — part in the air</span>';
+  circ_info.innerHTML = h;
+  circ_typed.hidden = !circleRStr;
+  circ_typed.textContent = circleRStr ? 'typed Ø ' + circleRStr + ' mm (Enter)' : '';
+  circ_state.textContent = live ? 'size' : (R > 0.1 ? 'placed' : 'center');
+  circ_auto.hidden = !circAuto;
+  circ_hint.hidden = !hintsChk.checked;
+}
+// перерисовать только что поставленный круг с новым Ø или числом сегментов
+function recommitCircle(R){
+  if(!circLastValid()) return false;
+  const c = circLast;
+  undo(true);
+  circleCenter = c.center.clone(); circlePlane = c.plane.clone(); circleR = R;
+  commitCircle();
+  return true;
+}
+// Ориентиры плоскости (SketchUp показывает точки вывода): вершины, середины
+// рёбер и центры грани, лежащие в плоскости круга, плюс сами рёбра — видно,
+// куда можно поставить центр и до чего дотянуть радиус
+let planeTargets = [], planeTargetLines = null, planeTargetKey = '', planeTargetChains = null;
+function hidePlaneTargets(){
+  for(const m of planeTargets){ scene.remove(m); m.material.dispose(); }
+  planeTargets = [];
+  if(planeTargetLines){ scene.remove(planeTargetLines); planeTargetLines.geometry.dispose(); planeTargetLines = null; }
+  planeTargetKey = ''; planeTargetChains = null;
+}
+function showPlaneTargets(n, P0, patch){
+  const d = n.dot(P0);
+  const key = n.x.toFixed(3) + ',' + n.y.toFixed(3) + ',' + n.z.toFixed(3) + ',' + d.toFixed(2)
+    + '|' + (patch && patch.tris.length ? patch.tris[0] : -1) + '|' + guides.length;
+  if(key === planeTargetKey && planeTargetChains === chains) return;
+  hidePlaneTargets();
+  planeTargetKey = key; planeTargetChains = chains;
+  const inPl = P => Math.abs(n.dot(P) - d) < 0.01;
+  const seen = new Set();
+  const add = (P, color) => {
+    const k = keyOf(P.x, P.y, P.z) + '|' + color;
+    if(seen.has(k) || planeTargets.length >= 300) return;
+    seen.add(k);
+    const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color})));
+    m.position.copy(P); scene.add(m); planeTargets.push(m);
+  };
+  const lp = [];
+  for(const ch of chains){
+    if(!ch.pts.every(inPl)) continue;
+    for(let i=0;i+1<ch.pts.length;i++) lp.push(ch.pts[i], ch.pts[i+1]);
+    if(ch.closed || ch.curve) continue; // у окружности ориентир — центр
+    add(ch.pts[0], 0xe8ecf2); add(ch.pts[ch.pts.length-1], 0xe8ecf2);
+    add(chainPointAt(ch, ch.total/2), 0x3fd9c9);
+  }
+  for(const c of auxSnaps) if(inPl(c)) add(c, 0x3fd9c9);
+  if(patch && patch.centers) for(const c of patch.centers) add(c, 0x3fd9c9);
+  if(lp.length){
+    planeTargetLines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(lp),
+      new THREE.LineBasicMaterial({color: 0x3fd9c9}));
+    planeTargetLines.renderOrder = 2;
+    scene.add(planeTargetLines);
+  }
+}
 let circleRing = null;
 function killRing(){ if(circleRing){ scene.remove(circleRing); circleRing.geometry.dispose(); circleRing = null; } }
 function setCircleMode(on){
   circleMode = on;
   circleCenter = null; circlePlane = null; circleRStr = '';
-  killRing();
-  circleDown = null;
+  killRing(); hidePlaneTargets();
+  circleDown = null; circLast = null; circAuto = true;
   if(on){
     setLineMode(false); if(ppMode) setPPMode(false); if(activeTool) setActiveTool(null);
     setHover(null); tipHide();
@@ -2187,6 +2324,7 @@ function setCircleMode(on){
     circPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 330) + 'px';
     circPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 200) + 'px';
     circPopup.hidden = false;
+    updateCircInfo();
   }
   else { ghost.visible = false; tipHide(); circPopup.hidden = true; releaseToolInput(); }
   canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
@@ -2207,7 +2345,11 @@ function circlePoints(center, normal, R, n){
 function commitCircle(){
   if(!circleCenter || circleR < 0.3) return;
   pushUndo();
-  const pts = circlePoints(circleCenter, circlePlane, snapMM(circleR));
+  const snap = undoStack[undoStack.length-1];
+  // радиус не округляем: до вершины/середины он точный, свободный — уже 0.1
+  const R = Math.round(circleR * 1000) / 1000;
+  circLast = {center: circleCenter.clone(), plane: circlePlane.clone(), R, snap};
+  const pts = circlePoints(circleCenter, circlePlane, R);
   const cid = ++curveSeq; // все сегменты — одна кривая
   for(let i=0;i<pts.length;i++){
     const a = pts[i], b = pts[(i+1)%pts.length];
@@ -2215,9 +2357,10 @@ function commitCircle(){
     splitMeshByChord(a, b, true); // замкнутый контур: рез по всей линии хорды
   }
   extractEdges();
-  killRing();
+  killRing(); hidePlaneTargets(); ghost.visible = false;
   circleCenter = null; circleRStr = ''; circleDown = null;
   tipHide();
+  updateCircInfo();
 }
 
 // ---------- «3D Text» (G,T — 3D Text из SketchUp) ----------
@@ -2567,12 +2710,20 @@ arr_ok.addEventListener('click', ()=>{ if(activeTool === arrTool) arrTool.commit
 arr_cancel.addEventListener('click', ()=>setActiveTool(null));
 // густота круга меняется вживую: предпросмотр перерисовывается сразу
 circ_seg.addEventListener('input', ()=>{
-  if(!circleMode || !circleCenter || circleR <= 0.1) return;
+  if(!circleMode) return;
+  circAuto = false; // выбрал сам — больше не подставляем
+  if(!circleCenter){ recommitCircle(circLast ? circLast.R : 0); updateCircInfo(); return; }
+  updateCircInfo();
+  if(circleR <= 0.1) return;
   killRing();
   const cps = circlePoints(circleCenter, circlePlane, circleR);
   circleRing = new THREE.Line(new THREE.BufferGeometry().setFromPoints([...cps, cps[0]]),
     new THREE.LineBasicMaterial({color:C_EDGE}));
   scene.add(circleRing);
+});
+circ_seg.addEventListener('keydown', e=>{
+  if(e.key === 'Enter' || e.key === 'Escape'){ e.preventDefault(); releaseToolInput(); }
+  e.stopPropagation(); // цифры поля не уходят во ввод диаметра
 });
 // exPopup объявляется ниже — его грипп подключается там же
 
@@ -3796,7 +3947,11 @@ function csgPlane(a,b,c){
 }
 function csgPoly(verts){
   const p = csgPlane(verts[0], verts[1], verts[2]);
-  return p ? {v: verts, p} : null;
+  if(!p) return null;
+  // площадь исходного треугольника: мерило, насколько надёжна его плоскость
+  const a = new THREE.Vector3().subVectors(verts[1], verts[0])
+    .cross(new THREE.Vector3().subVectors(verts[2], verts[0])).length();
+  return {v: verts, p, a};
 }
 function csgSplit(plane, poly, cofront, coback, front, back){
   const COP=0, FRONT=1, BACK=2, SPAN=3;
@@ -3823,8 +3978,13 @@ function csgSplit(plane, poly, cofront, coback, front, back){
         f.push(v); b.push(v.clone());
       }
     }
-    if(f.length >= 3){ const p = csgPoly(f); if(p) front.push(p); }
-    if(b.length >= 3){ const p = csgPoly(b); if(p) back.push(p); }
+    // куски наследуют плоскость родителя: пересчёт по первым трём вершинам
+    // на тонком осколке (вершины почти на одной прямой) давал перекошенную
+    // плоскость, и такой осколок потом резал соседей криво — грани
+    // скругления расползались на треугольники с изломом в несколько градусов
+    const inherit = vs => ({v: vs, p: {n: poly.p.n.clone(), w: poly.p.w}, a: poly.a});
+    if(f.length >= 3) front.push(inherit(f));
+    if(b.length >= 3) back.push(inherit(b));
   }
 }
 function csgNode(polys){
@@ -3837,7 +3997,13 @@ function csgBuild(node, polys){
   while(stack.length){
     const [nd, ps] = stack.pop();
     if(!ps.length) continue;
-    if(!nd.plane) nd.plane = {n: ps[0].p.n.clone(), w: ps[0].p.w};
+    if(!nd.plane){
+      // секущая плоскость узла — от самого крупного многоугольника, а не от
+      // первого: плоскость осколка-иглы определена плохо и режет всё дерево
+      let best = ps[0];
+      for(const q of ps) if(q.a > best.a) best = q;
+      nd.plane = {n: best.p.n.clone(), w: best.p.w};
+    }
     const front=[], back=[];
     for(const p of ps) csgSplit(nd.plane, p, nd.polys, nd.polys, front, back);
     if(front.length){ if(!nd.front) nd.front = csgNode(); stack.push([nd.front, front]); }
@@ -4190,6 +4356,103 @@ function weldVertices(eps){
   }
   if(changed) mesh.geometry.attributes.position.needsUpdate = true;
   return changed;
+}
+// Лишние вершины на прямых: BSP оставляет точки разрезов посреди прямых
+// рёбер (стык скруглений), лечилка Т-стыков тянет к ним треугольники-иглы
+// через всю грань. Короткая сторона иглы — сотые мм, и округление 0.001
+// перекашивает её плоскость на градусы: грань распадается на треугольники
+// с разной заливкой. Вершина, лежащая между двумя соседями на одной прямой,
+// стягивается в ближайшего из них, если форма от этого не меняется: каждый
+// её треугольник остаётся в своей плоскости и не выворачивается. Концы
+// нарисованных линий и точки не трогаем — на них держатся области граней
+function collapseCollinearVertices(){
+  const TOL = 0.002;
+  const protectedPts = [];
+  for(const g of guides) protectedPts.push(g.a, g.b);
+  for(const a of anchors) protectedPts.push(a.pos);
+  const V = (arr, o) => new THREE.Vector3(arr[o], arr[o+1], arr[o+2]);
+  let total = 0;
+  for(let pass=0; pass<20; pass++){
+    const pos = mesh.geometry.attributes.position.array;
+    const nT = pos.length/9;
+    const verts = new Map(); // key -> {p, tris:[{t, j}]}
+    for(let t=0;t<nT;t++) for(let j=0;j<3;j++){
+      const o = t*9 + j*3;
+      const k = keyOf(pos[o], pos[o+1], pos[o+2]);
+      let e = verts.get(k);
+      if(!e){ e = {p: V(pos, o), tris: []}; verts.set(k, e); }
+      e.tris.push({t, j});
+    }
+    const touched = new Uint8Array(nT);
+    let n = 0;
+    for(const [vk, ve] of verts){
+      if(ve.tris.some(r => touched[r.t])) continue;
+      const v = ve.p;
+      if(protectedPts.some(P => P.distanceToSquared(v) < 1e-4)) continue;
+      // соседи
+      const nb = new Map();
+      for(const r of ve.tris) for(let j=0;j<3;j++){
+        if(j === r.j) continue;
+        const o = r.t*9 + j*3;
+        const k = keyOf(pos[o], pos[o+1], pos[o+2]);
+        if(!nb.has(k)) nb.set(k, verts.get(k).p);
+      }
+      const nbl = [...nb.entries()];
+      // пара соседей, между которыми v лежит на прямой
+      let bestU = null, bestD = null, bestLen = 0, uDist = Infinity;
+      for(let i=0;i<nbl.length;i++) for(let m=i+1;m<nbl.length;m++){
+        const A = nbl[i][1], B = nbl[m][1];
+        const AB = new THREE.Vector3().subVectors(B, A);
+        const L = AB.length();
+        if(L < 1e-6) continue;
+        const d = AB.clone().multiplyScalar(1/L);
+        const s = new THREE.Vector3().subVectors(v, A).dot(d);
+        if(s <= 1e-6 || s >= L - 1e-6) continue;
+        const F = A.clone().addScaledVector(d, s);
+        if(F.distanceTo(v) > TOL) continue;
+        if(L > bestLen){ bestLen = L; bestD = d; }
+        for(const [k, P] of [nbl[i], nbl[m]]){
+          const dist = P.distanceTo(v);
+          if(dist < uDist){ uDist = dist; bestU = k; }
+        }
+      }
+      if(!bestU) continue;
+      const u = nb.get(bestU), d = bestD;
+      const onLine = X => {
+        const w = new THREE.Vector3().subVectors(X, v);
+        return w.addScaledVector(d, -w.dot(d)).length() < TOL;
+      };
+      let ok = true;
+      for(const r of ve.tris){
+        const o = r.t*9;
+        const a = V(pos, o + ((r.j+1)%3)*3), b = V(pos, o + ((r.j+2)%3)*3);
+        const ka = keyOf(a.x,a.y,a.z), kb = keyOf(b.x,b.y,b.z);
+        if(ka === bestU || kb === bestU) continue; // треугольник на ребре v-u схлопнется
+        if(!onLine(a) && !onLine(b)){
+          // b должна лежать в плоскости, натянутой на прямую и точку a
+          const nrm = new THREE.Vector3().subVectors(a, v).cross(d);
+          const L = nrm.length();
+          if(L < 1e-9 || Math.abs(new THREE.Vector3().subVectors(b, v).dot(nrm)) / L > TOL){ ok = false; break; }
+        }
+        // обход не должен вывернуться
+        const nOld = new THREE.Vector3().subVectors(a, v).cross(new THREE.Vector3().subVectors(b, v));
+        const nNew = new THREE.Vector3().subVectors(a, u).cross(new THREE.Vector3().subVectors(b, u));
+        if(nNew.length() > 1e-6 && nOld.dot(nNew) <= 0){ ok = false; break; }
+      }
+      if(!ok) continue;
+      for(const r of ve.tris){
+        const o = r.t*9 + r.j*3;
+        pos[o] = u.x; pos[o+1] = u.y; pos[o+2] = u.z;
+        touched[r.t] = 1;
+      }
+      n++;
+    }
+    if(!n) break;
+    total += n;
+    mesh.geometry.attributes.position.needsUpdate = true;
+    cleanupMesh();
+  }
+  return total;
 }
 function healAll(){
   weldVertices(0.0015); // полтора кванта: сшивает только «расщеплённые» точки
@@ -5573,15 +5836,24 @@ window.addEventListener('keydown', e=>{
   // клавиши активного инструмента каркаса (размеры, Enter)
   if(activeTool && activeTool.key && document.activeElement.tagName!=='INPUT' && activeTool.key(e)) return;
   // ввод радиуса окружности цифрами
-  if(circleMode && circleCenter){
+  if(circleMode && (circleCenter || circLastValid()) && document.activeElement.tagName!=='INPUT'){
     if(/^[0-9]$/.test(e.key) || e.key==='.' || e.key===','){
-      circleRStr += (e.key===',' ? '.' : e.key); e.preventDefault(); return;
+      circleRStr += (e.key===',' ? '.' : e.key); updateCircInfo(); e.preventDefault(); return;
     }
-    if(e.key==='Backspace'){ circleRStr = circleRStr.slice(0,-1); e.preventDefault(); return; }
+    if(e.key==='Backspace' && circleRStr){ circleRStr = circleRStr.slice(0,-1); updateCircInfo(); e.preventDefault(); return; }
     if(e.key==='Enter'){
       const d = parseFloat(circleRStr); // с клавиатуры вводится диаметр
-      if(d > 0.4) circleR = d/2;
-      commitCircle(); e.preventDefault(); return;
+      circleRStr = '';
+      if(circleCenter){
+        if(d > 0.4) circleR = d/2;
+        if(circAuto) circ_seg.value = autoCircSegs(circleR);
+        commitCircle();
+      } else if(d > 0.4){ // Ø после постановки — перерисовать круг (как в SketchUp)
+        if(circAuto) circ_seg.value = autoCircSegs(d/2);
+        recommitCircle(d/2);
+      }
+      updateCircInfo();
+      e.preventDefault(); return;
     }
   }
   // G,Y — точка
@@ -5682,7 +5954,7 @@ window.addEventListener('keydown', e=>{
     if(pointMode) setPointMode(false);
     if(activeTool && !(activeTool.esc && activeTool.esc())) setActiveTool(null);
     if(circleMode){
-      if(circleCenter){ circleCenter=null; circleRStr=''; killRing(); }
+      if(circleCenter){ circleCenter=null; circleRStr=''; killRing(); hidePlaneTargets(); updateCircInfo(); }
       else setCircleMode(false);
     }
     if(lineMode){
@@ -5897,6 +6169,9 @@ canvas.addEventListener('pointerdown', e=>{
           circleCenter = pt.pos.clone().addScaledVector(circlePlane, -off);
           circleR = 0;
           circleDown = {x: e.clientX, y: e.clientY};
+          circPatch = facePatchCached(f.faceIndex);
+          circLast = null; circAuto = true; circleRStr = '';
+          updateCircInfo();
         }
       } else {
         commitCircle();
@@ -6405,6 +6680,9 @@ canvas.addEventListener('pointermove', e=>{
     if(!q.inside){ ghost.visible=false; killRing(); tipHide(); return; }
     if(!circleCenter){
       const pt = linePickPoint(q);
+      const hf = raycastFace(q);
+      if(hf) showPlaneTargets(triNormalAt(hf.faceIndex), hf.point, facePatchCached(hf.faceIndex));
+      else hidePlaneTargets();
       if(pt){
         ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
         ghost.position.copy(pt.pos); ghost.visible = true;
@@ -6414,13 +6692,45 @@ canvas.addEventListener('pointermove', e=>{
       } else { ghost.visible = false; tipHide(); }
       return;
     }
-    const f = raycastFace(q);
-    if(f){
-      const p = f.point.clone();
-      const off = new THREE.Vector3().subVectors(p, circleCenter).dot(circlePlane);
-      p.addScaledVector(circlePlane, -off);
-      circleR = Math.max(0.1, snapMM(p.distanceTo(circleCenter)));
+    tipHide(); // размеры — в окне круга, второй тултип не нужен
+    showPlaneTargets(circlePlane, circleCenter, circPatch);
+    // Магниты радиуса: вершина, середина ребра, центр, точка на ребре и
+    // перпендикуляр к ребру (круг, вписанный в квадрат, касается сторон)
+    let snapKind = '';
+    const pt = linePickPoint(q);
+    const inPlane = P => Math.abs(new THREE.Vector3().subVectors(P, circleCenter).dot(circlePlane)) < 0.05;
+    if(pt && pt.kind !== 'on face' && inPlane(pt.pos)){
+      let P = pt.pos, kind = kindLabel(pt.kind);
+      if(pt.kind === 'on edge' && pt.chain){
+        // основание перпендикуляра из центра на отрезок ребра под курсором
+        const ch = pt.chain;
+        let best = null;
+        for(let i=0;i+1<ch.pts.length;i++){
+          const A = ch.pts[i], B = ch.pts[i+1];
+          const AB = new THREE.Vector3().subVectors(B, A), L2 = AB.lengthSq();
+          if(L2 < 1e-12) continue;
+          const t = new THREE.Vector3().subVectors(circleCenter, A).dot(AB) / L2;
+          if(t < 0 || t > 1) continue;
+          const F = A.clone().addScaledVector(AB, t);
+          if(!best || F.distanceTo(P) < best.distanceTo(P)) best = F;
+        }
+        if(best){
+          const sc = projToQuad(best, q.cam, q.w, q.h, {x:0,y:0,z:0});
+          if(Math.hypot(sc.x - q.mx, sc.y - q.my) < 14){ P = best; kind = 'perpendicular'; }
+        }
+      }
+      circleR = Math.max(0.1, new THREE.Vector3().subVectors(P, circleCenter)
+        .addScaledVector(circlePlane, -new THREE.Vector3().subVectors(P, circleCenter).dot(circlePlane)).length());
+      ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' || kind==='perpendicular' ? C_VERT : C_EDGE);
+      ghost.position.copy(P); ghost.visible = true;
+      snapKind = kind === 'on edge' ? kind : 'to ' + kind;
+    } else {
+      ghost.visible = false;
+      // свободно — по плоскости круга (за краем грани тоже: черчение в воздухе)
+      const p = rayOnPlane(q, circlePlane, circleCenter);
+      if(p) circleR = Math.max(0.1, snapMM(p.distanceTo(circleCenter)));
     }
+    if(circAuto) circ_seg.value = autoCircSegs(circleR);
     killRing();
     if(circleR > 0.1){
       const cps = circlePoints(circleCenter, circlePlane, circleR);
@@ -6428,9 +6738,7 @@ canvas.addEventListener('pointermove', e=>{
       circleRing = new THREE.Line(rg, new THREE.LineBasicMaterial({color:C_EDGE}));
       scene.add(circleRing);
     }
-    tipAt(e, 'Circle <b>Ø ' + (circleR*2).toFixed(1) + '</b> mm'
-             + '<br>R ' + circleR.toFixed(1) + ' mm · ' + circSegs() + ' segments'
-             + (circleRStr ? '<br>typed Ø ' + circleRStr + ' mm (Enter)' : ''));
+    updateCircInfo(snapKind, circleBeyondFace());
     return;
   }
   if(lineMode){ // резинка и привязки в режиме «Линия»
@@ -6657,6 +6965,7 @@ function loop(t){
   for(const m of divDots) dot(m);
   for(const a of anchors) dot(a.marker);
   for(const d of hintDots) dot(d, 0.0035);
+  for(const m of planeTargets) dot(m, 0.0035);
   if(activeTool && activeTool.dots) for(const m of activeTool.dots) dot(m);
   if(txAnchor) dot(txAnchor, 0.0035);       // якорь текста (красный центр)
   if(txCenterDot) dot(txCenterDot, 0.0035); // центр грани (салатовый)
