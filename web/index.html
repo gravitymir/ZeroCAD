@@ -1467,7 +1467,33 @@ function showAngleMark(at, hostDir, newDir, len){
   scene.add(angleMark);
 }
 let curveSeq = 0;
+// Линия поверх линии не дублируется (как рёбра в SketchUp): участки нового
+// отрезка, уже накрытые существующими линиями на той же прямой, пропускаются —
+// остаётся старая линия, добавляются только куски за её пределами. Иначе в
+// одном месте копились две-пять линий и Del снимал их по одной
 function addGuide(A, B, noExt, curve){
+  const d = new THREE.Vector3().subVectors(B, A);
+  const L = d.length();
+  if(L < 1e-6) return;
+  const u = d.clone().multiplyScalar(1/L);
+  const perp = P => { const w = new THREE.Vector3().subVectors(P, A); return w.addScaledVector(u, -w.dot(u)).length(); };
+  const cov = [];
+  for(const g of guides){
+    if(perp(g.a) > 1e-3 || perp(g.b) > 1e-3) continue; // не на этой прямой
+    const t0 = new THREE.Vector3().subVectors(g.a, A).dot(u), t1 = new THREE.Vector3().subVectors(g.b, A).dot(u);
+    const lo = Math.max(0, Math.min(t0, t1)), hi = Math.min(L, Math.max(t0, t1));
+    if(hi - lo > 1e-6) cov.push([lo, hi]);
+  }
+  if(!cov.length){ addGuideRaw(A, B, noExt, curve); return; }
+  cov.sort((x, y) => x[0] - y[0]);
+  let cur = 0;
+  for(const [lo, hi] of cov){
+    if(lo - cur > 1e-3) addGuideRaw(A.clone().addScaledVector(u, cur), A.clone().addScaledVector(u, lo), noExt, curve);
+    cur = Math.max(cur, hi);
+  }
+  if(L - cur > 1e-3) addGuideRaw(A.clone().addScaledVector(u, cur), B.clone(), noExt, curve);
+}
+function addGuideRaw(A, B, noExt, curve){
   const g = new THREE.BufferGeometry().setFromPoints([A, B]);
   // сплошная, как обычные рёбра: нарисованная линия — настоящая геометрия
   // (пунктир и в SketchUp, и во FreeCAD — только у вспомогательных построений)
