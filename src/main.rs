@@ -19,11 +19,11 @@ const BUILD: &str = env!("ZEROCAD_BUILD");
 
 fn main() {
     // порт из переменной окружения PORT (например, для параллельного
-    // дебаг-запуска), по умолчанию 8777
+    // дебаг-запуска), по умолчанию 9000
     let port = std::env::var("PORT")
         .ok()
         .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(8777);
+        .unwrap_or(9000);
     let addr = format!("127.0.0.1:{port}");
     let listener = TcpListener::bind(&addr).unwrap_or_else(|e| {
         eprintln!("не удалось занять {addr}: {e}");
