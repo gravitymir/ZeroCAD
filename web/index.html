@@ -2917,7 +2917,7 @@ function commitCircle(){
   for(let i=0;i<pts.length;i++){
     const a = pts[i], b = pts[(i+1)%pts.length];
     addGuide(a, b, false, cid);
-    splitMeshByChord(a, b, true); // замкнутый контур: рез по всей линии хорды
+    splitMeshByChord(a, b, 'segment'); // сегмент круга: точно по отрезку, без продлений
   }
   cleanupMesh(); // врезка оставляет треугольники нулевой площади
   extractEdges();
@@ -3363,6 +3363,10 @@ circ_seg.addEventListener('keydown', e=>{
 // которые сегмент реально пересекает. Линии хорд выпуклого контура не
 // заходят внутрь него, лишние резы — снаружи и копланарны (невидимы).
 function splitMeshByChord(A, B, wholeLine){
+  // wholeLine === 'segment' — точный рез строго по отрезку (сегменты круга):
+  // без продления за концы и без допусков против осколков
+  const exact = wholeLine === 'segment' || wholeLine === true;
+  if(wholeLine === 'segment') wholeLine = false;
   const posArr = mesh.geometry.attributes.position.array;
   const dir = new THREE.Vector3().subVectors(B, A);
   const chordLen = dir.length();
@@ -3408,11 +3412,18 @@ function splitMeshByChord(A, B, wholeLine){
         if(segCross2(a2,b2,t2[e2],t2[(e2+1)%3])){ ok=true; break; }
       if(!ok) continue;
     }
-    const snapV = P => { for(const v of V) if(P.distanceTo(v) < 0.02) return v.clone(); return P; };
+    // Замкнутый контур (круг, прямоугольник, текст) режем точно: допуски
+    // против микроосколков оставляли вершины в сотых мм от хорды, край
+    // области выходил зубчатым — у отверстия появлялись «грани» по 0.2 мм²,
+    // а стенка кармана — полоски с лишними рёбрами. Осколки на плоской грани
+    // безвредны; одиночной линии допуски оставлены как были
+    const SNAP = exact ? 1e-4 : 0.02, NEAR = exact ? 1e-4 : 0.04;
+    const snapV = P => { for(const v of V) if(P.distanceTo(v) < SNAP) return v.clone(); return P; };
     const isVert = P => { for(let i=0;i<3;i++) if(P.distanceTo(V[i]) < 1e-6) return i; return -1; };
     // середина линии реза должна лежать внутри отрезка хорды — иначе это
     // продолжение линии за её концом (режет дольки вдоль, до вала)
-    const inChord = (t1,t2) => { const tm=(t1+t2)/2; return tm > -0.05 && tm < chordLen+0.05; };
+    const CT = exact ? 1e-4 : 0.05;
+    const inChord = (t1,t2) => { const tm=(t1+t2)/2; return tm > -CT && tm < chordLen+CT; };
     // конец хорды внутри треугольника (угол полилинии): обычный рез тут
     // отбрасывается правилом середины и угол остаётся рваным — ставим
     // вершину в конце хорды и дорезаем веером вокруг неё
@@ -3427,10 +3438,25 @@ function splitMeshByChord(A, B, wholeLine){
         for(let e2=0;e2<3;e2++){
           const a=t2[e2], b=t2[(e2+1)%3];
           const L=Math.hypot(b[0]-a[0],b[1]-a[1])||1;
-          if(orr2(a,b,p)*sgnT/L < 0.1) return false;
+          if(orr2(a,b,p)*sgnT/L < (exact ? 1e-4 : 0.1)) return false;
         }
         return true;
       };
+      // отрезок целиком внутри треугольника (короткий сегмент круга на
+      // большой грани): веер вокруг A, затем в том осколке, где лежит B, —
+      // веер вокруг B; ребро A-B появляется ровно по отрезку, без продлений
+      if(inside(to2e(A)) && inside(to2e(B))){
+        const b2 = to2e(B), fan = [];
+        for(let e2=0;e2<3;e2++){
+          const X = V[e2], Y = V[(e2+1)%3];
+          const x2 = to2e(X), y2 = to2e(Y), a2 = to2e(A);
+          const inXYA = orr2(x2,y2,b2)*sgnT >= 0 && orr2(y2,a2,b2)*sgnT >= 0 && orr2(a2,x2,b2)*sgnT >= 0;
+          if(inXYA) fan.push([X.clone(), Y.clone(), B.clone()], [Y.clone(), A.clone(), B.clone()], [A.clone(), X.clone(), B.clone()]);
+          else fan.push([X.clone(), Y.clone(), A.clone()]);
+        }
+        splitTris.set(ti, fan);
+        continue;
+      }
       let done = false;
       for(const E of [A, B]){
         if(!inside(to2e(E))) continue;
@@ -3442,10 +3468,10 @@ function splitMeshByChord(A, B, wholeLine){
           if(s[e2]*s[j2] < 0)
             cand.push({P:new THREE.Vector3().lerpVectors(V[e2],V[j2], d[e2]/(d[e2]-d[j2])), edge:e2});
         }
-        const inRange = cand.filter(c=>{ const t=tOf(c.P); return t>-0.05 && t<chordLen+0.05; });
+        const inRange = cand.filter(c=>{ const t=tOf(c.P); return t>-CT && t<chordLen+CT; });
         if(inRange.length !== 1) break;
         const P = snapV(inRange[0].P);
-        if(P.distanceTo(E) < 0.1) break; // хорда едва зацепила треугольник
+        if(P.distanceTo(E) < (exact ? 1e-4 : 0.1)) break; // хорда едва зацепила треугольник
         const edge = isVert(P) >= 0 ? -1 : inRange[0].edge;
         const fan = [];
         for(let e2=0;e2<3;e2++){
@@ -3467,7 +3493,7 @@ function splitMeshByChord(A, B, wholeLine){
       // вершина на линии, две другие по разные стороны
       const a0 = zeroIdx, b0 = (zeroIdx+1)%3, c0 = (zeroIdx+2)%3;
       // рез почти вдоль ребра даёт микроосколки — границей служит само ребро
-      if(Math.min(Math.abs(d[b0]), Math.abs(d[c0])) < 0.04) continue;
+      if(Math.min(Math.abs(d[b0]), Math.abs(d[c0])) < NEAR) continue;
       const P = snapV(new THREE.Vector3().lerpVectors(V[b0], V[c0], d[b0]/(d[b0]-d[c0])));
       if(isVert(P) >= 0) continue; // рез совпал с существующим ребром
       if(!wholeLine && !inChord(tOf(V[a0]), tOf(P))) continue;
@@ -3479,7 +3505,7 @@ function splitMeshByChord(A, B, wholeLine){
       else if(s[2] !== s[0] && s[2] !== s[1]) a0 = 2;
       const b0 = (a0+1)%3, c0 = (a0+2)%3;
       // рез, прижатый к вершине, оставил бы микроосколок
-      if(Math.abs(d[a0]) < 0.04) continue;
+      if(Math.abs(d[a0]) < NEAR) continue;
       const Pab = snapV(new THREE.Vector3().lerpVectors(V[a0], V[b0], d[a0]/(d[a0]-d[b0])));
       const Pca = snapV(new THREE.Vector3().lerpVectors(V[c0], V[a0], d[c0]/(d[c0]-d[a0])));
       if(!wholeLine && !inChord(tOf(Pab), tOf(Pca))) continue;
@@ -3596,7 +3622,9 @@ function facePatchAt(triIdx){
       // «обтекала» их; сегмент замкнутого контура (noExt: текст) — нет,
       // и проверяется он ТОЧНО (общее ребро на сегменте), а не эвристикой
       const A = to2(g.a.x,g.a.y,g.a.z), B = to2(g.b.x,g.b.y,g.b.z);
-      if(g.noExt) return {a:A, b:B, noExt:true};
+      // сегмент окружности — тоже замкнутый контур: продление на 1 мм за
+      // концы отрезало у соседних сегментов клинышки по 0.01–0.3 мм² вокруг
+      if(g.noExt || g.curve) return {a:A, b:B, noExt:true};
       const dx = B[0]-A[0], dy = B[1]-A[1];
       const L = Math.hypot(dx,dy) || 1;
       const ex = dx/L, ey = dy/L;
