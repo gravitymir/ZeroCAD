@@ -5050,6 +5050,18 @@ function exNoOp(){
   if(op === 'join' && inside === total) return 'join';
   return null;
 }
+// призма выдавливания не пересекает чужих поверхностей: точки по всей высоте
+// и чуть дальше торца — все внутри тела (вырез) или все снаружи (добавление)
+function exPrismClear(d){
+  if(!exLive || !exLive.probe || !exLive.samples || !d) return false;
+  const inside = d < 0;
+  for(const c of exLive.samples)
+    for(const f of [0.1, 0.35, 0.6, 0.85, 1]){
+      const t = f === 1 ? d + Math.sign(d) * 0.05 : d * f; // за торцом — ещё 0.05 мм
+      if(exPointInside(c.clone().addScaledVector(exLive.n, t)) !== inside) return false;
+    }
+  return true;
+}
 function paintExOp(){
   const cut = exOp() === 'cut';
   ex_ok.textContent = cut ? 'Cut' : 'Add';
@@ -5222,6 +5234,12 @@ function commitExtrude(){
   if(!exLive){ exPopup.hidden = true; return; }
   applyExtrudeLive(snapMM(+ex_val.value||0));
   const applied = exLive.applied, n = exLive.n.clone(), op = exOp(), sheet = exLive.sheet;
+  // Быстрый путь (грань просто сдвинулась, проверка по объёму) законен, только
+  // если призма выдавливания целиком в теле (вырез) или целиком снаружи
+  // (добавление). Иначе грань проходит сквозь другую поверхность: сквозной
+  // вырез −31 из дна толщиной 30 оставлял под дном «пробку» в 1 мм, а объём
+  // формально сходился
+  const prismClear = exPrismClear(applied);
   exLive = null;
   exPopup.hidden = true;
   if(!applied){ undo(true); return; } // нулевая высота: откат без повтора
@@ -5270,9 +5288,9 @@ function commitExtrude(){
     // рассчитан на встречные стенки и разрушает корректную сетку, если
     // грань просто опустилась
     cleanupMesh();
-    if(extrudeLooksClean(snap.pos, applied, patchArea)){ extractEdges(); return; }
+    if(prismClear && extrudeLooksClean(snap.pos, applied, patchArea)){ extractEdges(); return; }
     healAll();
-    if(extrudeLooksClean(snap.pos, applied, patchArea)){ extractEdges(); return; }
+    if(prismClear && extrudeLooksClean(snap.pos, applied, patchArea)){ extractEdges(); return; }
     // не сошлось — карман режет соседний материал, нужен честный BSP
     commitPocketCSG(snap, patchTris, n, -applied);
     return;
@@ -5281,7 +5299,7 @@ function commitExtrude(){
   // Если предпросмотр уже дал замкнутое тело с точным объёмом (обычный
   // подъём грани), берём его как есть: ни булевых, ни лечилок
   cleanupMesh();
-  if(patchTris && extrudeLooksClean(undoStack[undoStack.length-1].pos, applied, patchArea)){
+  if(patchTris && prismClear && extrudeLooksClean(undoStack[undoStack.length-1].pos, applied, patchArea)){
     extractEdges();
     return;
   }
