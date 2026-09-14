@@ -131,6 +131,8 @@
      раздвигают окно, когда текст меняется вместе с числом сегментов */
   #bevPopup{width:300px;box-sizing:border-box}
   #circPopup{width:330px;box-sizing:border-box}
+  #circPopup #circ_ok{flex:1;padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;
+    background:var(--accent2);color:#10131a;font-weight:700;border:1px solid var(--accent2)}
   /* Ø и R — отдельными строками, поля в один столбец с Segments */
   #circPopup .plab{display:inline-block;min-width:88px}
   #rotPopup{width:340px;box-sizing:border-box}
@@ -254,7 +256,8 @@
       <div class="pinfo" id="circ_info">&nbsp;</div>
       <div class="pinfo" id="circ_typed" hidden></div>
       <div class="prow"><span class="plab">Segments</span><input id="circ_seg" type="number" step="1" min="3" max="360" value="24"><span id="circ_auto" style="font-size:13px;color:#6aff3d">auto</span></div>
-      <div class="phint" id="circ_hint">click a center, then drag — or enter Ø/R first and click to place · segments follow the size until you change them · after placing: new Ø, R or segments redraw the circle</div>
+      <div class="phint" id="circ_hint">click a center, then drag — or enter Ø/R first and click to place · segments follow the size until you change them · after placing: new Ø, R or segments redraw the circle · OK — finish the tool</div>
+      <div class="prow" style="margin-top:8px"><button id="circ_ok">OK</button></div>
     </div>
     <div id="txtPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
@@ -3023,6 +3026,14 @@ for(const inp of [circ_d, circ_r]){
     e.stopPropagation(); // цифры поля не уходят во ввод диаметра с клавиатуры
   });
 }
+// OK — завершить инструмент (как Finish у Draft-инструментов FreeCAD):
+// растягиваемый или введённый круг ставится, затем выход из режима
+document.getElementById('circ_ok').addEventListener('click', ()=>{
+  if(!circleMode) return;
+  clearTimeout(circFieldT);
+  if(circleCenter && circleR > 0.3) commitCircle();
+  setCircleMode(false);
+});
 circ_seg.addEventListener('keydown', e=>{
   if(e.key === 'Enter' || e.key === 'Escape'){ e.preventDefault(); releaseToolInput(); }
   e.stopPropagation(); // цифры поля не уходят во ввод диаметра
