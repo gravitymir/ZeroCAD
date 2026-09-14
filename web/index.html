@@ -101,6 +101,7 @@
     font-size:22px;line-height:1.6;color:var(--muted);pointer-events:none}
   #chordHint[hidden]{display:none}
   #chordHint .key{color:var(--accent2);font-weight:700}
+  #exPopup .key{color:var(--accent2);font-weight:700}
   /* зажатый модификатор: в подписи клавиши белеет само слово Ctrl/Shift/Alt
      («Ctrl+click» — белое «Ctrl», «+click» остаётся синим) */
   body.ctrlHeld .key .mod-ctrl, body.shiftHeld .key .mod-shift,
@@ -277,7 +278,11 @@
       <div class="chgrip" title="Drag">⠿</div>
       <div class="prow" style="padding-right:44px">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
       <div class="prow">Operation <button id="ex_join" class="exop on">Join</button><button id="ex_cut" class="exop">Cut</button><span id="ex_auto" style="color:#6aff3d">auto</span></div>
-      <div class="prow phint" id="ex_hint" style="font-size:12px;max-width:300px;display:block">Join adds material, Cut removes it — in either direction (− goes against the face normal). Auto: into a solid — Cut, out of it or from a sheet — Join · short Ctrl — switch</div>
+      <div id="ex_hint" style="font-size:12px;max-width:320px;color:var(--muted);margin:4px 0">
+        <div><span class="key">Ctrl+drag</span> the face — Cut</div>
+        <div><span class="key">Ctrl</span> short tap — switch Join / Cut</div>
+        <div>Join adds, Cut removes — in either direction (− against the normal) · auto: into a solid — Cut, otherwise Join</div>
+      </div>
       <div class="prow" style="gap:10px"><button id="ex_ok">OK</button><button id="ex_cancel">Cancel</button></div>
     </div>
     <div id="vcnav">
@@ -3442,6 +3447,7 @@ let lastMX = 0, lastMY = 0;
 const CH_GRIP = '<div class="chgrip" title="Drag">⠿</div>';
 for(const box of [chordHint, dragTip])
   new MutationObserver(()=>markModifierWords(box)).observe(box, {childList: true, subtree: true});
+markModifierWords(document.getElementById('exPopup')); // постоянные подписи окна Extrude
 let chGripDrag = null;
 chordHint.addEventListener('pointerdown', ev=>{
   if(!ev.target.classList || !ev.target.classList.contains('chgrip')) return;
@@ -5289,7 +5295,48 @@ function curveInfo(id){
   for(const c of cs) segs += c.pts.length - 1;
   return {R: R/pts.length, ctr, segs};
 }
+// Что выбрано, если рёбер несколько (после B, Ctrl+клика): окружности —
+// нарисованная кривая целиком или замкнутое круглое ребро тела — считаются
+// одним объектом, остальное — отрезками/рёбрами. Шапка палитры говорит
+// «Circle», а не «Edge», и команды подбираются под состав выбора
+function describeEdgeSel(){
+  const byKey = new Map(chains.map(c => [edgeSelKey(c), c]));
+  const sel = edgeSel.map(s => byKey.get(s.key)).filter(Boolean);
+  const circles = [], rest = [];
+  const curveIds = new Set();
+  for(const c of sel){
+    if(c.curve){ curveIds.add(c.curve); continue; }
+    const arc = c.closed && c.pts.length >= 7 ? fitArc(c) : null;
+    if(arc) circles.push({R: arc.R, segs: c.pts.length - 1, body: true, ctr: arc.center});
+    else rest.push(c);
+  }
+  for(const id of curveIds){
+    const all = chains.filter(c => c.curve === id);
+    const inSel = sel.filter(c => c.curve === id);
+    if(inSel.length === all.length){ const ci = curveInfo(id); circles.push({R: ci.R, segs: ci.segs, body: false, ctr: ci.ctr}); }
+    else rest.push(...inSel);
+  }
+  // нарисованная окружность, лежащая ровно на круглом ребре тела (B по
+  // залитой грани берёт оба), — одна окружность: остаётся запись кривой
+  for(let i=circles.length-1;i>=0;i--){
+    const c = circles[i];
+    if(c.body && circles.some(o => !o.body && Math.abs(o.R - c.R) < 0.05 && o.ctr.distanceTo(c.ctr) < 0.05))
+      circles.splice(i, 1);
+  }
+  return {circles, rest, sel,
+    guidesOnly: sel.length > 0 && sel.every(c => c.isGuide),
+    bodyStraight: rest.length > 0 && !circles.length && rest.every(c => !c.isGuide && !c.closed)};
+}
 function showEdgePalette(ch){
+  const d = edgeSel.length ? describeEdgeSel() : null;
+  // одна нарисованная окружность и одно ребро/отрезок — прежняя палитра
+  // (у отрезка там концы с координатами); круглое ребро тела и составной
+  // выбор — сводка
+  const bodyCircle = d && d.circles.length === 1 && !d.rest.length && d.circles[0].body;
+  if(d && (bodyCircle || (edgeSel.length > 1 && !(d.circles.length === 1 && !d.rest.length)))){
+    showEdgeSelSummary(d);
+    return;
+  }
   tipHide();
   showSelEnds(ch && ch.curve ? null : ch); // концы — только у отрезка
   const arc = ch && fitArc(ch);
@@ -5335,6 +5382,46 @@ function showEdgePalette(ch){
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
   chordHint.hidden = false;
   clearTimeout(showChordHint._t); // палитра выбора живёт, пока выбор жив
+}
+function showEdgeSelSummary(d){
+  tipHide(); hideSelEnds();
+  const circ = c => 'Circle · <b>Ø ' + (2*c.R).toFixed(1) + '</b> mm · R ' + c.R.toFixed(1) + ' mm'
+    + ' · ' + c.segs + ' segments' + (c.body ? ' <span style="opacity:.6">(edge of the body)</span>' : '');
+  const len = d.rest.reduce((sum, c) => sum + c.total, 0);
+  const restLabel = n => {
+    const lines = d.rest.filter(c => c.isGuide).length, edges = n - lines;
+    return [edges ? edges + (edges === 1 ? ' edge' : ' edges') : '', lines ? lines + (lines === 1 ? ' line' : ' lines') : '']
+      .filter(Boolean).join(' + ');
+  };
+  let info;
+  if(d.circles.length === 1 && !d.rest.length) info = circ(d.circles[0]);
+  else {
+    const parts = d.circles.map(c => '<div>● ' + circ(c) + '</div>');
+    if(d.rest.length) parts.push('<div>● ' + restLabel(d.rest.length) + ' · ' + len.toFixed(1) + ' mm</div>');
+    info = 'Selection · ' + (d.circles.length + (d.rest.length ? 1 : 0) > 1 ? 'mixed' : restLabel(d.rest.length)) + parts.join('');
+  }
+  const lp = edgeSelLoop();
+  let fillRow = '';
+  if(lp){
+    const f = loopFillPieces(lp);
+    if(!(f && f.covered && !f.air.length))
+      fillRow = '<div><span class="key">F</span> — ' + (f && f.covered ? 'fill the empty part' : 'fill face') + '</div>';
+  }
+  const vr = view.getBoundingClientRect();
+  chordHint.innerHTML = CH_GRIP +
+    '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
+    (!hintsChk.checked ? '' :
+    fillRow +
+    (d.guidesOnly ? '<div><span class="key">Q</span> — rotate / copy</div>'
+      + '<div><span class="key">G,A</span> — polar array</div>' : '') +
+    (d.bodyStraight ? '<div><span class="key">Ctrl+B</span> — chamfer / fillet</div>' : '') +
+    '<div><span class="key">Del</span> — erase edges / lines</div>' +
+    '<div><span class="key">Ctrl+click</span> — add / remove</div>' +
+    '<div style="opacity:.55">Esc — deselect</div>');
+  chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 460) + 'px';
+  chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
+  chordHint.hidden = false;
+  clearTimeout(showChordHint._t);
 }
 function deleteSelAnchor(){
   if(!selAnchor) return;
@@ -6659,17 +6746,9 @@ canvas.addEventListener('pointerdown', e=>{
     }
     return;
   }
-  // окно выдавливания живёт при вращении и пустых кликах; закрывается оно
-  // только когда кликом ВЫБРАН другой объект (см. развязки кликов ниже).
-  // Ctrl+ЛКМ — временная орбита.
-  if(exLive && e.button === 0 && e.ctrlKey && q.is3D){
-    drag = {x: e.clientX, y: e.clientY, b: 1};
-    try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
-    return;
-  }
   // ЛКМ по самому лоскуту при открытом окне Extrude — тянуть мышью вдоль
   // нормали (значение в поле бежит следом); другая грань — обычный выбор
-  if(exLive && e.button === 0 && !e.ctrlKey && q.inside){
+  if(exLive && e.button === 0 && q.inside){
     const f = raycastFace(q);
     if(f){
       const o = f.faceIndex*9;
@@ -6681,12 +6760,23 @@ canvas.addEventListener('pointerdown', e=>{
           q0: {cam: q.cam, ox: q.ox, oy: q.oy, w: q.w, h: q.h},
           base: f.point.clone(), n: exLive.n.clone(),
           t0: rayLineParam(raycaster.ray, f.point, exLive.n),
-          v0: exLive.applied
+          v0: exLive.applied,
+          // Ctrl+тянуть — Cut, пока Ctrl зажат; отпустил — прежняя операция
+          ctrl: e.ctrlKey, prevOp: exOpManual
         };
+        if(e.ctrlKey) setExOp('cut');
         try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
         return;
       }
     }
+  }
+  // окно выдавливания живёт при вращении и пустых кликах; закрывается оно
+  // только когда кликом ВЫБРАН другой объект (см. развязки кликов ниже).
+  // Ctrl+ЛКМ мимо выдавливаемой грани — временная орбита (на грани — Cut)
+  if(exLive && e.button === 0 && e.ctrlKey && q.is3D){
+    drag = {x: e.clientX, y: e.clientY, b: 1};
+    try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+    return;
   }
   if(divCtx){ // окно деления открыто: камера свободна, инструменты — на паузе
     tipHide();
@@ -6858,6 +6948,7 @@ canvas.addEventListener('pointerdown', e=>{
     }
     if(e.ctrlKey && hover){ // Ctrl+клик: копим выбор рёбер (FreeCAD/SketchUp)
       toggleEdgeSel(hover.chain);
+      if(edgeSel.length) showEdgePalette(hover.chain); else hideChordHint(); // шапка — по составу
       return;
     }
     if(hover){
@@ -7084,6 +7175,10 @@ canvas.addEventListener('pointermove', e=>{
       }
     }
     return;
+  }
+  if(exFaceDrag && !!e.ctrlKey !== exFaceDrag.ctrl){
+    exFaceDrag.ctrl = !!e.ctrlKey;
+    setExOp(exFaceDrag.ctrl ? 'cut' : exFaceDrag.prevOp);
   }
   if(exFaceDrag){ // окно Extrude: лоскут едет за мышью, цифры — за ним
     const rc = canvas.getBoundingClientRect();
