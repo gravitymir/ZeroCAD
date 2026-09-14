@@ -101,9 +101,10 @@
     font-size:22px;line-height:1.6;color:var(--muted);pointer-events:none}
   #chordHint[hidden]{display:none}
   #chordHint .key{color:var(--accent2);font-weight:700}
-  /* зажатый модификатор — его строка в палитре/тултипе вспыхивает белым */
-  body.altHeld .key.kAlt, body.shiftHeld .key.kShift,
-  body.altHeld #dragTip .key.kAlt, body.shiftHeld #dragTip .key.kShift{color:#fff}
+  /* зажатый модификатор: в подписи клавиши белеет само слово Ctrl/Shift/Alt
+     («Ctrl+click» — белое «Ctrl», «+click» остаётся синим) */
+  body.ctrlHeld .key .mod-ctrl, body.shiftHeld .key .mod-shift,
+  body.altHeld .key .mod-alt{color:#fff}
   /* ручка перетаскивания окна (правый верхний угол) — общая для палитр
      и окон инструментов */
   .chgrip{position:absolute;top:2px;right:4px;cursor:move;
@@ -1136,16 +1137,33 @@ function updateOrbitCursor(on){
   canvas.style.cursor = on ? ORBIT_CURSOR : (toolActive ? 'crosshair' : '');
 }
 window.addEventListener('keydown', e=>{ if(e.key === 'Control') updateOrbitCursor(true); });
-// зажатые Alt/Shift подсвечивают свои строки в палитрах (класс на body)
-window.addEventListener('keydown', e=>{
-  if(e.key === 'Alt') document.body.classList.add('altHeld');
-  if(e.key === 'Shift') document.body.classList.add('shiftHeld');
-});
-window.addEventListener('keyup', e=>{
-  if(e.key === 'Alt') document.body.classList.remove('altHeld');
-  if(e.key === 'Shift') document.body.classList.remove('shiftHeld');
-});
-window.addEventListener('blur', ()=>document.body.classList.remove('altHeld','shiftHeld'));
+// Зажатые Ctrl/Shift/Alt: классы на body, по ним в бейджиках белеют слова
+// модификаторов. Состояние берём из флагов самого события (а не только из
+// нажатия клавиши) — так оно не «залипает», если клавишу отпустили вне окна
+function syncModifierClasses(e){
+  if(activeTool && activeTool.modChange) activeTool.modChange(e);
+  const b = document.body.classList;
+  b.toggle('ctrlHeld', !!(e.ctrlKey || e.metaKey));
+  b.toggle('shiftHeld', !!e.shiftKey);
+  b.toggle('altHeld', !!e.altKey);
+}
+for(const type of ['keydown', 'keyup', 'pointermove', 'pointerdown'])
+  window.addEventListener(type, syncModifierClasses, true);
+window.addEventListener('blur', ()=>document.body.classList.remove('ctrlHeld', 'shiftHeld', 'altHeld'));
+// слова модификаторов в подписях клавиш оборачиваем автоматически — любые
+// нынешние и будущие бейджики получают подсветку без правок в их коде
+const MOD_RE = /\b(Ctrl|Cmd|Shift|Alt)\b/g;
+const MOD_CLASS = {Ctrl: 'mod-ctrl', Cmd: 'mod-ctrl', Shift: 'mod-shift', Alt: 'mod-alt'};
+function markModifierWords(root){
+  for(const k of root.querySelectorAll('.key')){
+    if(k.querySelector('.mod')) continue;
+    const text = k.textContent;
+    MOD_RE.lastIndex = 0;
+    if(!MOD_RE.test(text)) continue;
+    const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    k.innerHTML = esc(text).replace(MOD_RE, w => '<span class="mod ' + MOD_CLASS[w] + '">' + w + '</span>');
+  }
+}
 window.addEventListener('keyup',   e=>{ if(e.key === 'Control') updateOrbitCursor(false); });
 window.addEventListener('blur', ()=>updateOrbitCursor(false)); // Alt+Tab с зажатым Ctrl
 
@@ -1449,20 +1467,38 @@ function showPickGhost(e, q, label){
 // R — Прямоугольник (Rectangle в SketchUp): угол → противоположный угол.
 // Лежит в плоскости грани по её осям; W,H + Enter — точный размер
 const rectTool = {
-  hud: 'RECTANGLE · click a corner, then drag or click · W,H + Enter · Esc — exit',
+  hud: 'RECTANGLE · click a corner, then drag or click · Ctrl — from center · Shift — square · W,H + Enter · Esc — exit',
   start: null, n: null, u: null, v: null, end: null, str: '', downAt: null, ring: null,
+  mods: {ctrl: false, shift: false},
+  // Ctrl — от центра (SketchUp), Shift — квадрат (Figma/Illustrator/Inkscape;
+  // в SketchUp Shift фиксирует подсказку Square). Держим, а не щёлкаем
+  modChange(e){
+    const m = {ctrl: !!(e.ctrlKey || e.metaKey), shift: !!e.shiftKey};
+    if(m.ctrl === this.mods.ctrl && m.shift === this.mods.shift) return;
+    this.mods = m;
+    if(this.start) this.preview();
+  },
+  wantsCtrlClick(){ return !!this.start; }, // Ctrl+клик ставит угол, а не крутит камеру
   on(){ this.reset(); },
   off(){ this.reset(); ghost.visible = false; tipHide(); },
   reset(){ this.start = null; this.end = null; this.str = ''; this.downAt = null; this.kill(); },
   kill(){ if(this.ring){ scene.remove(this.ring); this.ring.geometry.dispose(); this.ring = null; } },
   corners(){
     const d = new THREE.Vector3().subVectors(this.end, this.start);
-    const w = snapMM(d.dot(this.u)), h = snapMM(d.dot(this.v));
-    const A = this.start.clone();
-    const B = A.clone().addScaledVector(this.u, w);
-    const C = B.clone().addScaledVector(this.v, h);
-    const D = A.clone().addScaledVector(this.v, h);
-    return {A, B, C, D, w, h};
+    let w = snapMM(d.dot(this.u)), h = snapMM(d.dot(this.v));
+    if(this.mods.shift){ // квадрат: сторона по большему смещению, знаки — за курсором
+      const m = Math.max(Math.abs(w), Math.abs(h));
+      w = (Math.sign(w) || 1) * m; h = (Math.sign(h) || 1) * m;
+    }
+    // от центра: start — центр, курсор — угол, противоположный угол зеркален
+    const A = this.mods.ctrl
+      ? this.start.clone().addScaledVector(this.u, -w).addScaledVector(this.v, -h)
+      : this.start.clone();
+    const W = this.mods.ctrl ? 2 * w : w, H = this.mods.ctrl ? 2 * h : h;
+    const B = A.clone().addScaledVector(this.u, W);
+    const C = B.clone().addScaledVector(this.v, H);
+    const D = A.clone().addScaledVector(this.v, H);
+    return {A, B, C, D, w: W, h: H};
   },
   down(e, q){
     if(e.button !== 0 || !q.inside) return;
@@ -1477,6 +1513,7 @@ const rectTool = {
   },
   move(e, q){
     if(!q.inside){ ghost.visible = false; tipHide(); return; }
+    this.mods = {ctrl: !!(e.ctrlKey || e.metaKey), shift: !!e.shiftKey};
     if(!this.start){
       showPickGhost(e, q, 'Rectangle · corner: ');
       return;
@@ -1494,11 +1531,16 @@ const rectTool = {
         new THREE.LineBasicMaterial({color: C_EDGE}));
       scene.add(this.ring);
     }
+    const square = Math.abs(Math.abs(c.w) - Math.abs(c.h)) < 1e-6 && Math.abs(c.w) >= 0.1;
     tipAt(e || {clientX: lastMX, clientY: lastMY},
       'Rectangle <b><span style="color:' + axisCssOf(this.u) + '">' + Math.abs(c.w).toFixed(1)
       + '</span> × <span style="color:' + axisCssOf(this.v) + '">' + Math.abs(c.h).toFixed(1)
-      + '</span></b> mm<br>' + Math.abs(c.w * c.h).toFixed(1) + ' mm²'
-      + (this.str ? '<br>typed ' + this.str + ' mm (Enter)' : ''));
+      + '</span></b> mm' + (square ? ' · <span style="color:#6aff3d;font-weight:700">square</span>' : '')
+      + '<br>' + Math.abs(c.w * c.h).toFixed(1) + ' mm²'
+      + (this.mods.ctrl ? ' · <span style="color:#6aff3d;font-weight:700">from center</span>' : '')
+      + (this.str ? '<br>typed ' + this.str + ' mm (Enter)' : '')
+      + (!hintsChk.checked ? '' :
+        '<br><span class="key">Ctrl</span> — from center · <span class="key">Shift</span> — square'));
   },
   up(e){
     if(!this.start || !this.downAt) return false;
@@ -1521,7 +1563,9 @@ const rectTool = {
         // знак — туда, куда сейчас тянется прямоугольник
         const d = new THREE.Vector3().subVectors(this.end, this.start);
         const sw = Math.sign(d.dot(this.u)) || 1, sh = Math.sign(d.dot(this.v)) || 1;
-        this.end = this.start.clone().addScaledVector(this.u, sw * parts[0]).addScaledVector(this.v, sh * parts[1]);
+        const k = this.mods.ctrl ? 0.5 : 1; // от центра курсор задаёт половину
+        this.mods.shift = false;             // введённые числа — ровно как введены
+        this.end = this.start.clone().addScaledVector(this.u, sw * parts[0] * k).addScaledVector(this.v, sh * parts[1] * k);
         this.commit();
       }
       e.preventDefault(); return true;
@@ -2834,6 +2878,8 @@ const chordHint = document.getElementById('chordHint');
 let lastMX = 0, lastMY = 0;
 // палитры выбора не исчезают сами; ручка ⠿ — перетащить окно
 const CH_GRIP = '<div class="chgrip" title="Drag">⠿</div>';
+for(const box of [chordHint, dragTip])
+  new MutationObserver(()=>markModifierWords(box)).observe(box, {childList: true, subtree: true});
 let chGripDrag = null;
 chordHint.addEventListener('pointerdown', ev=>{
   if(!ev.target.classList || !ev.target.classList.contains('chgrip')) return;
@@ -4211,8 +4257,8 @@ function showVertexPalette(){
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     (!hintsChk.checked ? '' :
     '<div><span class="key">G,V</span> — edit X/Y/Z</div>' +
-    '<div><span class="key kAlt">Alt+drag</span> — ring</div>' +
-    '<div><span class="key kShift">Shift</span> — column</div>' +
+    '<div><span class="key">Alt+drag</span> — ring</div>' +
+    '<div><span class="key">Shift</span> — column</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
@@ -5682,7 +5728,8 @@ canvas.addEventListener('pointerdown', e=>{
   // в режимах инструментов камера не отнимается: ПКМ — сдвиг, СКМ — вращение,
   // а Ctrl+ЛКМ — временная орбита (отпустил — инструмент снова в руке)
   if((e.button === 2 || e.button === 1 || (e.button === 0 && e.ctrlKey))
-     && (pointMode || circleMode || lineMode || ppMode || textMode || activeTool) && q.is3D){
+     && (pointMode || circleMode || lineMode || ppMode || textMode || activeTool) && q.is3D
+     && !(activeTool && activeTool.wantsCtrlClick && activeTool.wantsCtrlClick())){
     drag = {x: e.clientX, y: e.clientY, b: e.button === 0 ? 1 : e.button};
     try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
     return;
@@ -6028,7 +6075,7 @@ canvas.addEventListener('pointermove', e=>{
       +'<br><span style="color:'+AXIS_CSS.x+';font-weight:600">X '+d.x.toFixed(1)+'</span>'
       +'<br><span style="color:'+AXIS_CSS.y+';font-weight:600">Y '+d.y.toFixed(1)+'</span>'
       +'<br><span style="color:'+AXIS_CSS.z+';font-weight:600">Z '+d.z.toFixed(1)+'</span>'
-      +'<br><span class="key kShift">Shift</span> — stick to axis');
+      +'<br><span class="key">Shift</span> — stick to axis');
     if(!modified){ modified=true; s_mod.textContent='yes'; }
     return;
   }
