@@ -2248,6 +2248,12 @@ function circleBeyondFace(){
     if(!inside(P.dot(u), P.dot(v))) return true;
   return false;
 }
+// привязка словами: сильные магниты — ярко-салатовым, как в тултипах
+function circSnapHtml(what, kind){
+  const strong = kind === 'vertex' || kind === 'midpoint' || kind === 'center' || kind === 'perpendicular';
+  return '<span style="color:var(--muted)">' + what + ' →</span> '
+    + (strong ? '<span style="color:#6aff3d;font-weight:700">' + kind + '</span>' : kind);
+}
 function updateCircInfo(snapKind, beyond){
   const live = !!circleCenter;
   const R = live ? circleR : (circLastValid() ? circLast.R : 0);
@@ -2258,9 +2264,9 @@ function updateCircInfo(snapKind, beyond){
     circ_r.value = shown > 0.1 ? +shown.toFixed(3) : '';
   }
   let h = '';
-  if(snapKind) h += '<span style="color:#6aff3d">' + snapKind + '</span>';
-  if(circRLock && live) h += '<span style="color:#6aff3d">typed size · Enter — place</span>';
-  if(!live && !(R > 0.1) && circFixedR) h += '<span style="color:#6aff3d">fixed size · click to place</span>';
+  if(snapKind) h += snapKind;
+  if(circRLock && live) h += (h ? ' · ' : '') + '<span style="color:#6aff3d">typed size · Enter — place</span>';
+  if(!live && circFixedR) h += (h ? ' · ' : '') + '<span style="color:#6aff3d">click — place Ø ' + (2*circFixedR).toFixed(1) + '</span>';
   if(beyond) h += (h ? '<br>' : '') + '<span style="color:#ffb347">beyond the face — part in the air</span>';
   if(!h) h = '&nbsp;';
   circ_info.innerHTML = h;
@@ -6771,14 +6777,17 @@ canvas.addEventListener('pointermove', e=>{
         ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
         ghost.position.copy(pt.pos); ghost.visible = true;
         showHintFor(pt);
-        tipAt(e, 'Circle · center: ' + kindLabel(pt.kind)
-                 + (circFixedR ? '<br>click — place Ø ' + (2*circFixedR).toFixed(1) : '<br>click, then drag — Ø'));
+        tipHide(); // привязка центра — в окне круга, тултип у курсора не нужен
+        updateCircInfo(circSnapHtml('Center', pt.kind));
         if(circFixedR && hf){
           const n = triNormalAt(hf.faceIndex);
           const off = new THREE.Vector3().subVectors(pt.pos, hf.point).dot(n);
           drawCircleRing(pt.pos.clone().addScaledVector(n, -off), n, circFixedR);
         } else killRing();
-      } else { ghost.visible = false; tipHide(); killRing(); }
+      } else {
+        ghost.visible = false; tipHide(); killRing();
+        updateCircInfo('<span style="color:var(--muted)">Center → move over the model</span>');
+      }
       return;
     }
     tipHide(); // размеры — в окне круга, второй тултип не нужен
@@ -6814,9 +6823,10 @@ canvas.addEventListener('pointermove', e=>{
         .addScaledVector(circlePlane, -new THREE.Vector3().subVectors(P, circleCenter).dot(circlePlane)).length());
       ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' || kind==='perpendicular' ? C_VERT : C_EDGE);
       ghost.position.copy(P); ghost.visible = true;
-      snapKind = kind === 'on edge' ? kind : 'to ' + kind;
+      snapKind = circSnapHtml('Radius', pt.kind === 'on edge' && kind !== 'perpendicular' ? 'on edge' : (kind === 'perpendicular' ? kind : pt.kind));
     } else {
       ghost.visible = false;
+      snapKind = circRLock ? '' : circSnapHtml('Radius', 'free · 0.1 mm step');
       // свободно — по плоскости круга (за краем грани тоже: черчение в воздухе)
       const p = rayOnPlane(q, circlePlane, circleCenter);
       if(p) circleR = Math.max(0.1, snapMM(p.distanceTo(circleCenter)));
