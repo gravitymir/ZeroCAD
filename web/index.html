@@ -1730,6 +1730,7 @@ const rectTool = {
   hud: 'RECTANGLE · click a corner, then drag or click · Ctrl — from center · Shift — square · W,H + Enter · Esc — exit',
   start: null, n: null, u: null, v: null, end: null, str: '', downAt: null, ring: null,
   mods: {ctrl: false, shift: false},
+  patch: null, snapKind: '', exact: false, // второй угол прилип к ориентиру — размер точный
   // Ctrl — от центра (SketchUp), Shift — квадрат (Figma/Illustrator/Inkscape;
   // в SketchUp Shift фиксирует подсказку Square). Держим, а не щёлкаем
   modChange(e){
@@ -1740,12 +1741,15 @@ const rectTool = {
   },
   wantsCtrlClick(){ return !!this.start; }, // Ctrl+клик ставит угол, а не крутит камеру
   on(){ this.reset(); },
-  off(){ this.reset(); ghost.visible = false; tipHide(); },
-  reset(){ this.start = null; this.end = null; this.str = ''; this.downAt = null; this.kill(); },
+  off(){ this.reset(); ghost.visible = false; tipHide(); hidePlaneTargets(); },
+  reset(){ this.start = null; this.end = null; this.str = ''; this.downAt = null; this.kill();
+    this.patch = null; this.snapKind = ''; this.exact = false; },
   kill(){ if(this.ring){ scene.remove(this.ring); this.ring.geometry.dispose(); this.ring = null; } },
   corners(){
     const d = new THREE.Vector3().subVectors(this.end, this.start);
-    let w = snapMM(d.dot(this.u)), h = snapMM(d.dot(this.v));
+    // прилипший угол — точный размер (до вершины/середины), свободный — шаг 0.1
+    const rnd = this.exact ? (x => Math.round(x*1000)/1000) : snapMM;
+    let w = rnd(d.dot(this.u)), h = rnd(d.dot(this.v));
     if(this.mods.shift){ // квадрат: сторона по большему смещению, знаки — за курсором
       const m = Math.max(Math.abs(w), Math.abs(h));
       w = (Math.sign(w) || 1) * m; h = (Math.sign(h) || 1) * m;
@@ -1766,6 +1770,8 @@ const rectTool = {
       const pk = pickOnFace(q);
       if(!pk) return;
       this.start = pk.pos; this.n = pk.n;
+      const hf = raycastFace(q);
+      this.patch = hf ? facePatchCached(hf.faceIndex) : null;
       const b = textBasis(pk.n); this.u = b.u; this.v = b.v;
       this.end = this.start.clone();
       this.downAt = {x: e.clientX, y: e.clientY};
@@ -1775,12 +1781,28 @@ const rectTool = {
     if(!q.inside){ ghost.visible = false; tipHide(); return; }
     this.mods = {ctrl: !!(e.ctrlKey || e.metaKey), shift: !!e.shiftKey};
     if(!this.start){
+      // ориентиры плоскости под курсором: вершины, середины рёбер, центры
+      const hf = raycastFace(q);
+      if(hf) showPlaneTargets(triNormalAt(hf.faceIndex), hf.point, facePatchCached(hf.faceIndex));
+      else hidePlaneTargets();
       showPickGhost(e, q, 'Rectangle · corner: ');
       return;
     }
-    ghost.visible = false;
-    const P = rayOnPlane(q, this.n, this.start);
-    if(P) this.end = P;
+    showPlaneTargets(this.n, this.start, this.patch);
+    // второй угол липнет к вершине, середине, центру, ребру этой плоскости
+    const pt = linePickPoint(q);
+    const off = pt ? new THREE.Vector3().subVectors(pt.pos, this.start).dot(this.n) : 1;
+    if(pt && pt.kind !== 'on face' && Math.abs(off) < 0.05){
+      this.end = pt.pos.clone().addScaledVector(this.n, -off);
+      this.snapKind = pt.kind; this.exact = pt.kind !== 'on edge';
+      ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
+      ghost.position.copy(this.end); ghost.visible = true;
+    } else {
+      ghost.visible = false;
+      this.snapKind = ''; this.exact = false;
+      const P = rayOnPlane(q, this.n, this.start);
+      if(P) this.end = P;
+    }
     this.preview(e);
   },
   preview(e){
@@ -1796,6 +1818,7 @@ const rectTool = {
       'Rectangle <b><span style="color:' + axisCssOf(this.u) + '">' + Math.abs(c.w).toFixed(1)
       + '</span> × <span style="color:' + axisCssOf(this.v) + '">' + Math.abs(c.h).toFixed(1)
       + '</span></b> mm' + (square ? ' · <span style="color:#6aff3d;font-weight:700">square</span>' : '')
+      + (this.snapKind ? '<br>' + circSnapHtml('Corner', this.snapKind) : '')
       + '<br>' + Math.abs(c.w * c.h).toFixed(1) + ' mm²'
       + (this.mods.ctrl ? ' · <span style="color:#6aff3d;font-weight:700">from center</span>' : '')
       + (this.str ? '<br>typed ' + this.str + ' mm (Enter)' : '')
@@ -1834,7 +1857,7 @@ const rectTool = {
   },
   esc(){ // первый Esc отменяет начатый прямоугольник, второй выходит
     if(!this.start) return false;
-    this.reset(); tipHide(); return true;
+    this.reset(); tipHide(); hidePlaneTargets(); ghost.visible = false; return true;
   },
   commit(){
     const c = this.corners();
@@ -1848,7 +1871,7 @@ const rectTool = {
     }
     if(!modified){ modified = true; s_mod.textContent = 'yes'; }
     extractEdges();
-    this.reset(); tipHide();
+    this.reset(); tipHide(); hidePlaneTargets(); ghost.visible = false;
   }
 };
 
