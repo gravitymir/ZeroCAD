@@ -506,7 +506,8 @@ const persp = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
 persp.up.set(0,0,1);
 // старт: камера внутри рабочего октанта (+X+Y+Z), смотрит на начало
 // координат «с внутренней стороны»: X уходит влево-вниз, Y вправо-вниз
-const HOME_YAW = Math.PI/4, HOME_PITCH = 0.55;
+// ровно как клик по углу (+X+Y+Z) ViewCube — изометрия: наклон atan(1/√2) ≈ 35.26°
+const HOME_YAW = Math.PI/4, HOME_PITCH = Math.atan2(1, Math.SQRT2);
 let camDist = 190, yaw = HOME_YAW, pitch = HOME_PITCH;
 const camTarget = new THREE.Vector3(20,20,15);
 
