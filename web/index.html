@@ -1494,6 +1494,14 @@ function linePickPoint(q){
   if(an) return {pos: an.pos.clone(), kind:'vertex'};
   const c = pickCorner(q);
   if(c) return {pos:c.pos.clone(), kind:'vertex'};
+  // начало координат — привязка, как вершина (SketchUp): от него можно
+  // начать рисовать и на пустой сцене
+  {
+    const O = new THREE.Vector3();
+    const P = projToQuad(O, q.cam, q.w, q.h, {x:0,y:0,z:0});
+    if(P.z < 1 && P.z > -1 && Math.hypot(P.x-q.mx, P.y-q.my) < 10 && !isOccluded(q, O))
+      return {pos: O, kind: 'origin'};
+  }
   // центры дуг/окружностей и центр плоской грани (Snap Center)
   {
     const P = {x:0,y:0,z:0};
@@ -1616,6 +1624,7 @@ function axisInfer(from, to){
 // отрезок лежит в плоскости какой-нибудь грани? Линия у нас — режущая
 // хорда, «сквозь материю» ей ходить незачем (в отличие от SketchUp)
 function segmentOnSomeFace(A, B){
+  if(Math.abs(A.z) < 0.01 && Math.abs(B.z) < 0.01) return true; // на земле XY
   const pos = mesh.geometry.attributes.position.array;
   for(let t=0;t<pos.length/9;t++){
     const n = triNormalAt(t);
@@ -1704,10 +1713,28 @@ function axisCssOf(dir){
 function pickOnFace(q){
   const f = raycastFace(q);
   const pt = linePickPoint(q);
-  if(!f || !pt) return null;
-  const n = triNormalAt(f.faceIndex);
-  const off = new THREE.Vector3().subVectors(pt.pos, f.point).dot(n);
-  return {pos: pt.pos.clone().addScaledVector(n, -off), n, kind: pt.kind, pt};
+  if(f && pt){
+    const n = triNormalAt(f.faceIndex);
+    const off = new THREE.Vector3().subVectors(pt.pos, f.point).dot(n);
+    return {pos: pt.pos.clone().addScaledVector(n, -off), n, kind: pt.kind, pt, faceIndex: f.faceIndex};
+  }
+  if(f) return null;
+  return pickGround(q, pt);
+}
+// Плоскость земли XY через начало координат (ground plane в SketchUp):
+// под курсором нет грани — рисуем на ней. Привязки, лежащие на земле
+// (начало координат, концы и середины линий), берутся точно, иначе шаг 0.1
+const GROUND_N = new THREE.Vector3(0, 0, 1);
+// маркер начала координат: салатовый, как «center» — точка, от которой
+// можно начать (виден, пока включён рисующий инструмент)
+const originMarker = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color: 0x6aff3d})));
+originMarker.visible = false; scene.add(originMarker);
+function pickGround(q, pt){
+  if(pt && Math.abs(pt.pos.z) < 0.01)
+    return {pos: new THREE.Vector3(pt.pos.x, pt.pos.y, 0), n: GROUND_N.clone(), kind: pt.kind, pt, ground: true};
+  const h = rayOnPlane(q, GROUND_N, new THREE.Vector3());
+  if(!h) return null;
+  return {pos: new THREE.Vector3(snapMM(h.x), snapMM(h.y), 0), n: GROUND_N.clone(), kind: 'on ground', ground: true};
 }
 // Плоскость выбранных линий/точки: два непараллельных сегмента задают
 // нормаль; одна прямая или точка — плоскость XY мира
@@ -1841,8 +1868,7 @@ const rectTool = {
       const pk = pickOnFace(q);
       if(!pk) return;
       this.start = pk.pos; this.n = pk.n;
-      const hf = raycastFace(q);
-      this.patch = hf ? facePatchCached(hf.faceIndex) : null;
+      this.patch = pk.faceIndex !== undefined ? facePatchCached(pk.faceIndex) : null;
       const b = textBasis(pk.n); this.u = b.u; this.v = b.v;
       this.end = this.start.clone();
       this.downAt = {x: e.clientX, y: e.clientY};
@@ -1860,12 +1886,16 @@ const rectTool = {
     this.mods = {ctrl: !!(e.ctrlKey || e.metaKey), shift: !!e.shiftKey};
     if(!this.start){
       // ориентиры плоскости под курсором: вершины, середины рёбер, центры
-      const hf = raycastFace(q);
-      if(hf) showPlaneTargets(triNormalAt(hf.faceIndex), hf.point, facePatchCached(hf.faceIndex));
+      const pk0 = pickOnFace(q);
+      if(pk0 && pk0.faceIndex !== undefined) showPlaneTargets(pk0.n, pk0.pos, facePatchCached(pk0.faceIndex));
+      else if(pk0) showPlaneTargets(GROUND_N, new THREE.Vector3(), null);
       else hidePlaneTargets();
-      const pt = showPickGhost(e, q, '');
+      if(pk0){
+        ghost.material.color.setHex(pk0.kind==='vertex' || pk0.kind==='center' || pk0.kind==='origin' ? C_VERT : C_EDGE);
+        ghost.position.copy(pk0.pos); ghost.visible = true;
+      } else ghost.visible = false;
       tipHide(); // привязка — в окне
-      this.snapKind = pt ? pt.kind : '';
+      this.snapKind = pk0 ? pk0.kind : '';
       // размер задан — призрак прямоугольника едет за курсором
       const pk = this.typed() ? pickOnFace(q) : null;
       if(pk){
@@ -2668,7 +2698,7 @@ function circleBeyondFace(center, normal, R){
 }
 // привязка словами: сильные магниты — ярко-салатовым, как в тултипах
 function circSnapHtml(what, kind){
-  const strong = kind === 'vertex' || kind === 'midpoint' || kind === 'center' || kind === 'perpendicular';
+  const strong = kind === 'vertex' || kind === 'midpoint' || kind === 'center' || kind === 'perpendicular' || kind === 'origin';
   return '<span style="color:var(--muted)">' + what + ' →</span> '
     + (strong ? '<span style="color:#6aff3d;font-weight:700">' + kind + '</span>' : kind);
 }
@@ -2743,6 +2773,7 @@ function showPlaneTargets(n, P0, patch){
   }
   for(const c of auxSnaps) if(inPl(c)) add(c, 0x3fd9c9);
   if(patch && patch.centers) for(const c of patch.centers) add(c, 0x3fd9c9);
+  if(inPl(new THREE.Vector3())) add(new THREE.Vector3(), 0x6aff3d); // начало координат
   if(lp.length){
     planeTargetLines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(lp),
       new THREE.LineBasicMaterial({color: 0x3fd9c9}));
@@ -5402,7 +5433,7 @@ const vpanel = document.getElementById('vpanel'), vp_t = document.getElementById
 
 // «в центре» — салатовым: пойманную середину/центр видно с одного взгляда
 function kindLabel(kind){
-  return (kind === 'midpoint' || kind === 'center')
+  return (kind === 'midpoint' || kind === 'center' || kind === 'origin')
     ? '<span style="color:#6aff3d;font-weight:700">' + kind + '</span>'
     : kind;
 }
@@ -7147,7 +7178,7 @@ canvas.addEventListener('pointerdown', e=>{
   }
   if(pointMode){ // режим «Точка»: клик ставит точку с привязками
     if(e.button===0 && q.inside){
-      const pt = linePickPoint(q);
+      const pt = linePickPoint(q) || pickGround(q);
       if(!pt) return;
       if(pt.kind === 'midpoint' && pt.chain){
         openDivide(pt.chain); // центр -> окошко деления с превью
@@ -7207,16 +7238,13 @@ canvas.addEventListener('pointerdown', e=>{
   if(circleMode){ // режим «Окружность»: центр, затем радиус
     if(e.button===0 && q.inside){
       if(!circleCenter){
-        const f = raycastFace(q);
-        const pt = linePickPoint(q);
-        if(f && pt){
-          circlePlane = triNormalAt(f.faceIndex);
-          // центр строго в плоскости грани
-          const off = new THREE.Vector3().subVectors(pt.pos, f.point).dot(circlePlane);
-          circleCenter = pt.pos.clone().addScaledVector(circlePlane, -off);
+        const pk = pickOnFace(q); // грань, а если под курсором её нет — земля XY
+        if(pk){
+          circlePlane = pk.n;
+          circleCenter = pk.pos.clone(); // центр строго в плоскости грани/земли
           circleR = 0;
           circleDown = {x: e.clientX, y: e.clientY};
-          circPatch = facePatchCached(f.faceIndex);
+          circPatch = pk.faceIndex !== undefined ? facePatchCached(pk.faceIndex) : null;
           circLast = null; circAuto = true; circleRStr = ''; circRLock = false;
           if(circFixedR){ // размер уже задан в окне — клик ставит круг
             circleR = circFixedR; circleDown = null;
@@ -7233,11 +7261,11 @@ canvas.addEventListener('pointerdown', e=>{
   }
   if(lineMode){ // режим «Линия»: клики ставят точки хорды
     if(e.button===0 && q.inside){
-      const pt = linePickPoint(q);
+      const pt = linePickPoint(q) || pickGround(q);
       if(pt){
         let pos = pt.pos;
         if(lineStart && e.shiftKey) pos = shiftOrtho(lineStart, pos).p; // 90°, как в Draft
-        else if(lineStart && (pt.kind==='on face' || pt.kind==='on edge')){
+        else if(lineStart && (pt.kind==='on face' || pt.kind==='on edge' || pt.kind==='on ground')){
           const a = axisInfer(lineStart, pos); // клик кладёт точку туда же, куда тянуло
           if(a) pos = a.p;
           else {
@@ -7658,7 +7686,7 @@ canvas.addEventListener('pointermove', e=>{
   if(placing) return;               // пока открыта всплывашка — наведение заморожено
   if(pointMode){ // призрак точки с привязками
     if(!q.inside){ ghost.visible=false; tipHide(); return; }
-    const pt = linePickPoint(q);
+    const pt = linePickPoint(q) || pickGround(q); // пусто под курсором — земля XY
     if(pt){
       ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
       ghost.position.copy(pt.pos); ghost.visible = true;
@@ -7680,21 +7708,18 @@ canvas.addEventListener('pointermove', e=>{
   if(circleMode){ // превью окружности за курсором
     if(!q.inside){ ghost.visible=false; killRing(); tipHide(); return; }
     if(!circleCenter){
-      const pt = linePickPoint(q);
-      const hf = raycastFace(q);
-      if(hf) showPlaneTargets(triNormalAt(hf.faceIndex), hf.point, facePatchCached(hf.faceIndex));
+      const pt = pickOnFace(q); // грань, а если под курсором её нет — земля XY
+      if(pt && pt.faceIndex !== undefined) showPlaneTargets(pt.n, pt.pos, facePatchCached(pt.faceIndex));
+      else if(pt) showPlaneTargets(GROUND_N, new THREE.Vector3(), null);
       else hidePlaneTargets();
       if(pt){
-        ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
+        ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' || pt.kind==='origin' ? C_VERT : C_EDGE);
         ghost.position.copy(pt.pos); ghost.visible = true;
-        showHintFor(pt);
+        if(pt.pt) showHintFor(pt.pt);
         tipHide(); // привязка центра — в окне круга, тултип у курсора не нужен
         updateCircInfo(circSnapHtml('Center', pt.kind));
-        if(circFixedR && hf){
-          const n = triNormalAt(hf.faceIndex);
-          const off = new THREE.Vector3().subVectors(pt.pos, hf.point).dot(n);
-          drawCircleRing(pt.pos.clone().addScaledVector(n, -off), n, circFixedR);
-        } else killRing();
+        if(circFixedR) drawCircleRing(pt.pos, pt.n, circFixedR);
+        else killRing();
       } else {
         ghost.visible = false; tipHide(); killRing();
         updateCircInfo('<span style="color:var(--muted)">Center → move over the model</span>');
@@ -7748,14 +7773,14 @@ canvas.addEventListener('pointermove', e=>{
   }
   if(lineMode){ // резинка и привязки в режиме «Линия»
     if(!q.inside){ ghost.visible=false; killRubber(); tipHide(); return; }
-    const pt = linePickPoint(q);
+    const pt = linePickPoint(q) || pickGround(q); // пусто под курсором — земля XY
     if(pt){
       let pos = pt.pos, note = kindLabel(pt.kind), axSnap = null, perpSnap = null;
       if(lineStart && e.shiftKey){ // Shift: строго 90° вдоль ближайшей оси (Draft)
         const o = shiftOrtho(lineStart, pos);
         pos = o.p;
         note += ' · 90° axis ' + o.ax.toUpperCase();
-      } else if(lineStart && (pt.kind==='on face' || pt.kind==='on edge')){
+      } else if(lineStart && (pt.kind==='on face' || pt.kind==='on edge' || pt.kind==='on ground')){
         axSnap = axisInfer(lineStart, pos); // сильные магниты (вершина/центр) важнее оси
         if(axSnap){ pos = axSnap.p; note = 'on axis ' + axSnap.ax.toUpperCase(); }
         else {
@@ -7958,6 +7983,9 @@ function loop(t){
   for(const m of divDots) dot(m);
   for(const a of anchors) dot(a.marker);
   for(const d of hintDots) dot(d, 0.0035);
+  // начало координат подсвечено, пока в руке рисующий инструмент
+  originMarker.visible = !!(pointMode || lineMode || circleMode || activeTool === rectTool);
+  dot(originMarker, 0.004);
   for(const m of planeTargets) dot(m, 0.0035);
   if(activeTool && activeTool.dots) for(const m of activeTool.dots) dot(m);
   if(txAnchor) dot(txAnchor, 0.0035);       // якорь текста (красный центр)
