@@ -1051,6 +1051,15 @@ function extractEdges(){
     const a = fitArc(ch);
     if(a) auxSnaps.push(a.center.clone());
   }
+  // центр нарисованной окружности: её сегменты — отдельные цепочки, дугу по
+  // одной не подогнать, поэтому центр берётся по всей кривой
+  {
+    const ids = new Set(guides.filter(g => g.curve).map(g => g.curve));
+    for(const id of ids){
+      const ci = curveInfo(id);
+      if(ci && !auxSnaps.some(c => c.distanceTo(ci.ctr) < 1e-3)) auxSnaps.push(ci.ctr.clone());
+    }
+  }
   cachedPatch = null; // меш изменился — кэш грани недействителен
   scheduleAutosave();
   if(typeof vGhost !== 'undefined') vGhost.visible = false;
@@ -2997,6 +3006,7 @@ function setTextMode(on){
     if(activeTool) setActiveTool(null);
     setHover(null); tipHide();
   }
+  if(!on){ hidePlaneTargets(); ghost.visible = false; }
   txb.hidden = !on;
   canvas.style.cursor = on ? 'crosshair' : '';
   updateToolTag();
@@ -3228,7 +3238,7 @@ function finishText(){ // OK: предпросмотр уже в модели и
 }
 function cancelText(){ // Esc/Cancel: предпросмотр откатываем
   if(txtLive){ undo(true); txtLive = null; }
-  hideTxAnchor(); hideTxCenter(); tipHide();
+  hideTxAnchor(); hideTxCenter(); tipHide(); hidePlaneTargets(); ghost.visible = false;
   closeTextPopup();
   if(textMode) setTextMode(false);
 }
@@ -7328,9 +7338,14 @@ canvas.addEventListener('pointerdown', e=>{
           return;
         }
         const n = triNormalAt(f.faceIndex);
-        // якорь = низ центра строки; снап к сетке 0.1 в плоскости грани
-        const P = new THREE.Vector3(snapMM(f.point.x), snapMM(f.point.y), snapMM(f.point.z));
-        P.addScaledVector(n, -new THREE.Vector3().subVectors(P, f.point).dot(n));
+        // якорь = центр текста: к вершине, середине ребра, центру грани или
+        // круга прилипает точно; иначе — сетка 0.1 в плоскости грани
+        const pk = pickOnFace(q); // предпросмотр уже снят — магниты по чистому телу
+        const snapped = pk && pk.faceIndex !== undefined && pk.kind !== 'on face';
+        const P = snapped ? pk.pos.clone()
+          : new THREE.Vector3(snapMM(f.point.x), snapMM(f.point.y), snapMM(f.point.z));
+        if(!snapped) P.addScaledVector(n, -new THREE.Vector3().subVectors(P, f.point).dot(n));
+        hidePlaneTargets(); ghost.visible = false; tipHide();
         const C = planeCentroid(n, f.point); // центр грани (чистой)
         const sn = txCenterSnap(P, n, C, p); // магнит к центру грани
         placeTextAt(txLeftFromAnchor(P, n, p), n);
@@ -7959,9 +7974,19 @@ canvas.addEventListener('pointermove', e=>{
     } else { ghost.visible=false; killRubber(); tipHide(); }
     return;
   }
-  if(textMode){ // 3D-текст: никаких жёлтых подсветок — только точка старта
+  if(textMode){ // 3D-текст: без жёлтых подсветок, но ориентиры и магниты — как у круга
     setHover(null); vGhost.visible = false; cornerHover = null;
     hidePatch(); ppPatch = null;
+    if(!txtLive && !txPlaceDrag){ // пока текст не поставлен: вершины, середины, центры
+      const pk = q.inside ? pickOnFace(q) : null;
+      if(pk && pk.faceIndex !== undefined){
+        showPlaneTargets(pk.n, pk.pos, facePatchCached(pk.faceIndex));
+        const strong = pk.kind !== 'on face';
+        ghost.material.color.setHex(pk.kind==='vertex' || pk.kind==='center' || pk.kind==='origin' ? C_VERT : C_EDGE);
+        ghost.position.copy(pk.pos); ghost.visible = strong;
+        if(strong) tipAt(e, 'Text anchor → ' + kindLabel(pk.kind)); else tipHide();
+      } else { hidePlaneTargets(); ghost.visible = false; tipHide(); }
+    }
     return;
   }
   // приоритет привязок как в SketchUp: вершина > середина > ребро
@@ -8098,7 +8123,7 @@ function loop(t){
   for(const a of anchors) dot(a.marker);
   for(const d of hintDots) dot(d, 0.0035);
   // начало координат подсвечено, пока в руке рисующий инструмент
-  originMarker.visible = !!(pointMode || lineMode || circleMode || activeTool === rectTool);
+  originMarker.visible = !!(pointMode || lineMode || circleMode || activeTool === rectTool || (textMode && !txtLive));
   dot(originMarker, 0.004);
   for(const m of planeTargets) dot(m, 0.0035);
   if(activeTool && activeTool.dots) for(const m of activeTool.dots) dot(m);
