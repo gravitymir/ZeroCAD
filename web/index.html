@@ -110,6 +110,7 @@
   .chgrip{position:absolute;top:2px;right:4px;cursor:move;
     pointer-events:auto;color:var(--muted);font-size:30px;line-height:1;padding:8px 12px}
   .chgrip:hover{color:var(--text)}
+  body.winDrag, body.winDrag *{cursor:move!important}
   #chordHint .chgrip:hover{color:var(--text)}
   /* окна точного выдавливания (E) и деления ребра точками */
   #exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup,#bevPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
@@ -125,6 +126,12 @@
   #bevPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
   #bevPopup #bev_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
+  #bevPopup #bev_ok:disabled{opacity:.45;cursor:default}
+  /* ширина окна постоянная: данные и подсказка — отдельными строками и не
+     раздвигают окно, когда текст меняется вместе с числом сегментов */
+  #bevPopup{width:300px;box-sizing:border-box}
+  #bevPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
+  #bevPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
   #arrPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
   #arrPopup #arr_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
@@ -203,7 +210,8 @@
       <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Bevel</b><span id="bev_kind" style="font-size:14px">chamfer</span></div>
       <div class="prow">Size <input id="bev_d" type="number" step="0.1" min="0.1" value="2"> mm</div>
       <div class="prow">Segments <input id="bev_s" type="number" step="1" min="1" max="32" value="1"></div>
-      <div class="prow" id="bev_info" style="font-size:13px">1 segment — chamfer · 2+ — round</div>
+      <div class="pinfo" id="bev_info"></div>
+      <div class="phint" id="bev_hint">1 segment — chamfer · 2+ — round</div>
       <div class="prow" style="gap:10px;margin-top:8px"><button id="bev_ok">OK</button><button id="bev_cancel">Cancel</button></div>
     </div>
     <div id="arrPopup" hidden>
@@ -617,6 +625,28 @@ function updateOrthoFrusta(){
 // 45° и стенки 90° — они по-прежнему видны. Ср. Auto Smooth 30° в Blender
 const FEATURE_COS = Math.cos(35*Math.PI/180);
 const CHAIN_COS   = Math.cos(25*Math.PI/180); // поворот >25° => конец цепочки («угол»)
+// Жёсткие рёбра (hard edges SketchUp, Mark Sharp в Blender): отрезки, рёбра
+// сетки на которых рисуются и выбираются, даже если грани сходятся под
+// малым углом. Их ставят операции, которые сами создают грани-сегменты —
+// скругление: рёбра между его гранями должны быть видны, а боковина
+// выдавленного круга остаётся гладкой. Хранятся в проекте и истории
+let hardEdges = [];      // [{a:Vector3, b:Vector3}]
+function onHardEdge(P, Q){
+  for(const h of hardEdges){
+    const d = new THREE.Vector3().subVectors(h.b, h.a);
+    const L2 = d.lengthSq();
+    if(L2 < 1e-12) continue;
+    let ok = true;
+    for(const X of [P, Q]){
+      const t = new THREE.Vector3().subVectors(X, h.a).dot(d) / L2;
+      if(t < -1e-4 || t > 1 + 1e-4){ ok = false; break; }
+      const F = h.a.clone().addScaledVector(d, t);
+      if(F.distanceToSquared(X) > 0.003*0.003){ ok = false; break; }
+    }
+    if(ok) return true;
+  }
+  return false;
+}
 const QP = 1000;                              // квантование координат, 0.001 мм
 
 let chains = [];     // {pts:[Vector3], cum:[мм], total, closed}
@@ -698,15 +728,31 @@ function extractEdges(){
       if(kp===kq) continue;
       const ek = kp<kq ? kp+'|'+kq : kq+'|'+kp;
       let ent = eMap.get(ek);
-      if(!ent){ ent={ka:kp,kb:kq,A:P.clone(),B:Q.clone(),normals:[]}; eMap.set(ek,ent); }
+      if(!ent){ ent={ka:kp,kb:kq,A:P.clone(),B:Q.clone(),normals:[],tris:[]}; eMap.set(ek,ent); }
       ent.normals.push(n.clone());
+      ent.tris.push(i/9);
     }
   }
   // видимые рёбра: граница или излом
   const feats=[];
   for(const ent of eMap.values()){
-    if(ent.normals.length!==2 || ent.normals[0].dot(ent.normals[1]) < FEATURE_COS) feats.push(ent);
+    const dt = ent.normals.length===2 ? ent.normals[0].dot(ent.normals[1]) : -1;
+    if(ent.normals.length!==2 || dt < FEATURE_COS
+       || (hardEdges.length && dt < 0.99999 && onHardEdge(ent.A, ent.B))){ ent.feat = true; feats.push(ent); }
   }
+  // Поверхности: треугольники, связанные невидимыми (гладкими) рёбрами.
+  // Ребро модели — граница между одной и той же парой поверхностей, как
+  // ребро B-rep во FreeCAD: где пара меняется (прямое ребро упёрлось в
+  // скругление, дуга перешла на следующую грань фаски), цепочка делится
+  const surf = new Int32Array(pos.length/9);
+  for(let i=0;i<surf.length;i++) surf[i] = i;
+  const root = i => { while(surf[i] !== i){ surf[i] = surf[surf[i]]; i = surf[i]; } return i; };
+  for(const ent of eMap.values()){
+    if(ent.feat || ent.tris.length !== 2) continue;
+    const r1 = root(ent.tris[0]), r2 = root(ent.tris[1]);
+    if(r1 !== r2) surf[r1] = r2;
+  }
+  for(const f of feats) f.faces = f.tris.map(root).sort((x,y)=>x-y).join(',');
   // смежность по вершинам
   const vMap = new Map();
   for(const f of feats){
@@ -729,6 +775,7 @@ function extractEdges(){
         if(adj.length!==2) break;               // развилка или обрыв — «угол» модели
         const nxt = adj.find(x=>!used.has(x));
         if(!nxt) break;
+        if(nxt.faces !== f0.faces) break;         // другая пара граней — другое ребро
         const o = other(nxt,endK);
         const endP  = side ? pts[pts.length-1] : pts[0];
         const prevP = side ? pts[pts.length-2] : pts[1];
@@ -1950,53 +1997,71 @@ function bevelPrism(ed, size, segs){
   if(nw.dot(ed.e) < 0) loop = loop.reverse();
   return buildPrismTris(loop, ed.e, ed.L + 2*m, 0);
 }
+// Предпросмотр — сам результат на модели, как Bevel в Blender и Fillet во
+// Fusion: тело живьём срезается при каждом изменении окна (с короткой
+// задержкой, чтобы ввод не тормозил), новые рёбра видны обычными рёбрами.
+// Cancel/Esc возвращает исходную сетку и выбор рёбер, OK лишь фиксирует
+// уже показанное и пишет одну запись истории
 const bevelTool = {
   hud: 'BEVEL · size and segments in the window (1 — chamfer, 2+ — round) · Enter — OK · Esc',
-  edges: [], ghosts: [],
+  edges: [], snap: null, shown: null, timer: 0, committed: false,
   on(){
     const vr = view.getBoundingClientRect();
     bevPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 340) + 'px';
     bevPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 320) + 'px';
     bevPopup.hidden = false;
-    this.preview();
+    bev_hint.hidden = !hintsChk.checked;
+    this.snap = takeSnapshot(); this.shown = null; this.committed = false;
+    this.selKeys = edgeSel.map(es=>es.key); // вернуть выбор, если отменят
+    for(const es of edgeSel) es.line.visible = false; // зелёные линии висели бы над срезом
+    hideSelEnds();
+    this.preview(true);
     bev_d.focus(); bev_d.select();
   },
-  off(){ killObjs(this.ghosts); bevPopup.hidden = true; releaseToolInput(); tipHide(); },
+  off(){
+    clearTimeout(this.timer);
+    bevPopup.hidden = true; releaseToolInput(); tipHide();
+    if(!this.committed && this.snap){ // отмена: исходная сетка и прежний выбор
+      if(this.shown){
+        setMeshFromArray(this.snap.pos);
+        hardEdges = this.snap.hard.map(h=>({a: h.a.clone(), b: h.b.clone()}));
+        extractEdges();
+        for(const ch of chains) if(this.selKeys.includes(edgeSelKey(ch))) toggleEdgeSel(ch);
+      }
+      for(const es of edgeSel) es.line.visible = true;
+    }
+    this.snap = null; this.shown = null;
+  },
   params(){
     return {size: Math.max(0.1, snapMM(+bev_d.value || 0.1)),
             segs: Math.max(1, Math.min(32, Math.round(+bev_s.value || 1)))};
   },
   down(){}, move(){},
   key(e){ if(e.key === 'Enter'){ this.commit(); e.preventDefault(); return true; } return false; },
-  preview(){
-    killObjs(this.ghosts);
+  preview(now){
     const {size, segs} = this.params();
-    const ed0 = this.edges[0];
-    if(segs === 1) bev_kind.textContent = 'chamfer';
-    else bev_kind.textContent = 'round';
+    const alpha = this.edges[0].alpha;
+    bev_kind.textContent = segs === 1 ? 'chamfer' : 'round';
+    bev_info.style.color = '';
     bev_info.textContent = segs === 1
-      ? '1 segment — chamfer · 2+ — round'
-      : 'R ' + (size * Math.tan(ed0.alpha / 2)).toFixed(2) + ' mm · ' + segs + ' segments';
-    const mat = new THREE.LineDashedMaterial({color: C_EDGE, dashSize: 1.0, gapSize: 0.6});
-    for(const ed of this.edges){
-      const a = bevelProfile(ed, ed.A, size, segs).arc, b = bevelProfile(ed, ed.B, size, segs).arc;
-      const pts = [];
-      for(let i=0;i+1<a.length;i++) pts.push(a[i], a[i+1], b[i], b[i+1]);
-      pts.push(a[0], b[0], a[a.length-1], b[b.length-1]); // новые рёбра вдоль граней
-      const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), mat);
-      l.computeLineDistances(); scene.add(l); this.ghosts.push(l);
-    }
+      ? 'Face ' + (2 * size * Math.sin(alpha / 2)).toFixed(2) + ' mm wide'
+      : 'R ' + (size * Math.tan(alpha / 2)).toFixed(2) + ' mm · ' + segs + ' segments';
+    clearTimeout(this.timer);
+    if(now) this.apply();
+    else this.timer = setTimeout(()=>{ if(activeTool === this) this.apply(); }, 120);
   },
-  commit(){
+  // срез тела по текущим параметрам (всегда от исходной сетки)
+  apply(){
     const {size, segs} = this.params();
-    pushUndo();
+    const sig = size + '|' + segs;
+    if(this.shown === sig) return true;
+    const base = this.snap.pos;
     try{
-      const pos = mesh.geometry.attributes.position.array;
       let body = [];
-      for(let i=0;i<pos.length;i+=9)
-        body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]),
-                   new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
-                   new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
+      for(let i=0;i<base.length;i+=9)
+        body.push([new THREE.Vector3(base[i],base[i+1],base[i+2]),
+                   new THREE.Vector3(base[i+3],base[i+4],base[i+5]),
+                   new THREE.Vector3(base[i+6],base[i+7],base[i+8])]);
       for(const ed of this.edges){
         body = csgSubtract(body, bevelPrism(ed, size, segs));
         body = body.filter(t => new THREE.Vector3().subVectors(t[1],t[0])
@@ -2007,16 +2072,38 @@ const bevelTool = {
       for(const t of body) for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
       setMeshFromArray(new Float32Array(arr));
       healAll();
+      // рёбра между гранями скругления — жёсткие: видны и выбираются при
+      // любом числе сегментов. Отрезки с запасом за концы, как у выреза
+      hardEdges = this.snap.hard.map(h=>({a: h.a.clone(), b: h.b.clone()}));
+      if(segs >= 2) for(const ed of this.edges){
+        const P0 = ed.A.clone().addScaledVector(ed.e, -1), P1 = ed.B.clone().addScaledVector(ed.e, 1);
+        const a0 = bevelProfile(ed, P0, size, segs).arc, a1 = bevelProfile(ed, P1, size, segs).arc;
+        for(let k=0;k<a0.length;k++) hardEdges.push({a: a0[k], b: a1[k]});
+      }
+      extractEdges();
+      this.shown = sig;
+      bev_ok.disabled = false;
+      return true;
     }catch(err){
       console.warn('bevel failed', err);
-      undo(true);
-      warnTip('Bevel failed on this edge');
-      return;
+      setMeshFromArray(base);
+      hardEdges = this.snap.hard.map(h=>({a: h.a.clone(), b: h.b.clone()}));
+      extractEdges();
+      this.shown = null;
+      bev_info.style.color = '#ff6b6b';
+      bev_info.textContent = 'Bevel failed with these values';
+      bev_ok.disabled = true;
+      return false;
     }
+  },
+  commit(){
+    clearTimeout(this.timer);
+    if(!this.apply()){ warnTip('Bevel failed on this edge'); return; }
+    pushHistory(this.snap); // одна запись: Ctrl+Z вернёт тело до фаски
+    this.committed = true;
     if(!modified){ modified = true; s_mod.textContent = 'yes'; }
     clearEdgeSel(); hideChordHint();
     setActiveTool(null);
-    extractEdges();
   }
 };
 
@@ -4478,7 +4565,8 @@ function takeSnapshot(){
     pos: mesh.geometry.attributes.position.array.slice(),
     anchors: anchors.map(a=>({pos: a.pos.clone(),
       bend: a.bend ? {pts0: a.bend.pts0.map(p=>p.clone()), t: a.bend.t.slice(), j: a.bend.j} : null})),
-    guides: guides.map(g=>({a: g.a.clone(), b: g.b.clone(), noExt: g.noExt, curve: g.curve}))
+    guides: guides.map(g=>({a: g.a.clone(), b: g.b.clone(), noExt: g.noExt, curve: g.curve})),
+    hard: hardEdges.map(h=>({a: h.a.clone(), b: h.b.clone()}))
   };
 }
 let redoStack = [];
@@ -4491,6 +4579,7 @@ function pushHistory(snap){
 function pushUndo(){ pushHistory(takeSnapshot()); }
 function applySnapshot(s){
   setMeshFromArray(s.pos);
+  hardEdges = (s.hard || []).map(h=>({a: h.a.clone(), b: h.b.clone()}));
   clearAnchors();
   for(const sa of s.anchors){ const a = makeAnchor(sa.pos); if(sa.bend) a.bend = sa.bend; }
   restoreGuides(s.guides || []);
@@ -4730,6 +4819,7 @@ async function rebuild(){
   setMeshFromArray(parseSTL(buf));
   closePopup(); clearAnchors(); deselect(); tipHide(); setPPMode(false); setLineMode(false);
   restoreGuides([]); curveSeq = 0; // новая модель — старые линии над ней не висят
+  hardEdges = [];
   modified = false; s_mod.textContent = 'no';
   undoStack = []; // новая серверная модель — новая точка отсчёта
   extractEdges();
@@ -4792,6 +4882,7 @@ function projectData(){
     params: {dia:+dia.value, thk:+thk.value, sh:+sh.value, n:+n.value, dep:+dep.value, w:+w.value},
     mesh: f32ToB64(mesh.geometry.attributes.position.array),
     guides: guides.map(g=>({a: v3a(g.a), b: v3a(g.b), noExt: !!g.noExt, curve: g.curve || 0})),
+    hard: hardEdges.map(h=>({a: v3a(h.a), b: v3a(h.b)})),
     anchors: anchors.map(a=>({pos: v3a(a.pos),
       bend: a.bend ? {pts0: a.bend.pts0.map(v3a), t: a.bend.t.slice(), j: a.bend.j} : null})),
     curveSeq,
@@ -4814,6 +4905,7 @@ function loadProjectData(d, name){
   if(activeTool) setActiveTool(null);
   hidePatch(); ppPatch = null; ppParts = null;
   setMeshFromArray(b64ToF32(d.mesh));
+  hardEdges = (d.hard || []).map(h=>({a: a3v(h.a), b: a3v(h.b)}));
   restoreGuides((d.guides || []).map(g=>({a: a3v(g.a), b: a3v(g.b), noExt: g.noExt, curve: g.curve})));
   clearAnchors();
   for(const sa of (d.anchors || [])){
@@ -4918,7 +5010,7 @@ function importSTL(buf, name){
   const arr = new Float32Array(raw.length);
   for(let i=0;i<raw.length;i++) arr[i] = q(raw[i]);
   setMeshFromArray(arr);
-  restoreGuides([]); clearAnchors(); curveSeq = 0;
+  restoreGuides([]); clearAnchors(); curveSeq = 0; hardEdges = [];
   cleanupMesh();
   modified = true; s_mod.textContent = 'yes';
   extractEdges();
@@ -6011,7 +6103,21 @@ canvas.addEventListener('pointerup', e=>{
   drag=null;
 });
 const raycaster = new THREE.Raycaster();
+// Окно тащат за ⠿ — курсор занят окном, а не моделью: захват указателя
+// на ручке, чтобы движение не доходило до сцены, и снятая подсветка
+let winDragging = false;
+window.addEventListener('pointerdown', ev=>{
+  if(!ev.target.classList || !ev.target.classList.contains('chgrip')) return;
+  winDragging = true;
+  try{ ev.target.setPointerCapture(ev.pointerId); }catch(_){}
+  setHover(null); hideHoverPatch(); hideHints();
+  if(typeof vGhost !== 'undefined') vGhost.visible = false;
+  document.body.classList.add('winDrag');
+}, true);
+for(const type of ['pointerup', 'pointercancel'])
+  window.addEventListener(type, ()=>{ winDragging = false; document.body.classList.remove('winDrag'); }, true);
 canvas.addEventListener('pointermove', e=>{
+  if(winDragging) return;
   const q = quadPos(e);
   lastMX = e.clientX; lastMY = e.clientY;
   hideHints(); // кандидаты пересчитываются каждым движением
