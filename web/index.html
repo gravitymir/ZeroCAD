@@ -117,6 +117,10 @@
     border-radius:10px;padding:10px 12px;font-size:12px}
   #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden],#arrPopup[hidden],#bevPopup[hidden],#rotPopup[hidden]{display:none}
   #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow,#arrPopup .prow,#bevPopup .prow,#rotPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
+  #exPopup .exop{padding:3px 12px;border-radius:6px;cursor:pointer;border:1px solid var(--line);
+    background:var(--panel2);color:var(--text);font-size:12px}
+  #exPopup .exop.on#ex_join{background:#2ecc40;border-color:#2ecc40;color:#10131a;font-weight:700}
+  #exPopup .exop.on#ex_cut{background:#ff4d4d;border-color:#ff4d4d;color:#10131a;font-weight:700}
   #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
   /* окно окружности (G,C): число сегментов, перетаскивается за ⠿ */
@@ -194,7 +198,7 @@
       <div class="vplabel quadonly" style="left:10px;top:calc(50% + 10px)"><b>+Y</b> view (side) · grid 1/10 mm</div>
       <div class="vplabel quadonly" style="left:calc(50% + 10px);top:calc(50% + 10px)"><b>+Z</b> view (top) · grid 1/10 mm</div>
     </div>
-    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>PUSH/PULL · drag a face · P/Esc — exit<br></b><b id="lnb" style="color:var(--accent2)" hidden>LINE · click–click — chord · type length + Enter · Esc/L — exit<br></b><b id="txb" style="color:var(--accent2)" hidden>3D TEXT · click a face — anchor (center of text) · Esc — cancel<br></b><b id="toolb" style="color:var(--accent2)" hidden></b><b id="fps"></b></div>
+    <div id="hud"><b id="lnb" style="color:var(--accent2)" hidden>LINE · click–click — chord · type length + Enter · Esc/L — exit<br></b><b id="txb" style="color:var(--accent2)" hidden>3D TEXT · click a face — anchor (center of text) · Esc — cancel<br></b><b id="toolb" style="color:var(--accent2)" hidden></b><b id="fps"></b></div>
     <div id="popup" hidden>
       <div class="prow">Edge: <b id="p_len">–</b> mm</div>
       <div class="prow">Offset: <input id="p_off" type="number" step="0.1" min="0"> mm</div>
@@ -272,6 +276,8 @@
     <div id="exPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
       <div class="prow" style="padding-right:44px">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
+      <div class="prow">Operation <button id="ex_join" class="exop on">Join</button><button id="ex_cut" class="exop">Cut</button><span id="ex_auto" style="color:#6aff3d">auto</span></div>
+      <div class="prow phint" id="ex_hint" style="font-size:12px;max-width:300px;display:block">Join adds material, Cut removes it — in either direction (− goes against the face normal). Auto: into a solid — Cut, out of it or from a sheet — Join · short Ctrl — switch</div>
       <div class="prow" style="gap:10px"><button id="ex_ok">OK</button><button id="ex_cancel">Cancel</button></div>
     </div>
     <div id="vcnav">
@@ -360,10 +366,10 @@
     also cut into the mesh,
     invoked with <b>L</b> or the FreeCAD Sketcher chord <b>G, L</b>;
     hold <b>Shift</b> to constrain strictly to the nearest axis (90°, Draft-style); but never exported to STL). A chord lying on a flat
-    face becomes a boundary for Push/Pull. Hold <b>Shift</b> to lock direction;
+    face becomes a boundary for Extrude. Hold <b>Shift</b> to lock direction;
     type a length + <b>Enter</b> for an exact point.
-    <b>P</b> — Push/Pull: hover a flat face, drag with LMB to extrude along its
-    normal (0.1 mm steps); walls follow. P or Esc exits any tool.
+    <b>E</b> — Extrude the selected face: drag it with LMB or type mm; Join adds,
+    Cut removes material in either direction. <b>P</b> — Point. Esc exits any tool.
     Hover an edge — it highlights and a point runs along it; click to open the
     popup (offset / radius, scroll wheel over the fields edits live), click the
     dot to place it and drag. Drag an edge body to move the whole edge
@@ -1295,8 +1301,8 @@ function showHintFor(pt){
   }
 }
 
-// ---------- «Тяни-толкай» (клавиша P, как Push/Pull в SketchUp) ----------
-let ppMode=false, ppPatch=null, ppHi=null, ppDrag=null;
+// ---------- выбор грани (лоскут) и его подсветка ----------
+let ppPatch=null, ppHi=null;
 // мультивыбор областей одной плоскости (Ctrl+клик, FreeCAD: несколько
 // профилей — одна экструзия); ppPatch становится композитом частей
 let ppParts = null;
@@ -1327,7 +1333,7 @@ const ORBIT_CURSOR = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(
   '<path d="M6.2 2.2l-1.9 5.6 5.8-1.2z" fill="#f2f5fa" stroke="#10131a" stroke-width="1"/>' +
   '</svg>') + '") 11 11, grab';
 function updateOrbitCursor(on){
-  const toolActive = pointMode || lineMode || circleMode || ppMode || !!activeTool
+  const toolActive = pointMode || lineMode || circleMode || !!activeTool
     || (typeof textMode !== 'undefined' && textMode);
   if(!toolActive && !exLive) return; // окно Extrude тоже даёт Ctrl-орбиту
   canvas.style.cursor = on ? ORBIT_CURSOR : (toolActive ? 'crosshair' : '');
@@ -1363,15 +1369,6 @@ function markModifierWords(root){
 window.addEventListener('keyup',   e=>{ if(e.key === 'Control') updateOrbitCursor(false); });
 window.addEventListener('blur', ()=>updateOrbitCursor(false)); // Alt+Tab с зажатым Ctrl
 
-const ppb = document.getElementById('ppb');
-function setPPMode(on){
-  ppMode = on;
-  ppb.hidden = !on;
-  ppPatch = null; hidePatch();
-  if(on){ setHover(null); tipHide(); if(lineMode) setLineMode(false); if(activeTool) setActiveTool(null); }
-  canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
-  updateToolTag();
-}
 
 // ---------- «Линия» (L — карандаш SketchUp): чертёжные хорды-направляющие ----------
 let lineMode=false, lineStart=null, lastLinePt=null, lineLenStr='', lineDirLock=null, chordG=0;
@@ -1384,7 +1381,7 @@ function setLineMode(on){
   lnb.hidden = !on;
   lineStart = null; lastLinePt = null; lineLenStr = ''; lineDirLock = null;
   killRubber();
-  if(on){ setHover(null); tipHide(); if(ppMode) setPPMode(false); if(activeTool) setActiveTool(null); }
+  if(on){ setHover(null); tipHide(); if(activeTool) setActiveTool(null); }
   else { ghost.visible = false; vGhost.visible = false; tipHide(); }
   canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
@@ -1597,7 +1594,7 @@ let pointMode = false;
 function setPointMode(on){
   pointMode = on;
   if(on){ setLineMode(false); if(typeof circleMode !== 'undefined' && circleMode) setCircleMode(false);
-          if(ppMode) setPPMode(false); if(activeTool) setActiveTool(null); setHover(null); tipHide(); }
+          if(activeTool) setActiveTool(null); setHover(null); tipHide(); }
   else { ghost.visible = false; tipHide(); }
   canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
@@ -1615,7 +1612,7 @@ function setActiveTool(tool){
   if(tool){
     setLineMode(false);
     if(circleMode) setCircleMode(false);
-    if(ppMode) setPPMode(false);
+    
     if(pointMode) setPointMode(false);
     if(textMode || txtLive) cancelText();
     setHover(null); tipHide();
@@ -1982,7 +1979,9 @@ window.addEventListener('keydown', e=>{
 window.addEventListener('pointerdown', ()=>{ ctrlTapDirty = true; }, true);
 window.addEventListener('keyup', e=>{
   if(e.key !== 'Control' || ctrlTapDirty) return;
-  if(performance.now() - ctrlTapT < 450 && activeTool && activeTool.ctrlTap) activeTool.ctrlTap();
+  if(performance.now() - ctrlTapT >= 450) return;
+  if(activeTool && activeTool.ctrlTap) activeTool.ctrlTap();
+  else if(typeof exLive !== 'undefined' && exLive) setExOp(exOp() === 'join' ? 'cut' : 'join');
 });
 
 // Q — Поворот (Rotate в SketchUp): центр → опорное направление → угол.
@@ -2567,7 +2566,7 @@ function setCircleMode(on){
   killRing(); hidePlaneTargets();
   circleDown = null; circLast = null; circAuto = true; circFixedR = null; circRLock = false;
   if(on){
-    setLineMode(false); if(ppMode) setPPMode(false); if(activeTool) setActiveTool(null);
+    setLineMode(false); if(activeTool) setActiveTool(null);
     setHover(null); tipHide();
     const vr = view.getBoundingClientRect();
     circPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 330) + 'px';
@@ -2677,7 +2676,7 @@ function setTextMode(on){
   if(on){
     setLineMode(false);
     if(circleMode) setCircleMode(false);
-    if(ppMode) setPPMode(false);
+    
     if(pointMode) setPointMode(false);
     if(activeTool) setActiveTool(null);
     setHover(null); tipHide();
@@ -3410,6 +3409,13 @@ function hidePatch(){
 function raycastFace(q){
   raycaster.setFromCamera({x:q.mx/q.w*2-1, y:-(q.my/q.h*2-1)}, q.cam);
   const hits = raycaster.intersectObject(mesh);
+  // Изнанка тоже выбирается: лист в воздухе (залитое кольцо) видно снизу
+  // серо-голубой изнанкой — по нему должно быть можно кликнуть. У замкнутого
+  // тела изнанка всегда дальше лицевой грани, поэтому берём ближайшее
+  if(backMesh){
+    const hb = raycaster.intersectObject(backMesh);
+    if(hb.length && (!hits.length || hb[0].distance < hits[0].distance - 1e-6)) return hb[0];
+  }
   return hits.length ? hits[0] : null;
 }
 // параметр t на прямой P+t*dir, ближайший к лучу
@@ -3463,8 +3469,7 @@ function showChordHint(){
     row('A', 'Polar array (selected lines)', edgeSel.some(x=>x.isGuide) || !!selAnchor) +
     row('C', 'Circle on face', true) +
     row('T', '3D Text on face', true) +
-    row('Y', 'Point (with snaps)', true) +
-    row('P', 'Push/Pull mode', true) +
+    row('Y', 'Point (with snaps) — also P', true) +
     row('E', 'Extrude face ±mm', !!ppPatch) +
     row('V', 'Vertex X/Y/Z', !!sel) +
     '<div style="opacity:.55">Esc — cancel</div>';
@@ -3498,8 +3503,7 @@ function showFacePalette(){
   chordHint.innerHTML = CH_GRIP +
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     (!hintsChk.checked ? '' :
-    '<div><span class="key">P</span> — Push/Pull (drag)</div>' +
-    '<div><span class="key">E</span> — Extrude by value</div>' +
+    '<div><span class="key">E</span> — Extrude: drag or value · Join / Cut</div>' +
     '<div><span class="key">Ctrl+click</span> — multi-select (same plane)</div>' +
     '<div><span class="key">B</span> — bounding edges</div>' +
     '<div><span class="key">Del</span> — Delete face</div>' +
@@ -3809,7 +3813,7 @@ function clearEdgeSel(){
 function toggleEdgeSel(ch){
   // выбор взаимоисключающий: рёбра снимают выбор грани и точки
   deselect();
-  if(!ppMode){ hidePatch(); ppPatch = null; }
+  hidePatch(); ppPatch = null;
   const key = edgeSelKey(ch);
   const i = edgeSel.findIndex(s=>s.key===key);
   if(i>=0){
@@ -4642,7 +4646,89 @@ function commitPocketCSG(snap, patchTris, n, depth){
   extractEdges();
 }
 
-let exLive = null; // живой предпросмотр: {idx, set, n, applied}
+let exLive = null; // живой предпросмотр: {idx, set, n, applied, sheet}
+// Операция выдавливания (Fusion 360: Join / Cut, знак расстояния — только
+// направление). Пока пользователь не выбрал сам, операция следует за
+// направлением: в тело — Cut, из тела — Join; у листа в воздухе — Join всегда
+let exOpManual = null; // null — авто, 'join' | 'cut' — выбрано руками
+function exOp(){
+  if(exOpManual) return exOpManual;
+  if(!exLive) return 'join';
+  return (!exLive.sheet && exLive.applied < 0) ? 'cut' : 'join';
+}
+function paintExOp(){
+  const op = exOp();
+  ex_join.classList.toggle('on', op === 'join');
+  ex_cut.classList.toggle('on', op === 'cut');
+  ex_auto.hidden = !!exOpManual;
+  ex_hint.hidden = !hintsChk.checked;
+}
+function setExOp(op){ exOpManual = op; paintExOp(); }
+// лоскут — лист (у контура есть открытое ребро: с обратной стороны воздух)?
+function patchIsSheet(pos, tris){
+  const cnt = new Map();
+  for(let t=0;t<pos.length/9;t++) for(let e=0;e<3;e++){
+    const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+    const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+    const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+    cnt.set(ek, (cnt.get(ek)||0) + 1);
+  }
+  for(const t of tris) for(let e=0;e<3;e++){
+    const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+    const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+    if(cnt.get(k1<k2 ? k1+'|'+k2 : k2+'|'+k1) === 1) return true;
+  }
+  return false;
+}
+// булева операция тела-снимка с призмой лоскута от lo до hi вдоль нормали
+// Булевы работают только с замкнутыми телами. Листы в воздухе (соседние
+// залитые куски) в них не участвуют: сетка делится на связные части по
+// рёбрам ровно с двумя гранями, части с открытым ребром откладываются и
+// возвращаются после операции как есть
+function splitClosedParts(pos){
+  const nT = pos.length/9;
+  const keyAt = o => keyOf(pos[o], pos[o+1], pos[o+2]);
+  const edges = new Map();
+  for(let t=0;t<nT;t++) for(let e=0;e<3;e++){
+    const k1 = keyAt(t*9+e*3), k2 = keyAt(t*9+((e+1)%3)*3);
+    const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+    let a = edges.get(ek); if(!a){ a = []; edges.set(ek, a); } a.push(t);
+  }
+  const par = new Int32Array(nT); for(let i=0;i<nT;i++) par[i] = i;
+  const root = i => { while(par[i] !== i){ par[i] = par[par[i]]; i = par[i]; } return i; };
+  for(const a of edges.values())
+    if(a.length === 2){ const r1 = root(a[0]), r2 = root(a[1]); if(r1 !== r2) par[r1] = r2; }
+  const open = new Set();
+  // открытое ребро (одна грань) — у листа; стык с тремя гранями — нет:
+  // так тело, к краю которого пришит лист, само остаётся замкнутым
+  for(const a of edges.values()) if(a.length === 1) open.add(root(a[0]));
+  const closed = [], aside = [];
+  for(let t=0;t<nT;t++){
+    const dst = open.has(root(t)) ? aside : closed;
+    for(let j=0;j<9;j++) dst.push(pos[t*9+j]);
+  }
+  return {closed, aside};
+}
+function extrudeCSG(basePos, prism, op){
+  const parts = splitClosedParts(basePos);
+  const cp = parts.closed;
+  const body = [];
+  for(let i=0;i<cp.length;i+=9)
+    body.push([new THREE.Vector3(cp[i],cp[i+1],cp[i+2]),
+               new THREE.Vector3(cp[i+3],cp[i+4],cp[i+5]),
+               new THREE.Vector3(cp[i+6],cp[i+7],cp[i+8])]);
+  const res = op === 'cut' ? (body.length ? csgSubtract(body, prism) : [])
+    : (body.length ? csgUnion(body, prism) : prism);
+  const q = x => Math.round(x*1000)/1000;
+  const arr = [...parts.aside];
+  for(const t of res){
+    const ar = new THREE.Vector3().subVectors(t[1],t[0]).cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
+    if(ar < 1e-6) continue;
+    for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
+  }
+  setMeshFromArray(new Float32Array(arr));
+  healAll();
+}
 let exFaceDrag = null; // грань тянут мышью при открытом окне Extrude
 // белая пунктирная ось выдавливания через центр грани (как ось в SketchUp)
 let exAxisLine = null;
@@ -4671,8 +4757,11 @@ function openExtrude(){
   }
   if(cn) c.multiplyScalar(1/cn);
   const ex = beginPatchExtrude(ppPatch);
+  const sheet = patchIsSheet(posC, ppPatch.tris);
   exLive = {idx: ex.idx, fac: ex.fac, set: new Set(ex.idx),
-            n: ppPatch.normal.clone(), applied: 0};
+            n: ppPatch.normal.clone(), applied: 0, sheet};
+  exOpManual = null;
+  paintExOp();
   showExAxis(c, ppPatch.normal);
   const vr = view.getBoundingClientRect();
   exPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 360) + 'px';
@@ -4704,6 +4793,7 @@ function applyExtrudeLive(v){
     exLive.applied = v;
   }
   paintExVal();
+  paintExOp();
 }
 function releaseToolInput(){ // фокус обратно на сцену
   const el = document.activeElement;
@@ -4713,12 +4803,46 @@ function commitExtrude(){
   hideExAxis(); exFaceDrag = null; releaseToolInput();
   if(!exLive){ exPopup.hidden = true; return; }
   applyExtrudeLive(snapMM(+ex_val.value||0));
-  const applied = exLive.applied, n = exLive.n.clone();
+  const applied = exLive.applied, n = exLive.n.clone(), op = exOp(), sheet = exLive.sheet;
   exLive = null;
   exPopup.hidden = true;
   if(!applied){ undo(true); return; } // нулевая высота: откат без повтора
   const patchTris = ppPatch ? ppPatch.tris.slice() : null;
   const patchArea = ppPatch ? (ppPatch.area || 0) : 0;
+  // --- операции, которых нет у «просто сдвинуть грань» ---
+  if(patchTris && (sheet || (op === 'join' && applied < 0) || (op === 'cut' && applied > 0))){
+    const snap = undoStack[undoStack.length-1];
+    hidePatch(); ppPatch = null;
+    const lo = Math.min(0, applied), hi = Math.max(0, applied);
+    try{
+      if(sheet && op === 'cut'){ // лист не тело: вычитать не из чего
+        undo(true); warnTip('Cut needs a solid — this face is a sheet in the air'); return;
+      }
+      if(sheet){
+        // Join от листа: лист убирается, а остальное тело объединяется с
+        // замкнутой призмой (лист становится её крышкой). Простая склейка не
+        // годится: стенки призмы ложатся на бока тела и оставляют щели
+        const drop = new Set(patchTris);
+        const keep = [];
+        for(let t=0;t<snap.pos.length/9;t++)
+          if(!drop.has(t)) for(let j=0;j<9;j++) keep.push(snap.pos[t*9+j]);
+        extrudeCSG(new Float32Array(keep), buildPatchPrismRange(snap.pos, patchTris, n, lo, hi), 'join');
+      } else if(op === 'join'){
+        // Join против нормали: союз с призмой под гранью (у сплошного тела
+        // там уже материал — Fusion в таком случае тоже ничего не меняет)
+        extrudeCSG(snap.pos, buildPatchPrismRange(snap.pos, patchTris, n, lo, hi), 'join');
+      } else {
+        // Cut по нормали: вычесть призму над гранью (срезает то, что над ней)
+        extrudeCSG(snap.pos, buildPatchPrismRange(snap.pos, patchTris, n, lo, hi), 'cut');
+      }
+      if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+    }catch(err){
+      console.warn('extrude operation failed', err);
+      undo(true); warnTip('Extrude failed'); return;
+    }
+    extractEdges();
+    return;
+  }
   if(applied < 0 && ppPatch){
     const snap = undoStack[undoStack.length-1];
     hidePatch(); ppPatch = null;
@@ -5003,6 +5127,8 @@ ex_val.addEventListener('keydown', e=>{
   e.stopPropagation();
 });
 document.getElementById('ex_ok').addEventListener('click', commitExtrude);
+ex_join.addEventListener('click', ()=>{ if(exLive) setExOp('join'); });
+ex_cut.addEventListener('click', ()=>{ if(exLive) setExOp('cut'); });
 document.getElementById('ex_cancel').addEventListener('click', closeExtrude);
 makeGripDrag(exPopup); // ручка ⠿ окна Extrude
 const vpanel = document.getElementById('vpanel'), vp_t = document.getElementById('vp_t'),
@@ -5033,7 +5159,7 @@ function updateVPanel(){
 function selectVertex(pos){
   selAnchor = null;
   clearEdgeSel(); // выбор взаимоисключающий
-  if(!ppMode){ hidePatch(); ppPatch = null; }
+  hidePatch(); ppPatch = null;
   sel = {pos: pos.clone()};
   selMarker.position.copy(sel.pos); selMarker.visible = true;
   updateVPanel(); // значения готовы, но окно ввода откроет только G,V
@@ -5087,7 +5213,7 @@ let selAnchor = null;
 function selectAnchor(a){
   deselect();
   clearEdgeSel();
-  if(!ppMode){ hidePatch(); ppPatch = null; }
+  hidePatch(); ppPatch = null;
   selAnchor = a;
   if(a.marker) a.marker.visible = false; // вместо неё — зелёный маркер выбора
   selMarker.position.copy(a.pos); selMarker.visible = true;
@@ -5555,7 +5681,7 @@ async function rebuild(){
   }catch(e){ return; }
   const buf = await res.arrayBuffer();
   setMeshFromArray(parseSTL(buf));
-  closePopup(); clearAnchors(); deselect(); tipHide(); setPPMode(false); setLineMode(false);
+  closePopup(); clearAnchors(); deselect(); tipHide(); setLineMode(false);
   restoreGuides([]); curveSeq = 0; // новая модель — старые линии над ней не висят
   hardEdges = [];
   modified = false; s_mod.textContent = 'no';
@@ -5636,7 +5762,7 @@ function loadProjectData(d, name){
   for(const id in (d.params || {})){ const el = document.getElementById(id); if(el) el.value = d.params[id]; }
   // закрыть всё, что висело от прежней модели
   closeExtrude(); cancelText(); closePopup(); deselect(); clearEdgeSel(); hideChordHint(); tipHide();
-  if(ppMode) setPPMode(false);
+  
   if(lineMode) setLineMode(false);
   if(circleMode) setCircleMode(false);
   if(pointMode) setPointMode(false);
@@ -5738,7 +5864,7 @@ function importSTL(buf, name){
   }
   pushUndo(); // Ctrl+Z вернёт прежнюю модель
   closeExtrude(); cancelText(); closePopup(); deselect(); clearEdgeSel(); hideChordHint(); tipHide();
-  if(ppMode) setPPMode(false);
+  
   if(lineMode) setLineMode(false);
   if(circleMode) setCircleMode(false);
   if(pointMode) setPointMode(false);
@@ -6217,11 +6343,12 @@ window.addEventListener('keydown', e=>{
              || {x:'x', y:'y', z:'z'}[e.key.toLowerCase()]; // как в Blender
     if(ax){ e.preventDefault(); setAxisLock(axisLock===ax ? null : ax); return; }
   }
+  // P — точка (Point): то же, что G,Y
   if((e.code==='KeyP' || e.key.toLowerCase()==='p') && !e.ctrlKey && !e.altKey && !e.metaKey
-     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+     && !dragPt && document.activeElement.tagName!=='INPUT'){
     e.preventDefault();
-    if(chordG){ chordG = 0; hideChordHint(); setPPMode(true); }
-    else setPPMode(!ppMode); // P — Push/Pull, как в SketchUp
+    if(chordG){ chordG = 0; hideChordHint(); }
+    setPointMode(!pointMode);
     return;
   }
   // Ctrl+B — фаска/скругление выбранных рёбер (Bevel в Blender)
@@ -6243,7 +6370,7 @@ window.addEventListener('keydown', e=>{
   }
   // Q — поворот/копия выбранных линий или точки (Rotate в SketchUp)
   if((e.code==='KeyQ' || e.key.toLowerCase()==='q') && !chordG && !e.ctrlKey && !e.altKey && !e.metaKey
-     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+     && !dragPt && document.activeElement.tagName!=='INPUT'){
     e.preventDefault();
     if(activeTool === rotTool){ setActiveTool(null); return; }
     const it = collectRotItems();
@@ -6263,14 +6390,14 @@ window.addEventListener('keydown', e=>{
   }
   // T — рулетка (Tape Measure в SketchUp); G,T занят 3D-текстом
   if((e.code==='KeyT' || e.key.toLowerCase()==='t') && !chordG && !e.ctrlKey && !e.altKey && !e.metaKey
-     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+     && !dragPt && document.activeElement.tagName!=='INPUT'){
     e.preventDefault();
     setActiveTool(activeTool === tapeTool ? null : tapeTool);
     return;
   }
   // R — прямоугольник (Rectangle в SketchUp); G,R — то же аккордом
   if((e.code==='KeyR' || e.key.toLowerCase()==='r') && !e.ctrlKey && !e.altKey && !e.metaKey
-     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+     && !dragPt && document.activeElement.tagName!=='INPUT'){
     e.preventDefault();
     if(chordG){ chordG = 0; hideChordHint(); setActiveTool(rectTool); }
     else setActiveTool(activeTool === rectTool ? null : rectTool);
@@ -6304,13 +6431,13 @@ window.addEventListener('keydown', e=>{
   }
   // аккорд G,… как в Sketcher (FreeCAD): G — «geometry», затем L или M
   if((e.code==='KeyG' || e.key.toLowerCase()==='g') && !e.ctrlKey && !e.altKey && !e.metaKey
-     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+     && !dragPt && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); chordG = performance.now();
     showChordHint();
     return;
   }
   if((e.code==='KeyL' || e.key.toLowerCase()==='l') && !e.ctrlKey && !e.altKey && !e.metaKey
-     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+     && !dragPt && document.activeElement.tagName!=='INPUT'){
     e.preventDefault();
     if(chordG && performance.now() - chordG < 3000){
       chordG = 0; hideChordHint();
@@ -6368,7 +6495,7 @@ window.addEventListener('keydown', e=>{
   }
   // F — залить выбранный контур, а без выбора — дырку (Fill, как F в Blender)
   if((e.code==='KeyF' || e.key.toLowerCase()==='f') && !e.ctrlKey && !e.altKey && !e.metaKey
-     && !dragPt && !ppDrag && !lineMode && !pointMode && !circleMode && !ppMode && !textMode && !activeTool
+     && !dragPt && !lineMode && !pointMode && !circleMode && !textMode && !activeTool
      && document.activeElement.tagName!=='INPUT'){
     const selLoop = edgeSelLoop();
     const fill = selLoop ? loopFillPieces(selLoop) : null;
@@ -6380,29 +6507,29 @@ window.addEventListener('keydown', e=>{
     if(fillHole()){ e.preventDefault(); return; }
   }
   // Del — стереть выбранное ребро/линию (Refine shape во FreeCAD)
-  if((e.key==='Delete' || e.key==='Backspace') && edgeSel.length && !dragPt && !ppDrag
+  if((e.key==='Delete' || e.key==='Backspace') && edgeSel.length && !dragPt
      && !edgeDrag && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); deleteSelEdges(); return;
   }
   // Del — удалить выбранную точку (как удаление вершины во FreeCAD)
-  if((e.key==='Delete' || e.key==='Backspace') && selAnchor && !dragPt && !ppDrag
+  if((e.key==='Delete' || e.key==='Backspace') && selAnchor && !dragPt
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); deleteSelAnchor(); return;
   }
   // B — рёбра границы выбранной грани (Bounding Edges в SketchUp)
   if((e.code==='KeyB' || e.key.toLowerCase()==='b') && !e.ctrlKey && !e.altKey && !e.metaKey
-     && ppPatch && !ppMode && !dragPt && !ppDrag
+     && ppPatch && !dragPt
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); selectPatchBoundary(); return;
   }
   // Del — удалить выбранную грань (как ластик по грани в SketchUp)
-  if((e.key==='Delete' || e.key==='Backspace') && ppPatch && !ppMode && !dragPt && !ppDrag
+  if((e.key==='Delete' || e.key==='Backspace') && ppPatch && !dragPt
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); deleteFacePatch(); return;
   }
   // E — точное выдавливание выбранной грани (Extrude, как E в Blender)
   if((e.code==='KeyE' || e.key.toLowerCase()==='e') && !e.ctrlKey && !e.altKey && !e.metaKey
-     && ppPatch && !ppMode && !lineMode && !dragPt && !ppDrag
+     && ppPatch && !lineMode && !dragPt
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); chordG = 0; hideChordHint(); openExtrude(); return;
   }
@@ -6415,7 +6542,7 @@ window.addEventListener('keydown', e=>{
   }
   // M — двигать выбранное ребро (Move, как в SketchUp)
   if((e.code==='KeyM' || e.key.toLowerCase()==='m') && !e.ctrlKey && !e.altKey && !e.metaKey
-     && !chordG && edgeSel.length === 1 && !dragPt && !ppDrag && !edgeDrag
+     && !chordG && edgeSel.length === 1 && !dragPt && !edgeDrag
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); startEdgeMove(); return;
   }
@@ -6441,7 +6568,7 @@ window.addEventListener('keydown', e=>{
     }
     closePopup(); deselect(); tipHide(); clearEdgeSel();
     hideChordHint(); chordG = 0; closeExtrude(); cancelDivide();
-    if(!ppMode){ hidePatch(); ppPatch=null; } // снять выбор плоскости
+    hidePatch(); ppPatch=null; // снять выбор плоскости
     if(pointMode) setPointMode(false);
     if(activeTool && !(activeTool.esc && activeTool.esc())) setActiveTool(null);
     if(circleMode){
@@ -6452,7 +6579,7 @@ window.addEventListener('keydown', e=>{
       if(lineStart){ lineStart=null; lastLinePt=null; lineLenStr=''; lineDirLock=null; killRubber(); }
       else setLineMode(false);
     }
-    if(ppMode) setPPMode(false);
+    
     cancelText(); // 3D-текст: откат предпросмотра и закрытие окна
   }
 });
@@ -6583,7 +6710,7 @@ canvas.addEventListener('pointerdown', e=>{
   // в режимах инструментов камера не отнимается: ПКМ — сдвиг, СКМ — вращение,
   // а Ctrl+ЛКМ — временная орбита (отпустил — инструмент снова в руке)
   if((e.button === 2 || e.button === 1 || (e.button === 0 && e.ctrlKey))
-     && (pointMode || circleMode || lineMode || ppMode || textMode || activeTool) && q.is3D
+     && (pointMode || circleMode || lineMode || textMode || activeTool) && q.is3D
      && !(activeTool && activeTool.wantsCtrlClick && activeTool.wantsCtrlClick())){
     drag = {x: e.clientX, y: e.clientY, b: e.button === 0 ? 1 : e.button};
     try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
@@ -6712,26 +6839,6 @@ canvas.addEventListener('pointerdown', e=>{
     }
     return;
   }
-  if(ppMode){ // режим «Тяни-толкай»: ЛКМ по грани начинает выдавливание
-    if(e.button===0){
-      const hf = raycastFace(q);
-      if(hf){
-        const patch = facePatchAt(hf.faceIndex);
-        const snap = takeSnapshot(); // до дублирования контура
-        const ex = beginPatchExtrude(patch); // соседи и линии не поедут
-        const pos = mesh.geometry.attributes.position.array;
-        const orig = new Float32Array(ex.idx.length*3);
-        ex.idx.forEach((bi,k)=>{ orig[k*3]=pos[bi]; orig[k*3+1]=pos[bi+1]; orig[k*3+2]=pos[bi+2]; });
-        ppDrag = {normal: patch.normal.clone(), base: hf.point.clone(),
-                  idx: ex.idx, fac: ex.fac, orig, lastT: 0, patchTris: patch.tris,
-                  q0:{cam:q.cam, ox:q.ox, oy:q.oy, w:q.w, h:q.h},
-                  snap, snapPushed:false};
-        ppPatch = patch; showPatch(patch);
-        try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
-      }
-    }
-    return; // орбиты в режиме P нет — выход по P/Esc
-  }
   if(e.button===0){
     const a = anchorAt(q);
     const c = a ? null : pickCorner(q);
@@ -6817,7 +6924,7 @@ canvas.addEventListener('pointerup', e=>{
     selectVertex(pv.pos);
     showVertexPalette();
   }
-  if(drag && drag.click && !pointMode && !lineMode && !circleMode && !ppMode && !textMode && !divCtx && !activeTool
+  if(drag && drag.click && !pointMode && !lineMode && !circleMode && !textMode && !divCtx && !activeTool
      && Math.hypot(e.clientX-drag.click.x, e.clientY-drag.click.y) < 3){
     // клик ЛКМ без движения: по грани — выбрать её, в пустоту — снять весь выбор
     const q = quadPos(e);
@@ -6849,14 +6956,6 @@ canvas.addEventListener('pointerup', e=>{
       deselect(); clearEdgeSel(); hideChordHint();
       hidePatch(); ppPatch = null;
     }
-  }
-  if(ppDrag){
-    const revert = !ppDrag.snapPushed, snap = ppDrag.snap;
-    const t = ppDrag.lastT || 0, patchTris = ppDrag.patchTris, pn = ppDrag.normal;
-    ppDrag=null; tipHide(); hidePatch(); ppPatch=null;
-    if(revert) applySnapshot(snap); // не тянули: убрать стенки нулевой высоты
-    else if(t < 0) commitPocketCSG(snap, patchTris, pn, -t); // карман — BSP
-    else { normalsFlush(); healAll(); extractEdges(); }
   }
   if(dragPt){
     normalsFlush();
@@ -6994,32 +7093,6 @@ canvas.addEventListener('pointermove', e=>{
     const v = snapMM(exFaceDrag.v0 + t - exFaceDrag.t0);
     ex_val.value = v.toFixed(1);
     applyExtrudeLive(v);
-    return;
-  }
-  if(ppDrag){ // выдавливание: смещение вдоль нормали грани
-    const rc = canvas.getBoundingClientRect();
-    const q0 = ppDrag.q0;
-    const lx=(e.clientX-rc.left)-q0.ox, ly=(e.clientY-rc.top)-q0.oy;
-    raycaster.setFromCamera({x:lx/q0.w*2-1, y:-(ly/q0.h*2-1)}, q0.cam);
-    const t = snapMM(rayLineParam(raycaster.ray, ppDrag.base, ppDrag.normal));
-    if(!ppDrag.snapPushed){
-      pushHistory(ppDrag.snap);
-      ppDrag.snapPushed = true;
-    }
-    const pos = mesh.geometry.attributes.position.array;
-    const n = ppDrag.normal;
-    ppDrag.idx.forEach((bi,k)=>{
-      const f = ppDrag.fac[k];
-      pos[bi]   = ppDrag.orig[k*3]   + n.x*t*f;
-      pos[bi+1] = ppDrag.orig[k*3+1] + n.y*t*f;
-      pos[bi+2] = ppDrag.orig[k*3+2] + n.z*t*f;
-    });
-    mesh.geometry.attributes.position.needsUpdate = true;
-    normalsThrottled();
-    ppDrag.lastT = t;
-    if(ppHi) ppHi.position.copy(n).multiplyScalar(0.05 + t);
-    tipAt(e, 'Push/Pull Δ <b>'+(t>=0?'+':'')+t.toFixed(1)+'</b> mm');
-    if(!modified){ modified=true; s_mod.textContent='yes'; }
     return;
   }
   if(dragPt){
@@ -7315,21 +7388,9 @@ canvas.addEventListener('pointermove', e=>{
     } else { ghost.visible=false; killRubber(); tipHide(); }
     return;
   }
-  if(ppMode){ // наведение на грань в режиме «Тяни-толкай»
-    if(!q.inside){ ppPatch=null; hidePatch(); tipHide(); return; }
-    const hf = raycastFace(q);
-    if(hf){
-      if(!(ppPatch && ppPatch.set.has(hf.faceIndex))){
-        ppPatch = facePatchAt(hf.faceIndex);
-        showPatch(ppPatch);
-      }
-      tipAt(e, 'Face · drag with LMB');
-    } else { ppPatch=null; hidePatch(); tipHide(); }
-    return;
-  }
   if(textMode){ // 3D-текст: никаких жёлтых подсветок — только точка старта
     setHover(null); vGhost.visible = false; cornerHover = null;
-    if(!ppMode){ hidePatch(); ppPatch = null; }
+    hidePatch(); ppPatch = null;
     return;
   }
   // приоритет привязок как в SketchUp: вершина > середина > ребро
@@ -7338,7 +7399,7 @@ canvas.addEventListener('pointermove', e=>{
   const anh = q.inside ? anchorAt(q) : null;
   if(anh){
     setHover(null); cornerHover = null;
-    if(!ppPatch && !ppMode) hidePatch();
+    if(!ppPatch) hidePatch();
     vGhost.position.copy(anh.pos); vGhost.visible = true;
     tipHide();
     return;
@@ -7346,7 +7407,7 @@ canvas.addEventListener('pointermove', e=>{
   const c = q.inside ? pickCorner(q) : null;
   if(c){
     setHover(null);
-    if(!ppPatch && !ppMode) hidePatch();
+    if(!ppPatch) hidePatch();
     cornerHover = c;
     vGhost.position.copy(c.pos); vGhost.visible = true;
     tipHide();
@@ -7358,14 +7419,14 @@ canvas.addEventListener('pointermove', e=>{
     // preselect как во FreeCAD: ребро жёлтое, точку не предлагаем
     setHover(h);
     ghost.visible = false;
-    if(!ppPatch && !ppMode) hidePatch();
+    if(!ppPatch) hidePatch();
     tipHide();
     return;
   }
   setHover(null);
   // наведение на грань — жёлтая заливка. Работает и когда грань уже
   // выбрана: иначе Ctrl+клик по соседним граням шёл бы вслепую
-  if(q.inside && !ppMode){
+  if(q.inside){
     const f = raycastFace(q);
     if(f){
       if(!(ppPatch && ppPatch.set.has(f.faceIndex))) // выбранную не перекрашиваем
@@ -7383,7 +7444,7 @@ canvas.addEventListener('dblclick', e=>{
   const q = quadPos(e);
   // пока работает инструмент, двойной клик ничего не выбирает: в SketchUp
   // и FreeCAD активный инструмент забирает клики себе целиком
-  if(!q.inside || lineMode || ppMode || placing
+  if(!q.inside || lineMode || placing
      || textMode || pointMode || circleMode || exLive || divCtx || activeTool) return;
   const c = pickCorner(q);
   if(c){
