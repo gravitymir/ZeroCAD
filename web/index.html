@@ -1800,7 +1800,7 @@ const rectTool = {
       + (this.mods.ctrl ? ' · <span style="color:#6aff3d;font-weight:700">from center</span>' : '')
       + (this.str ? '<br>typed ' + this.str + ' mm (Enter)' : '')
       + (!hintsChk.checked ? '' :
-        '<br><span class="key">Ctrl</span> — from center · <span class="key">Shift</span> — square'));
+        '<br><span class="key">Ctrl</span> — from center<br><span class="key">Shift</span> — square'));
   },
   up(e){
     if(!this.start || !this.downAt) return false;
