@@ -3743,12 +3743,159 @@ function loopAlreadyFilled(loop){
   }
   return false;
 }
+// Заливка контура, который частично лежит на грани (круг, вылезший за край
+// верхней грани куба): заливается только пустое место — как грань в
+// SketchUp, замкнутая дугой и ребром грани. Круг режется по границе
+// копланарной области (ребра, у которых там одна грань), куски, центр
+// которых на грани, отбрасываются. Рёбра квадрата остаются на стыке видимыми.
+// Возвращает {air: [[V3...]], covered: число кусков на грани, n: нормаль грани}
+function loopFillPieces(loop){
+  const tris = earClip(loop);
+  if(!tris.length || !mesh) return null;
+  const n = new THREE.Vector3();
+  for(let i=0;i<loop.length;i++){
+    const a=loop[i], b=loop[(i+1)%loop.length];
+    n.x += (a.y-b.y)*(a.z+b.z); n.y += (a.z-b.z)*(a.x+b.x); n.z += (a.x-b.x)*(a.y+b.y);
+  }
+  if(n.lengthSq() < 1e-12) return null;
+  n.normalize();
+  const d0 = n.dot(loop[0]);
+  const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize();
+  const v = n.clone().cross(u);
+  const to2 = P => ({x: P.dot(u), y: P.dot(v)});
+  const to3 = q => u.clone().multiplyScalar(q.x).addScaledVector(v, q.y).addScaledVector(n, d0);
+  // граница копланарной области сетки
+  const pos = mesh.geometry.attributes.position.array;
+  const cnt = new Map();
+  let faceN = null;
+  for(let t=0;t<pos.length/9;t++){
+    const o = t*9;
+    let ok = true;
+    for(let j=0;j<3;j++)
+      if(Math.abs(n.x*pos[o+j*3] + n.y*pos[o+j*3+1] + n.z*pos[o+j*3+2] - d0) > 0.02){ ok = false; break; }
+    if(!ok) continue;
+    const tn = triNormalAt(t);
+    if(Math.abs(tn.dot(n)) < 0.999) continue;
+    if(!faceN) faceN = tn.dot(n) > 0 ? n.clone() : n.clone().negate();
+    for(let e=0;e<3;e++){
+      const o1 = o+e*3, o2 = o+((e+1)%3)*3;
+      const k1 = keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2 = keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+      const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+      const r = cnt.get(ek);
+      if(r) r.c++;
+      else cnt.set(ek, {c:1, a: to2(new THREE.Vector3(pos[o1],pos[o1+1],pos[o1+2])),
+                              b: to2(new THREE.Vector3(pos[o2],pos[o2+1],pos[o2+2]))});
+    }
+  }
+  const cuts = [...cnt.values()].filter(r => r.c === 1);
+  let polys = tris.map(t => t.map(to2));
+  for(const c of cuts){
+    const dx = c.b.x - c.a.x, dy = c.b.y - c.a.y, L = Math.hypot(dx, dy);
+    if(L < 1e-9) continue;
+    const mnx = Math.min(c.a.x, c.b.x), mxx = Math.max(c.a.x, c.b.x);
+    const mny = Math.min(c.a.y, c.b.y), mxy = Math.max(c.a.y, c.b.y);
+    const next = [];
+    for(const poly of polys){
+      let px0=1e9, px1=-1e9, py0=1e9, py1=-1e9;
+      for(const q of poly){ px0=Math.min(px0,q.x); px1=Math.max(px1,q.x); py0=Math.min(py0,q.y); py1=Math.max(py1,q.y); }
+      if(px1 < mnx-1e-6 || px0 > mxx+1e-6 || py1 < mny-1e-6 || py0 > mxy+1e-6){ next.push(poly); continue; }
+      const sd = poly.map(q => ((q.x-c.a.x)*dy - (q.y-c.a.y)*dx) / L);
+      if(!sd.some(x => x > 1e-6) || !sd.some(x => x < -1e-6)){ next.push(poly); continue; }
+      const f = [], b = [];
+      for(let i=0;i<poly.length;i++){
+        const j = (i+1) % poly.length, si = sd[i], sj = sd[j];
+        if(si >= -1e-6) f.push(poly[i]);
+        if(si <= 1e-6) b.push(poly[i]);
+        if((si > 1e-6 && sj < -1e-6) || (si < -1e-6 && sj > 1e-6)){
+          const t = si / (si - sj);
+          const X = {x: poly[i].x + (poly[j].x-poly[i].x)*t, y: poly[i].y + (poly[j].y-poly[i].y)*t};
+          f.push(X); b.push(X);
+        }
+      }
+      if(f.length >= 3) next.push(f);
+      if(b.length >= 3) next.push(b);
+    }
+    polys = next;
+  }
+  const test = getFaceTester();
+  const air = [];
+  let covered = 0;
+  for(const poly of polys){
+    const c = poly.reduce((s, q) => ({x: s.x + q.x/poly.length, y: s.y + q.y/poly.length}), {x:0, y:0});
+    let area = 0;
+    for(let i=0;i<poly.length;i++){ const a = poly[i], b = poly[(i+1)%poly.length]; area += a.x*b.y - b.x*a.y; }
+    if(Math.abs(area) < 1e-8) continue;
+    if(test(to3(c))) covered++;
+    else air.push(poly.map(to3));
+  }
+  return {air, covered, n, faceN};
+}
+// залить только пустые куски; ориентация — как у грани, к которой примыкают
+function fillLoopAir(info){
+  if(!info || !info.air.length) return false;
+  const flip = info.faceN && info.faceN.dot(info.n) < 0;
+  const pos = mesh.geometry.attributes.position.array;
+  const q = x => Math.round(x*1000)/1000;
+  const add = [];
+  for(const poly of info.air)
+    for(let i=1;i+1<poly.length;i++){
+      const tri = flip ? [poly[0], poly[i+1], poly[i]] : [poly[0], poly[i], poly[i+1]];
+      for(const P of tri) add.push(q(P.x), q(P.y), q(P.z));
+    }
+  pushUndo();
+  // Стык с ребром грани: точки кусков лежат посреди рёбер квадрата, у
+  // которых уже по две грани (верх и бок) — лечилка Т-стыков берёт только
+  // граничные рёбра. Поэтому здесь все треугольники, на ребре которых лежит
+  // новая точка, делятся явно — иначе вдоль стыка остаются щели
+  const pts = [];
+  { const seen = new Set();
+    for(let i=0;i<add.length;i+=3){
+      const k = keyOf(add[i], add[i+1], add[i+2]);
+      if(!seen.has(k)){ seen.add(k); pts.push([add[i], add[i+1], add[i+2]]); }
+    } }
+  const queue = [];
+  const all = [...pos, ...add];
+  for(let i=0;i<all.length;i+=9) queue.push(all.slice(i, i+9));
+  const out = [];
+  let guard = 200000;
+  while(queue.length && guard-- > 0){
+    const T = queue.pop();
+    let done = false;
+    for(let e=0;e<3 && !done;e++){
+      const A = [T[e*3], T[e*3+1], T[e*3+2]], b = (e+1)%3, c = (e+2)%3;
+      const B = [T[b*3], T[b*3+1], T[b*3+2]];
+      const ab = [B[0]-A[0], B[1]-A[1], B[2]-A[2]];
+      const L2 = ab[0]*ab[0] + ab[1]*ab[1] + ab[2]*ab[2];
+      if(L2 < 1e-9) continue;
+      for(const v of pts){
+        const tp = ((v[0]-A[0])*ab[0] + (v[1]-A[1])*ab[1] + (v[2]-A[2])*ab[2]) / L2;
+        if(tp <= 1e-4 || tp >= 1-1e-4) continue;
+        if(Math.hypot(v[0]-A[0]-ab[0]*tp, v[1]-A[1]-ab[1]*tp, v[2]-A[2]-ab[2]*tp) > 0.002) continue;
+        const C = [T[c*3], T[c*3+1], T[c*3+2]];
+        queue.push([...A, ...v, ...C], [...v, ...B, ...C]);
+        done = true; break;
+      }
+    }
+    if(!done) out.push(...T);
+  }
+  setMeshFromArray(new Float32Array(out));
+  weldVertices(0.0015);
+  cleanupMesh();
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  extractEdges();
+  return true;
+}
 function updateSelPreview(){
   killSelPreview();
   hideChordHint();
   const loop = edgeSelLoop();
-  if(!loop || loopAlreadyFilled(loop)) return; // грань уже есть — заливать нечего
-  const tris = earClip(loop);
+  if(!loop) return;
+  const fill = loopFillPieces(loop);
+  if(fill && fill.covered && !fill.air.length) return; // грань уже есть — заливать нечего
+  // «стекло» — только там, где F действительно зальёт
+  const tris = fill && fill.covered
+    ? fill.air.flatMap(poly => poly.slice(1, -1).map((P, i) => [poly[0], P, poly[i+2]]))
+    : earClip(loop);
   if(!tris.length) return;
   // «стекло»: еле заметная плёнка — место, которое можно залить
   const arr = new Float32Array(tris.length*9);
@@ -4914,6 +5061,13 @@ function showEdgePalette(ch){
     '<div><span class="key">G,V</span> — move by X/Y/Z</div>' +
     '<div><span class="key">G,Y</span> — point / divide</div>' +
     '<div><span class="key">Del</span> — erase edge / line</div>' +
+    (() => { // выбран замкнутый контур, который можно залить
+      const lp = edgeSelLoop();
+      if(!lp) return '';
+      const f = loopFillPieces(lp);
+      if(f && f.covered && !f.air.length) return '';
+      return '<div><span class="key">F</span> — ' + (f && f.covered ? 'fill the empty part' : 'fill face') + '</div>';
+    })() +
     (ch && !ch.isGuide ? '<div><span class="key">Ctrl+B</span> — chamfer / fillet</div>' : '') +
     (ch && ch.isGuide ? '<div><span class="key">Q</span> — rotate / copy</div>'
       + '<div><span class="key">G,A</span> — polar array</div>' : '') +
@@ -6085,9 +6239,11 @@ window.addEventListener('keydown', e=>{
      && !dragPt && !ppDrag && !lineMode && !pointMode && !circleMode && !ppMode && !textMode && !activeTool
      && document.activeElement.tagName!=='INPUT'){
     const selLoop = edgeSelLoop();
-    if(selLoop && loopAlreadyFilled(selLoop)){
+    const fill = selLoop ? loopFillPieces(selLoop) : null;
+    if(fill && fill.covered && !fill.air.length){
       warnTip('This contour is already a face'); e.preventDefault(); return;
     }
+    if(fill && fill.covered && fillLoopAir(fill)){ clearEdgeSel(); hideChordHint(); e.preventDefault(); return; }
     if(selLoop && fillLoop(selLoop)){ clearEdgeSel(); hideChordHint(); e.preventDefault(); return; }
     if(fillHole()){ e.preventDefault(); return; }
   }
