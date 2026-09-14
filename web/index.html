@@ -185,6 +185,9 @@
   #exPopup #ex_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
   /* кнопка говорит, что сделает: Add — синяя, Cut — белая с чёрным текстом */
   #exPopup #ex_ok.cut{background:#fff;color:#10131a;border-color:#fff}
+  /* операция ничего не изменит — кнопка серая и не нажимается */
+  #exPopup #ex_ok:disabled{background:#3a3f47;color:#8b93a1;border-color:#3a3f47;cursor:default}
+  #exPopup #ex_note{font-size:15px;color:#ffb347;margin:8px 0 0;max-width:340px;line-height:1.4}
   #divPopup{cursor:move;padding:14px 16px}
   #divPopup .prow{font-size:19px}
   #divPopup .dvs{padding:6px 16px;font-size:19px;flex:none;
@@ -296,6 +299,7 @@
         <div>Without Ctrl it picks itself: into the body — Cut, outward or from a face in the air — Add.</div>
         <div>Enter — apply · Esc — cancel</div>
       </div>
+      <div id="ex_note" hidden></div>
       <div class="prow" style="gap:10px;margin-top:10px"><button id="ex_ok">Add</button><button id="ex_cancel">Cancel</button></div>
     </div>
     <div id="vcnav">
@@ -4705,10 +4709,41 @@ function exOp(){
   if(!exLive) return 'join';
   return (!exLive.sheet && exLive.applied < 0) ? 'cut' : 'join';
 }
+// Бессмысленная операция: Cut, уходящий в пустоту, или Add внутрь уже
+// сплошного тела — ничего не изменят. Проверка по точкам призмы: центры
+// треугольников лоскута, сдвинутые на 1/4, 1/2 и 3/4 высоты; «внутри тела» —
+// нечётное число пересечений луча со снимком сетки до выдавливания
+function exPointInside(P){
+  raycaster.set(P, new THREE.Vector3(0.5773, 0.5774, 0.5775).normalize());
+  const hits = raycaster.intersectObject(exLive.probe);
+  let n = 0, last = -1;
+  for(const h of hits){ if(h.distance - last > 1e-5){ n++; last = h.distance; } }
+  return n % 2 === 1;
+}
+function exNoOp(){
+  if(!exLive || !exLive.probe || !exLive.applied) return null;
+  const op = exOp();
+  if(exLive.sheet) return op === 'cut' ? 'cut' : null; // лист: вычитать не из чего
+  const d = exLive.applied;
+  let inside = 0, total = 0;
+  for(const c of exLive.samples) for(const f of [0.25, 0.5, 0.75]){
+    total++;
+    if(exPointInside(c.clone().addScaledVector(exLive.n, d * f))) inside++;
+  }
+  if(op === 'cut' && inside === 0) return 'cut';
+  if(op === 'join' && inside === total) return 'join';
+  return null;
+}
 function paintExOp(){
   const cut = exOp() === 'cut';
   ex_ok.textContent = cut ? 'Cut' : 'Add';
   ex_ok.classList.toggle('cut', cut);
+  const noop = exNoOp();
+  ex_ok.disabled = !!noop;
+  ex_note.hidden = !noop;
+  ex_note.textContent = noop === 'cut'
+    ? 'Nothing to cut: the face moves into empty space. Release Ctrl to add, or go into the body.'
+    : noop === 'join' ? 'Nothing to add: the body is already there. Hold Ctrl to cut, or go outward.' : '';
   for(const el of exPopup.querySelectorAll('.exline')) el.hidden = !hintsChk.checked; // подсказки — под флагом
 }
 function setExOp(op){ exOpManual = op; paintExOp(); }
@@ -4806,8 +4841,21 @@ function openExtrude(){
   if(cn) c.multiplyScalar(1/cn);
   const ex = beginPatchExtrude(ppPatch);
   const sheet = patchIsSheet(posC, ppPatch.tris);
+  // снимок тела до выдавливания — для проверки «операция что-то изменит?»
+  const snapPos = undoStack[undoStack.length-1].pos;
+  const pg = new THREE.BufferGeometry();
+  pg.setAttribute('position', new THREE.BufferAttribute(snapPos, 3));
+  const probe = new THREE.Mesh(pg, new THREE.MeshBasicMaterial({side: THREE.DoubleSide}));
+  probe.updateMatrixWorld(true);
+  const step = Math.max(1, Math.floor(ppPatch.tris.length / 12));
+  const samples = [];
+  for(let i=0;i<ppPatch.tris.length;i+=step){
+    const o = ppPatch.tris[i]*9;
+    samples.push(new THREE.Vector3((snapPos[o]+snapPos[o+3]+snapPos[o+6])/3,
+      (snapPos[o+1]+snapPos[o+4]+snapPos[o+7])/3, (snapPos[o+2]+snapPos[o+5]+snapPos[o+8])/3));
+  }
   exLive = {idx: ex.idx, fac: ex.fac, set: new Set(ex.idx),
-            n: ppPatch.normal.clone(), applied: 0, sheet};
+            n: ppPatch.normal.clone(), applied: 0, sheet, probe, samples};
   exOpManual = null; exCtrl = false;
   paintExOp();
   showExAxis(c, ppPatch.normal);
@@ -4848,6 +4896,11 @@ function releaseToolInput(){ // фокус обратно на сцену
   if(el && el.tagName === 'INPUT') el.blur();
 }
 function commitExtrude(){
+  const noop = exNoOp();
+  if(noop){ // бессмысленно — окно остаётся, пользователь поправит
+    warnTip(noop === 'cut' ? 'Nothing to cut here' : 'Nothing to add here');
+    return;
+  }
   hideExAxis(); exFaceDrag = null; releaseToolInput();
   exLive && updateOrbitCursor(false);
   if(!exLive){ exPopup.hidden = true; return; }
@@ -5172,11 +5225,18 @@ ex_val.addEventListener('input', ()=>{
   if(Number.isFinite(v)) applyExtrudeLive(snapMM(v)); else paintExVal();
 });
 ex_val.addEventListener('keydown', e=>{
-  if(e.key === 'Enter'){ e.preventDefault(); if(e.ctrlKey) setExOp('cut'); commitExtrude(); }
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    if(e.ctrlKey){ setExOp('cut'); if(exNoOp()){ setExOp(null); warnTip('Nothing to cut here'); return; } }
+    commitExtrude();
+  }
   if(e.key === 'Escape'){ closeExtrude(); }
   e.stopPropagation();
 });
-document.getElementById('ex_ok').addEventListener('click', e=>{ if(e.ctrlKey) setExOp('cut'); commitExtrude(); });
+document.getElementById('ex_ok').addEventListener('click', e=>{
+  if(e.ctrlKey){ setExOp('cut'); if(exNoOp()){ setExOp(null); warnTip('Nothing to cut here'); return; } }
+  commitExtrude();
+});
 document.getElementById('ex_cancel').addEventListener('click', closeExtrude);
 makeGripDrag(exPopup); // ручка ⠿ окна Extrude
 const vpanel = document.getElementById('vpanel'), vp_t = document.getElementById('vp_t'),
@@ -7117,6 +7177,7 @@ canvas.addEventListener('pointerup', e=>{
   if(exFaceDrag){ // отпустили лоскут — значение остаётся, окно живёт
     exFaceDrag = null;
     setExOp(e.ctrlKey ? 'cut' : null); // отпустил с Ctrl — Cut закреплён
+    if(exOpManual === 'cut' && exNoOp()) setExOp(null); // но не бессмысленный Cut в пустоту
     return;
   }
   if(edgeDrag){
