@@ -113,16 +113,16 @@
   body.winDrag, body.winDrag *{cursor:move!important}
   #chordHint .chgrip:hover{color:var(--text)}
   /* окна точного выдавливания (E) и деления ребра точками */
-  #exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup,#bevPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
+  #exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup,#bevPopup,#rotPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
     border-radius:10px;padding:10px 12px;font-size:12px}
-  #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden],#arrPopup[hidden],#bevPopup[hidden]{display:none}
-  #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow,#arrPopup .prow,#bevPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
-  #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#arrPopup input,#bevPopup input{width:80px;background:var(--panel2);color:var(--text);
+  #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden],#arrPopup[hidden],#bevPopup[hidden],#rotPopup[hidden]{display:none}
+  #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow,#arrPopup .prow,#bevPopup .prow,#rotPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
+  #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
   /* окно окружности (G,C): число сегментов, перетаскивается за ⠿ */
-  #circPopup,#arrPopup,#bevPopup{padding:14px 16px}
-  #arrPopup .prow,#bevPopup .prow{font-size:19px;gap:10px}
-  #arrPopup input,#bevPopup input{font-size:22px;padding:6px 10px;width:110px}
+  #circPopup,#arrPopup,#bevPopup,#rotPopup{padding:14px 16px}
+  #arrPopup .prow,#bevPopup .prow,#rotPopup .prow{font-size:19px;gap:10px}
+  #arrPopup input,#bevPopup input,#rotPopup input{font-size:22px;padding:6px 10px;width:110px}
   #bevPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
   #bevPopup #bev_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
@@ -133,8 +133,18 @@
   #circPopup{width:330px;box-sizing:border-box}
   /* Ø и R — отдельными строками, поля в один столбец с Segments */
   #circPopup .plab{display:inline-block;min-width:88px}
-  #bevPopup .pinfo,#circPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
-  #bevPopup .phint,#circPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
+  #rotPopup{width:340px;box-sizing:border-box}
+  #rotPopup .plab{display:inline-block;min-width:80px}
+  #rotPopup button{padding:8px 14px;font-size:16px;border-radius:6px;cursor:pointer;flex:1;
+    border:1px solid var(--line);background:var(--panel2);color:var(--text)}
+  #rotPopup button.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
+  #rotPopup #rot_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
+  #rotPopup button:disabled,#rotPopup input:disabled{opacity:.4;cursor:default}
+  #rotPopup ol{margin:4px 0 6px;padding-left:22px;font-size:14px;color:var(--muted)}
+  #rotPopup ol li.cur{color:var(--text);font-weight:700}
+  #rotPopup ol li.done{color:#6aff3d}
+  #bevPopup .pinfo,#rotPopup .pinfo,#circPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
+  #bevPopup .phint,#rotPopup .phint,#circPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
   #arrPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
   #arrPopup #arr_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
@@ -207,6 +217,17 @@
         <button id="dv_ok" class="primary" style="flex:1">OK</button>
         <button id="dv_cancel" style="flex:1">Cancel</button>
       </div>
+    </div>
+    <div id="rotPopup" hidden>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Rotate</b><span id="rot_state" style="font-size:14px">move</span></div>
+      <ol id="rot_steps"><li>click the pivot — the point to turn around</li><li>click where 0° points (a reference)</li><li>move the mouse to turn · click to apply</li></ol>
+      <div class="pinfo" id="rot_info">&nbsp;</div>
+      <div class="prow"><span class="plab">Angle</span><input id="rot_a" type="number" step="15" placeholder="—"> °</div>
+      <div class="prow"><span class="plab">Mode</span><button id="rot_move" class="on">Move</button><button id="rot_copy">Copy</button></div>
+      <div class="prow"><span class="plab">Copies</span><input id="rot_n" type="number" step="1" min="1" max="360" value="1" disabled></div>
+      <div class="phint" id="rot_hint">Move turns the selection itself; Copy keeps it and adds turned copies — each next copy one more angle further (2 copies at 30° → 30° and 60°) · short Ctrl — toggle Move/Copy · the angle snaps to 15° · after the pivot you can just type the angle + Enter</div>
+      <div class="prow" style="gap:10px;margin-top:8px"><button id="rot_ok" disabled>OK</button><button id="rot_cancel">Cancel</button></div>
     </div>
     <div id="bevPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
@@ -1626,6 +1647,26 @@ function pickOnFace(q){
   const off = new THREE.Vector3().subVectors(pt.pos, f.point).dot(n);
   return {pos: pt.pos.clone().addScaledVector(n, -off), n, kind: pt.kind, pt};
 }
+// Плоскость выбранных линий/точки: два непараллельных сегмента задают
+// нормаль; одна прямая или точка — плоскость XY мира
+function itemsPlaneNormal(items){
+  const dirs = items.segs.map(sg => new THREE.Vector3().subVectors(sg.B, sg.A)).filter(d => d.lengthSq() > 1e-9);
+  for(let i=0;i<dirs.length;i++) for(let j=i+1;j<dirs.length;j++){
+    const n = new THREE.Vector3().crossVectors(dirs[i], dirs[j]);
+    if(n.lengthSq() > 1e-6 * dirs[i].lengthSq() * dirs[j].lengthSq()) return n.normalize();
+  }
+  return null;
+}
+// центр для поворота/массива: на грани — её плоскость; в воздухе (середина
+// висящей окружности, конец линии) — плоскость самих выбранных линий
+function pickToolCenter(q, items){
+  const pk = pickOnFace(q);
+  if(pk) return pk;
+  const pt = linePickPoint(q);
+  if(!pt) return null;
+  const n = itemsPlaneNormal(items) || new THREE.Vector3(0, 0, 1);
+  return {pos: pt.pos.clone(), n, kind: pt.kind, pt};
+}
 function showPickGhost(e, q, label){
   const pt = linePickPoint(q);
   if(!pt){ ghost.visible = false; tipHide(); return null; }
@@ -1942,16 +1983,26 @@ window.addEventListener('keyup', e=>{
 });
 
 // Q — Поворот (Rotate в SketchUp): центр → опорное направление → угол.
-// Протрактор лежит в плоскости грани, липнет к шагу 15°; угол можно ввести
+// Протрактор лежит в плоскости грани (или выбранных линий), липнет к 15°.
+// Всё — в перетаскиваемом окне: шаги, привязка, угол, Move/Copy, число копий
 const rotTool = {
   get hud(){
-    return 'ROTATE · center → reference → angle · type ° + Enter · Ctrl — copy: '
+    return 'ROTATE · pivot → reference → angle · type ° + Enter · Ctrl — copy: '
       + (this.copy ? '<span style="color:#6aff3d">ON</span>' : 'off') + ' · Esc';
   },
   items: null, center: null, n: null, ref: null, angle: 0, copy: false, str: '',
-  ghosts: [], rubber: null,
-  on(){ this.center = null; this.ref = null; this.angle = 0; this.str = ''; this.copy = false; },
-  off(){ this.clearView(); ghost.visible = false; tipHide(); },
+  ghosts: [], rubber: null, aLock: false, snapped: false, snapHtml: '',
+  on(){
+    this.center = null; this.ref = null; this.angle = 0; this.str = ''; this.copy = false;
+    this.aLock = false; this.snapHtml = '';
+    rot_n.value = 1; rot_a.value = '';
+    const vr = view.getBoundingClientRect();
+    rotPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 360) + 'px';
+    rotPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 420) + 'px';
+    rotPopup.hidden = false;
+    this.ui();
+  },
+  off(){ this.clearView(); ghost.visible = false; tipHide(); rotPopup.hidden = true; releaseToolInput(); },
   clearView(){
     killObjs(this.ghosts);
     if(this.rubber){ scene.remove(this.rubber); this.rubber.geometry.dispose(); this.rubber = null; }
@@ -1963,77 +2014,117 @@ const rotTool = {
     this.rubber.computeLineDistances();
     scene.add(this.rubber);
   },
-  tip(e){
+  copies(){ return this.copy ? Math.max(1, Math.min(360, Math.round(+rot_n.value || 1))) : 1; },
+  angles(a){ const out = []; for(let k=1;k<=this.copies();k++) out.push(a * k); return out; },
+  showGhosts(){
+    killObjs(this.ghosts);
+    if(this.center && Math.abs(this.angle) > 1e-9)
+      this.ghosts = rotGhosts(this.items, this.center, this.n, this.angles(this.angle));
+  },
+  // окно: текущий шаг, привязка, угол, режим
+  ui(){
+    const step = !this.center ? 0 : (!this.ref && !this.aLock ? 1 : 2);
+    [...rot_steps.children].forEach((li, i) => { li.className = i < step ? 'done' : (i === step ? 'cur' : ''); });
+    rot_state.textContent = this.copy ? 'copy' : 'move';
+    rot_move.classList.toggle('on', !this.copy);
+    rot_copy.classList.toggle('on', this.copy);
+    rot_n.disabled = !this.copy;
     const deg = this.angle * 180 / Math.PI;
-    let html;
-    if(!this.center) return;
-    if(!this.ref) html = 'Rotate · reference direction' + (this.str ? '<br>typed ' + this.str + '° (Enter)' : '<br>or type an angle + Enter');
-    else html = 'Rotate <b>' + deg.toFixed(1) + '°</b>' + (this.snapped ? ' <span style="color:#6aff3d">15°</span>' : '')
-      + '<br>' + (this.copy ? 'copy' : 'move') + (this.str ? ' · typed ' + this.str + '° (Enter)' : '');
-    tipAt(e || {clientX: lastMX, clientY: lastMY}, html);
+    if(document.activeElement !== rot_a)
+      rot_a.value = (this.ref || this.aLock) && Math.abs(deg) > 1e-9 ? +deg.toFixed(2) : '';
+    let h = this.snapHtml || '';
+    if(this.center && (this.ref || this.aLock) && Math.abs(deg) > 1e-9){
+      h += (h ? ' · ' : '') + '<b>' + deg.toFixed(1) + '°</b>'
+        + (this.snapped ? ' <span style="color:#6aff3d">15° step</span>' : '')
+        + (this.copy ? ' · ' + this.copies() + (this.copies() === 1 ? ' copy' : ' copies') : '');
+    }
+    if(this.str) h += (h ? '<br>' : '') + 'typed ' + this.str + '° (Enter)';
+    rot_info.innerHTML = h || '&nbsp;';
+    rot_hint.hidden = !hintsChk.checked;
+    rot_ok.disabled = !(this.center && Math.abs(this.angle) > 1e-9);
   },
   down(e, q){
     if(e.button !== 0 || !q.inside) return;
     if(!this.center){
-      const pk = pickOnFace(q);
+      const pk = pickToolCenter(q, this.items);
       if(!pk) return;
-      this.center = pk.pos; this.n = pk.n;
+      this.center = pk.pos; this.n = pk.n; this.snapHtml = '';
+      this.ui();
       return;
     }
+    if(this.aLock){ this.apply(this.angle); return; } // угол введён в окне — клик применяет
     const pk = planePick(q, this.n, this.center);
     if(!pk) return;
     const dir = pk.pos.clone().sub(this.center);
     if(dir.length() < 0.3) return;
-    if(!this.ref){ this.ref = dir.normalize(); return; }
+    if(!this.ref){ this.ref = dir.normalize(); this.ui(); return; }
     this.apply(this.angle);
   },
   move(e, q){
     if(!q.inside){ ghost.visible = false; tipHide(); return; }
-    if(!this.center){ showPickGhost(e, q, 'Rotate · center: '); return; }
+    if(!this.center){
+      const pt = showPickGhost(e, q, '');
+      tipHide(); // привязка — в окне
+      this.snapHtml = pt ? circSnapHtml('Pivot', pt.kind) : '<span style="color:var(--muted)">Pivot → move over a point</span>';
+      this.ui();
+      return;
+    }
     ghost.visible = false;
+    if(this.aLock) return; // угол введён числом — мышь его не меняет
     const pk = planePick(q, this.n, this.center);
     if(!pk) return;
     this.drawRubber(this.center, pk.pos);
     const dir = pk.pos.clone().sub(this.center);
+    this.snapHtml = this.ref ? '' : circSnapHtml('Reference', pk.kind);
     if(this.ref && dir.length() > 1e-6){
       let a = Math.atan2(new THREE.Vector3().crossVectors(this.ref, dir).dot(this.n), this.ref.dot(dir));
       const deg = a * 180 / Math.PI, near = Math.round(deg / 15) * 15;
       this.snapped = Math.abs(deg - near) < 2.5;
       if(this.snapped) a = near * Math.PI / 180;
       this.angle = a;
-      killObjs(this.ghosts);
-      this.ghosts = rotGhosts(this.items, this.center, this.n, [a]);
+      this.showGhosts();
     }
-    this.tip(e);
+    this.ui();
   },
-  ctrlTap(){
-    this.copy = !this.copy;
+  setCopy(on){
+    this.copy = on;
     toolb.innerHTML = this.hud + '<br>';
-    this.tip();
+    this.showGhosts();
+    this.ui();
+  },
+  ctrlTap(){ this.setCopy(!this.copy); },
+  // угол из окна/клавиатуры: предпросмотр сразу, мышь больше не крутит
+  setAngleDeg(deg){
+    if(!isFinite(deg)){ this.aLock = false; this.ui(); return; }
+    this.angle = deg * Math.PI / 180; this.aLock = true; this.snapped = false;
+    this.showGhosts(); this.ui();
   },
   key(e){
     if(!this.center) return false;
     const k = e.key;
-    if(/^[0-9.]$/.test(k) || (k === '-' && !this.str)){ this.str += k; this.tip(); e.preventDefault(); return true; }
-    if(k === 'Backspace'){ this.str = this.str.slice(0, -1); this.tip(); e.preventDefault(); return true; }
+    if(/^[0-9.]$/.test(k) || (k === '-' && !this.str)){ this.str += k; this.ui(); e.preventDefault(); return true; }
+    if(k === 'Backspace' && this.str){ this.str = this.str.slice(0, -1); this.ui(); e.preventDefault(); return true; }
     if(k === 'Enter'){
       const deg = parseFloat(this.str);
+      this.str = '';
       if(isFinite(deg)) this.apply(deg * Math.PI / 180);
+      else if(Math.abs(this.angle) > 1e-9) this.apply(this.angle);
       e.preventDefault(); return true;
     }
     return false;
   },
   esc(){ // первый Esc сбрасывает начатый поворот, второй выходит
     if(!this.center) return false;
-    this.center = null; this.ref = null; this.str = ''; this.angle = 0;
-    this.clearView(); tipHide(); return true;
+    this.center = null; this.ref = null; this.str = ''; this.angle = 0; this.aLock = false;
+    this.clearView(); tipHide(); this.ui(); return true;
   },
   apply(angle){
+    if(!this.center){ warnTip('Click the pivot first'); return; }
     if(Math.abs(angle) < 1e-9){ this.esc(); return; }
     pushUndo();
-    const curveMap = new Map();
     if(!this.copy){
       // перенос: исходные сегменты стираются, кривая сохраняет свой id
+      const curveMap = new Map();
       for(const sg of this.items.segs){
         eraseGuideSegment(sg.A, sg.B);
         if(sg.curve) curveMap.set(sg.curve, sg.curve);
@@ -2044,14 +2135,39 @@ const rotTool = {
         scene.remove(an.marker);
         if(i >= 0) anchors.splice(i, 1);
       }
+      placeRotated(this.items, this.center, this.n, angle, curveMap);
+    } else {
+      // копии: каждая следующая ещё на один угол дальше, у каждой своя кривая
+      for(const a of this.angles(angle)) placeRotated(this.items, this.center, this.n, a, new Map());
     }
-    placeRotated(this.items, this.center, this.n, angle, curveMap);
     if(!modified){ modified = true; s_mod.textContent = 'yes'; }
     clearEdgeSel(); deselect(); hideChordHint();
     setActiveTool(null);
+    cleanupMesh();
     extractEdges();
   }
 };
+makeGripDrag(rotPopup);
+rot_move.addEventListener('click', ()=>{ if(activeTool === rotTool) rotTool.setCopy(false); });
+rot_copy.addEventListener('click', ()=>{ if(activeTool === rotTool) rotTool.setCopy(true); });
+rot_n.addEventListener('input', ()=>{ if(activeTool === rotTool){ rotTool.showGhosts(); rotTool.ui(); } });
+rot_a.addEventListener('input', ()=>{
+  if(activeTool !== rotTool) return;
+  const v = parseFloat(rot_a.value);
+  rotTool.setAngleDeg(rot_a.value === '' ? NaN : v);
+});
+for(const inp of [rot_a, rot_n]){
+  inp.addEventListener('keydown', e=>{
+    if(e.key === 'Enter'){
+      e.preventDefault(); releaseToolInput();
+      if(activeTool === rotTool && rotTool.center && Math.abs(rotTool.angle) > 1e-9) rotTool.apply(rotTool.angle);
+    }
+    if(e.key === 'Escape'){ e.preventDefault(); releaseToolInput(); }
+    e.stopPropagation();
+  });
+}
+rot_ok.addEventListener('click', ()=>{ if(activeTool === rotTool) rotTool.apply(rotTool.angle); });
+rot_cancel.addEventListener('click', ()=>setActiveTool(null));
 
 // ---------- Ctrl+B — Bevel (как в Blender): фаска и скругление ребра ----------
 // Одно ребро или несколько (Ctrl+клик). 1 сегмент — фаска, 2+ — дуга,
@@ -2287,7 +2403,7 @@ const arrTool = {
   },
   down(e, q){
     if(e.button !== 0 || !q.inside) return;
-    const pk = pickOnFace(q);
+    const pk = pickToolCenter(q, this.items);
     if(!pk) return;
     this.center = pk.pos; this.n = pk.n;
     arr_status.textContent = 'center set · click to move it · Enter — OK';
@@ -3204,7 +3320,12 @@ function facePatchAt(triIdx){
       const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
       const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
       const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
-      for(const t2 of (eAdj.get(ek)||[])){
+      const adj = eAdj.get(ek) || [];
+      // ребро, у которого больше двух граней (грань, пришитая к краю другой:
+      // залитый круг вокруг верхней грани куба), — видимое ребро и граница
+      // области: квадрат и кольцо вокруг выбираются по отдельности
+      if(adj.length > 2) continue;
+      for(const t2 of adj){
         if(set.has(t2)) continue;
         if(triNormalAt(t2).dot(n0) < 0.999) continue;
         const o3 = t2*9;
