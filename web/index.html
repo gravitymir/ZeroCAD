@@ -122,27 +122,27 @@
   body.winDrag, body.winDrag *{cursor:move!important}
   #chordHint .chgrip:hover{color:var(--text)}
   /* окна точного выдавливания (E) и деления ребра точками */
-  #exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup,#bevPopup,#rotPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
+  #exPopup,#divPopup,#txtPopup,#circPopup,#rectPopup,#arrPopup,#bevPopup,#rotPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
     border-radius:10px;padding:10px 12px;font-size:12px}
-  #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden],#arrPopup[hidden],#bevPopup[hidden],#rotPopup[hidden]{display:none}
-  #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow,#arrPopup .prow,#bevPopup .prow,#rotPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
+  #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden],#rectPopup[hidden],#arrPopup[hidden],#bevPopup[hidden],#rotPopup[hidden]{display:none}
+  #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow,#rectPopup .prow,#arrPopup .prow,#bevPopup .prow,#rotPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
   /* короткие строки-подсказки окна Extrude, по одной строке */
   #exPopup .exline{font-size:14px;line-height:1.45;color:var(--muted);margin:6px 0 0;max-width:340px}
   #exPopup .exline div{margin:3px 0}
   /* строка команды — как пункт палитры, всегда видна */
   #exPopup .excmd{font-size:22px;color:var(--muted)}
-  #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
+  #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#rectPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
   /* поле ввода видно как поле и без фокуса: заметная рамка; наведение —
      светлее, фокус — синяя рамка с ореолом (во всех окнах инструментов) */
-  :is(#exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup,#bevPopup,#rotPopup,#vpanel) input:not([type=checkbox]):not([type=radio]){
+  :is(#exPopup,#divPopup,#txtPopup,#circPopup,#rectPopup,#arrPopup,#bevPopup,#rotPopup,#vpanel) input:not([type=checkbox]):not([type=radio]){
     border:1px solid #6b7483;transition:border-color .1s,box-shadow .1s}
-  :is(#exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup,#bevPopup,#rotPopup,#vpanel) input:not([type=checkbox]):not([type=radio]):hover{
+  :is(#exPopup,#divPopup,#txtPopup,#circPopup,#rectPopup,#arrPopup,#bevPopup,#rotPopup,#vpanel) input:not([type=checkbox]):not([type=radio]):hover{
     border-color:#aab3c2}
-  :is(#exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup,#bevPopup,#rotPopup,#vpanel) input:not([type=checkbox]):not([type=radio]):focus{
+  :is(#exPopup,#divPopup,#txtPopup,#circPopup,#rectPopup,#arrPopup,#bevPopup,#rotPopup,#vpanel) input:not([type=checkbox]):not([type=radio]):focus{
     border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
   /* окно окружности (G,C): число сегментов, перетаскивается за ⠿ */
-  #circPopup,#arrPopup,#bevPopup,#rotPopup{padding:14px 16px}
+  #circPopup,#rectPopup,#arrPopup,#bevPopup,#rotPopup{padding:14px 16px}
   #arrPopup .prow,#bevPopup .prow,#rotPopup .prow{font-size:19px;gap:10px}
   #arrPopup input,#bevPopup input,#rotPopup input{font-size:22px;padding:6px 10px;width:110px}
   #bevPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
@@ -152,7 +152,11 @@
   /* ширина окна постоянная: данные и подсказка — отдельными строками и не
      раздвигают окно, когда текст меняется вместе с числом сегментов */
   #bevPopup{width:300px;box-sizing:border-box}
-  #circPopup{width:330px;box-sizing:border-box}
+  #circPopup,#rectPopup{width:330px;box-sizing:border-box}
+  #rectPopup #rect_ok{flex:1;padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;
+    background:var(--accent2);color:#10131a;font-weight:700;border:1px solid var(--accent2)}
+  #rectPopup .plab{display:inline-block;min-width:60px}
+  #rectPopup .key{color:var(--accent2);font-weight:700}
   #circPopup #circ_ok{flex:1;padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;
     background:var(--accent2);color:#10131a;font-weight:700;border:1px solid var(--accent2)}
   /* Ø и R — отдельными строками, поля в один столбец с Segments */
@@ -167,13 +171,13 @@
   #rotPopup ol{margin:4px 0 6px;padding-left:22px;font-size:14px;color:var(--muted)}
   #rotPopup ol li.cur{color:var(--text);font-weight:700}
   #rotPopup ol li.done{color:#6aff3d}
-  #bevPopup .pinfo,#rotPopup .pinfo,#circPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
-  #bevPopup .phint,#rotPopup .phint,#circPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
+  #bevPopup .pinfo,#rotPopup .pinfo,#rectPopup .pinfo,#circPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
+  #bevPopup .phint,#rotPopup .phint,#rectPopup .phint,#circPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
   #arrPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
   #arrPopup #arr_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
-  #circPopup .prow{font-size:19px;gap:10px}
-  #circPopup input{font-size:22px;padding:6px 10px;width:110px}
+  #circPopup .prow,#rectPopup .prow{font-size:19px;gap:10px}
+  #circPopup input,#rectPopup input{font-size:22px;padding:6px 10px;width:110px}
   /* окно 3D-текста (G,T): крупное, перетаскивается за ручку ⠿ */
   #txtPopup{padding:14px 16px}
   #txtPopup .prow{font-size:19px;gap:10px}
@@ -274,6 +278,17 @@
       <div class="prow">Angle <input id="arr_a" type="number" step="1" min="1" max="360" value="360"> °</div>
       <div class="prow" id="arr_status" style="font-size:13px">click the array center</div>
       <div class="prow" style="gap:10px;margin-top:8px"><button id="arr_ok">OK</button><button id="arr_cancel">Cancel</button></div>
+    </div>
+    <div id="rectPopup" hidden>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Rectangle</b><span id="rect_state" style="font-size:14px">corner</span></div>
+      <div class="prow"><span class="plab" id="rect_wl">W</span><input id="rect_w" type="number" step="0.1" min="0.1" placeholder="—"> mm</div>
+      <div class="prow"><span class="plab" id="rect_hl">H</span><input id="rect_h" type="number" step="0.1" min="0.1" placeholder="—"> mm</div>
+      <div class="pinfo" id="rect_info">&nbsp;</div>
+      <div class="prow"><span class="key">Ctrl</span> — from center</div>
+      <div class="prow"><span class="key">Shift</span> — square</div>
+      <div class="phint" id="rect_hint">Click the first corner, then drag or click the second — it sticks to vertices, edge midpoints and face centers. Type W and H to set the exact size: before the first corner the rectangle follows the cursor and one click places it; after placing, new values redraw it.</div>
+      <div class="prow" style="margin-top:8px"><button id="rect_ok">OK</button></div>
     </div>
     <div id="circPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
@@ -1727,10 +1742,13 @@ function showPickGhost(e, q, label){
 // R — Прямоугольник (Rectangle в SketchUp): угол → противоположный угол.
 // Лежит в плоскости грани по её осям; W,H + Enter — точный размер
 const rectTool = {
-  hud: 'RECTANGLE · click a corner, then drag or click · Ctrl — from center · Shift — square · W,H + Enter · Esc — exit',
+  hud: 'RECTANGLE · click a corner, then drag or click · Ctrl — from center · Shift — square · W,H in the window · Esc — exit',
   start: null, n: null, u: null, v: null, end: null, str: '', downAt: null, ring: null,
   mods: {ctrl: false, shift: false},
   patch: null, snapKind: '', exact: false, // второй угол прилип к ориентиру — размер точный
+  lockW: null, lockH: null, // размер из окна: мышь задаёт только направление
+  last: null,               // только что поставленный: {A, u, v, n, sw, sh, w, h, snap}
+  fieldT: 0,
   // Ctrl — от центра (SketchUp), Shift — квадрат (Figma/Illustrator/Inkscape;
   // в SketchUp Shift фиксирует подсказку Square). Держим, а не щёлкаем
   modChange(e){
@@ -1740,17 +1758,35 @@ const rectTool = {
     if(this.start) this.preview();
   },
   wantsCtrlClick(){ return !!this.start; }, // Ctrl+клик ставит угол, а не крутит камеру
-  on(){ this.reset(); },
-  off(){ this.reset(); ghost.visible = false; tipHide(); hidePlaneTargets(); },
+  on(){
+    this.reset(); this.last = null; this.lockW = null; this.lockH = null;
+    rect_w.value = ''; rect_h.value = '';
+    const vr = view.getBoundingClientRect();
+    rectPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 350) + 'px';
+    rectPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 420) + 'px';
+    rectPopup.hidden = false;
+    this.ui();
+  },
+  off(){
+    clearTimeout(this.fieldT);
+    this.reset(); ghost.visible = false; tipHide(); hidePlaneTargets();
+    rectPopup.hidden = true; releaseToolInput();
+  },
   reset(){ this.start = null; this.end = null; this.str = ''; this.downAt = null; this.kill();
     this.patch = null; this.snapKind = ''; this.exact = false; },
   kill(){ if(this.ring){ scene.remove(this.ring); this.ring.geometry.dispose(); this.ring = null; } },
+  lastValid(){ return !!(this.last && undoStack.length && undoStack[undoStack.length-1] === this.last.snap); },
+  typed(){ return this.lockW != null && this.lockH != null; },
   corners(){
     const d = new THREE.Vector3().subVectors(this.end, this.start);
     // прилипший угол — точный размер (до вершины/середины), свободный — шаг 0.1
     const rnd = this.exact ? (x => Math.round(x*1000)/1000) : snapMM;
-    let w = rnd(d.dot(this.u)), h = rnd(d.dot(this.v));
-    if(this.mods.shift){ // квадрат: сторона по большему смещению, знаки — за курсором
+    const du = d.dot(this.u), dv = d.dot(this.v);
+    let w = rnd(du), h = rnd(dv);
+    const half = this.mods.ctrl ? 0.5 : 1; // от центра: курсор — половина размера
+    if(this.lockW != null) w = (Math.sign(du) || 1) * this.lockW * half;
+    if(this.lockH != null) h = (Math.sign(dv) || 1) * this.lockH * half;
+    if(this.mods.shift && !this.typed()){ // квадрат: сторона по большему смещению
       const m = Math.max(Math.abs(w), Math.abs(h));
       w = (Math.sign(w) || 1) * m; h = (Math.sign(h) || 1) * m;
     }
@@ -1764,6 +1800,41 @@ const rectTool = {
     const D = A.clone().addScaledVector(this.v, H);
     return {A, B, C, D, w: W, h: H};
   },
+  drawRing(c){
+    this.kill();
+    if(Math.abs(c.w) >= 0.1 && Math.abs(c.h) >= 0.1){
+      this.ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints([c.A, c.B, c.C, c.D, c.A]),
+        new THREE.LineBasicMaterial({color: C_EDGE}));
+      scene.add(this.ring);
+    }
+  },
+  // окно: состояние, размеры, привязка, площадь
+  ui(c){
+    const live = !!this.start;
+    const placed = !live && this.lastValid();
+    rect_state.textContent = live ? 'size' : (placed ? 'placed' : 'corner')
+      + (!live && this.typed() ? ' · fixed size' : '');
+    let W = null, H = null;
+    if(live && c){ W = Math.abs(c.w); H = Math.abs(c.h); }
+    else if(placed){ W = this.last.w; H = this.last.h; }
+    else if(this.typed()){ W = this.lockW; H = this.lockH; }
+    const fmt = x => x == null || x < 0.05 ? '' : +x.toFixed(3);
+    if(document.activeElement !== rect_w) rect_w.value = fmt(W);
+    if(document.activeElement !== rect_h) rect_h.value = fmt(H);
+    const u = live ? this.u : (placed ? this.last.u : null), v = live ? this.v : (placed ? this.last.v : null);
+    rect_wl.style.color = u ? axisCssOf(u) : ''; rect_hl.style.color = v ? axisCssOf(v) : '';
+    let h = '';
+    if(this.snapKind) h += circSnapHtml(live ? 'Corner' : 'First corner', this.snapKind);
+    if(W && H){
+      const square = Math.abs(W - H) < 1e-6;
+      h += (h ? '<br>' : '') + (W*H).toFixed(1) + ' mm²'
+        + (square ? ' · <span style="color:#6aff3d;font-weight:700">square</span>' : '')
+        + (live && this.mods.ctrl ? ' · <span style="color:#6aff3d;font-weight:700">from center</span>' : '');
+    }
+    if(!live && this.typed() && !placed) h += (h ? '<br>' : '') + '<span style="color:#6aff3d">click — place ' + this.lockW + ' × ' + this.lockH + '</span>';
+    rect_info.innerHTML = h || '&nbsp;';
+    rect_hint.hidden = !hintsChk.checked;
+  },
   down(e, q){
     if(e.button !== 0 || !q.inside) return;
     if(!this.start){
@@ -1775,6 +1846,13 @@ const rectTool = {
       const b = textBasis(pk.n); this.u = b.u; this.v = b.v;
       this.end = this.start.clone();
       this.downAt = {x: e.clientX, y: e.clientY};
+      this.last = null;
+      if(this.typed()){ // размер задан в окне — клик ставит прямоугольник
+        const half = this.mods.ctrl ? 0.5 : 1;
+        this.end = this.start.clone().addScaledVector(this.u, this.lockW * half).addScaledVector(this.v, this.lockH * half);
+        this.downAt = null;
+        this.commit();
+      }
     } else this.commit();
   },
   move(e, q){
@@ -1785,7 +1863,19 @@ const rectTool = {
       const hf = raycastFace(q);
       if(hf) showPlaneTargets(triNormalAt(hf.faceIndex), hf.point, facePatchCached(hf.faceIndex));
       else hidePlaneTargets();
-      showPickGhost(e, q, 'Rectangle · corner: ');
+      const pt = showPickGhost(e, q, '');
+      tipHide(); // привязка — в окне
+      this.snapKind = pt ? pt.kind : '';
+      // размер задан — призрак прямоугольника едет за курсором
+      const pk = this.typed() ? pickOnFace(q) : null;
+      if(pk){
+        const b = textBasis(pk.n);
+        const k = this.mods.ctrl ? 0.5 : 1;
+        const A = this.mods.ctrl ? pk.pos.clone().addScaledVector(b.u, -this.lockW * k).addScaledVector(b.v, -this.lockH * k) : pk.pos.clone();
+        const B = A.clone().addScaledVector(b.u, this.lockW), C = B.clone().addScaledVector(b.v, this.lockH), D = A.clone().addScaledVector(b.v, this.lockH);
+        this.drawRing({A, B, C, D, w: this.lockW, h: this.lockH});
+      } else this.kill();
+      this.ui();
       return;
     }
     showPlaneTargets(this.n, this.start, this.patch);
@@ -1805,25 +1895,11 @@ const rectTool = {
     }
     this.preview(e);
   },
-  preview(e){
-    this.kill();
+  preview(){
     const c = this.corners();
-    if(Math.abs(c.w) >= 0.1 && Math.abs(c.h) >= 0.1){
-      this.ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints([c.A, c.B, c.C, c.D, c.A]),
-        new THREE.LineBasicMaterial({color: C_EDGE}));
-      scene.add(this.ring);
-    }
-    const square = Math.abs(Math.abs(c.w) - Math.abs(c.h)) < 1e-6 && Math.abs(c.w) >= 0.1;
-    tipAt(e || {clientX: lastMX, clientY: lastMY},
-      'Rectangle <b><span style="color:' + axisCssOf(this.u) + '">' + Math.abs(c.w).toFixed(1)
-      + '</span> × <span style="color:' + axisCssOf(this.v) + '">' + Math.abs(c.h).toFixed(1)
-      + '</span></b> mm' + (square ? ' · <span style="color:#6aff3d;font-weight:700">square</span>' : '')
-      + (this.snapKind ? '<br>' + circSnapHtml('Corner', this.snapKind) : '')
-      + '<br>' + Math.abs(c.w * c.h).toFixed(1) + ' mm²'
-      + (this.mods.ctrl ? ' · <span style="color:#6aff3d;font-weight:700">from center</span>' : '')
-      + (this.str ? '<br>typed ' + this.str + ' mm (Enter)' : '')
-      + (!hintsChk.checked ? '' :
-        '<br><span class="key">Ctrl</span> — from center<br><span class="key">Shift</span> — square'));
+    this.drawRing(c);
+    tipHide(); // размеры — в окне прямоугольника
+    this.ui(c);
   },
   up(e){
     if(!this.start || !this.downAt) return false;
@@ -1843,26 +1919,50 @@ const rectTool = {
     if(k === 'Enter'){
       const parts = this.str.split(',').map(t => parseFloat(t));
       if(parts.length === 2 && parts.every(t => t > 0)){
-        // знак — туда, куда сейчас тянется прямоугольник
-        const d = new THREE.Vector3().subVectors(this.end, this.start);
-        const sw = Math.sign(d.dot(this.u)) || 1, sh = Math.sign(d.dot(this.v)) || 1;
-        const k = this.mods.ctrl ? 0.5 : 1; // от центра курсор задаёт половину
-        this.mods.shift = false;             // введённые числа — ровно как введены
-        this.end = this.start.clone().addScaledVector(this.u, sw * parts[0] * k).addScaledVector(this.v, sh * parts[1] * k);
+        this.lockW = snapMM(parts[0]); this.lockH = snapMM(parts[1]);
         this.commit();
-      }
+      } else if(this.typed()) this.commit();
       e.preventDefault(); return true;
     }
     return false;
   },
   esc(){ // первый Esc отменяет начатый прямоугольник, второй выходит
     if(!this.start) return false;
-    this.reset(); tipHide(); hidePlaneTargets(); ghost.visible = false; return true;
+    this.reset(); tipHide(); hidePlaneTargets(); ghost.visible = false; this.ui(); return true;
+  },
+  // поля W/H: до угла — размер следующего, при растягивании — вместо мыши,
+  // после постановки — перерисовать только что поставленный
+  field(final){
+    clearTimeout(this.fieldT);
+    const w = parseFloat(rect_w.value), h = parseFloat(rect_h.value);
+    this.lockW = w > 0 ? snapMM(w) : null;
+    this.lockH = h > 0 ? snapMM(h) : null;
+    if(this.start){
+      this.preview();
+      if(final && this.typed()) this.commit();
+      return;
+    }
+    if(this.lastValid() && this.typed()){
+      const run = ()=>this.recommit();
+      if(final) run(); else this.fieldT = setTimeout(run, 200);
+      return;
+    }
+    this.ui();
+  },
+  recommit(){
+    if(!this.lastValid() || !this.typed()) return;
+    const L = this.last;
+    undo(true);
+    this.start = L.A.clone(); this.n = L.n.clone(); this.u = L.u.clone(); this.v = L.v.clone();
+    this.mods = {ctrl: false, shift: false};
+    this.end = this.start.clone().addScaledVector(this.u, L.sw * this.lockW).addScaledVector(this.v, L.sh * this.lockH);
+    this.commit();
   },
   commit(){
     const c = this.corners();
     if(Math.abs(c.w) < 0.1 || Math.abs(c.h) < 0.1) return;
     pushUndo();
+    const snap = undoStack[undoStack.length-1];
     // замкнутый контур, как у текста: точный барьер заливки (noExt) и рез
     // по всем задетым треугольникам — внутренняя область станет гранью
     for(const [a, b] of [[c.A, c.B], [c.B, c.C], [c.C, c.D], [c.D, c.A]]){
@@ -1870,10 +1970,33 @@ const rectTool = {
       splitMeshByChord(a, b, true);
     }
     if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+    cleanupMesh();
     extractEdges();
+    this.last = {A: c.A.clone(), u: this.u.clone(), v: this.v.clone(), n: this.n.clone(),
+      sw: Math.sign(c.w) || 1, sh: Math.sign(c.h) || 1, w: Math.abs(c.w), h: Math.abs(c.h), snap};
+    this.lockW = null; this.lockH = null;
     this.reset(); tipHide(); hidePlaneTargets(); ghost.visible = false;
+    this.ui();
   }
 };
+makeGripDrag(rectPopup);
+markModifierWords(rectPopup);
+for(const inp of [rect_w, rect_h]){
+  inp.addEventListener('input', ()=>{ if(activeTool === rectTool) rectTool.field(false); });
+  inp.addEventListener('blur', ()=>{ const v = parseFloat(inp.value); if(v > 0) inp.value = snapMM(v); });
+  inp.addEventListener('keydown', e=>{
+    if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === rectTool) rectTool.field(true); releaseToolInput(); }
+    if(e.key === 'Escape'){ e.preventDefault(); releaseToolInput(); }
+    e.stopPropagation();
+  });
+}
+// OK — поставить начатый прямоугольник (если размер есть) и выйти из инструмента
+rect_ok.addEventListener('click', ()=>{
+  if(activeTool !== rectTool) return;
+  clearTimeout(rectTool.fieldT);
+  if(rectTool.start){ const c = rectTool.corners(); if(Math.abs(c.w) >= 0.1 && Math.abs(c.h) >= 0.1) rectTool.commit(); }
+  setActiveTool(null);
+});
 
 // дельты по осям в их цветах — одной строкой
 function axisTriple(dx, dy, dz){
