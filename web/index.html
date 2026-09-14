@@ -102,9 +102,13 @@
   #chordHint[hidden]{display:none}
   #chordHint .key{color:var(--accent2);font-weight:700}
   /* части составного выбора — кликабельные карточки внутри палитры */
-  #chordHint .selcard{margin:6px 0;padding:6px 10px;border:1px solid var(--line);border-radius:8px;
-    background:rgba(255,255,255,.04);cursor:pointer;font-weight:600}
-  #chordHint .selcard:hover{background:rgba(255,204,0,.14);border-color:#ffcc00}
+  /* палитра пропускает мышь к сцене (pointer-events:none) — карточкам мышь
+     возвращаем, иначе ни наведения, ни клика. Рамка серебристая, наведение —
+     светлеет фон и рамка белеет */
+  #chordHint .selcard{margin:6px 0;padding:6px 10px;border:1px solid #c9d1dc;border-radius:8px;
+    background:rgba(255,255,255,.05);cursor:pointer;font-weight:600;pointer-events:auto;
+    transition:background .08s,border-color .08s}
+  #chordHint .selcard:hover{background:rgba(255,255,255,.2);border-color:#fff;color:#fff}
   #exPopup .key{color:var(--accent2);font-weight:700}
   /* зажатый модификатор: в подписи клавиши белеет само слово Ctrl/Shift/Alt
      («Ctrl+click» — белое «Ctrl», «+click» остаётся синим) */
