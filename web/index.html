@@ -714,6 +714,29 @@ function airColoredLine(pts, onColor, closed){
   return {geometry: g, anyAir};
 }
 const guideAirMat = new THREE.LineBasicMaterial({vertexColors: true});
+// Выбранная (зелёная) или наведённая (жёлтая) линия лежит ровно поверх
+// своей нарисованной линии — две линии на одной глубине мерцают вперемешку
+// (зелёное с красным). Пока линия выбрана или наведена, её собственная
+// линия прячется: цвет выбора всегда главнее цвета «в воздухе»
+function syncGuideOverlays(){ try{ syncGuideOverlays_(); }catch(_){ /* до объявления выбора при загрузке */ } }
+function syncGuideOverlays_(){
+  const polys = edgeSel.map(s => s.pts);
+  if(typeof hover !== 'undefined' && hover && hover.chain) polys.push(hover.chain.pts);
+  const onPoly = P => polys.some(pts => {
+    for(let i=0;i+1<pts.length;i++){
+      const A = pts[i], AB = new THREE.Vector3().subVectors(pts[i+1], A), L2 = AB.lengthSq();
+      if(L2 < 1e-12) continue;
+      const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(P, A).dot(AB) / L2));
+      if(A.clone().addScaledVector(AB, t).distanceToSquared(P) < 1e-6) return true;
+    }
+    return false;
+  });
+  for(const g of guides){
+    const covered = polys.length > 0 && onPoly(g.a) && onPoly(g.b)
+      && onPoly(g.a.clone().lerp(g.b, 0.5));
+    g.line.visible = !covered;
+  }
+}
 function recolorGuides(){
   for(const g of guides){
     const r = airColoredLine([g.a, g.b], C_GUIDE, false);
@@ -3646,6 +3669,7 @@ function killSelPreview(){
 function clearEdgeSel(){
   for(const s of edgeSel){ scene.remove(s.line); s.line.geometry.dispose(); }
   edgeSel = [];
+  syncGuideOverlays();
   killSelPreview();
   hideSelEnds();
   if(vpEdge){ vpEdge = null; vpanel.hidden = true; } // окно G,V ребра живёт, пока живо ребро
@@ -3665,6 +3689,7 @@ function toggleEdgeSel(ch){
     scene.add(l);
     edgeSel.push({pts: ch.pts.map(p=>p.clone()), key, line:l, isGuide: !!ch.isGuide});
   }
+  syncGuideOverlays();
   updateSelPreview();
 }
 // выбранные рёбра сцепляются в один замкнутый цикл? -> точки контура
@@ -5047,6 +5072,7 @@ function setHover(h, isMid){
   } else if(!placing){
     ghost.visible = false;
   }
+  if(guides.length) syncGuideOverlays();
 }
 
 // ---------- окружности и дуги ----------
