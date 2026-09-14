@@ -7514,10 +7514,10 @@ canvas.addEventListener('pointermove', e=>{
       ghost.position.copy(pt.pos); ghost.visible = true;
       showHintFor(pt);
       let msg = 'Point · ' + kindLabel(pt.kind);
-      // координаты будущей точки в цветах осей (X кр., Y зел., Z син.)
-      msg += '<br><span style="color:'+AXIS_CSS.x+'">'+pt.pos.x.toFixed(1)+'</span> · '
-           + '<span style="color:'+AXIS_CSS.y+'">'+pt.pos.y.toFixed(1)+'</span> · '
-           + '<span style="color:'+AXIS_CSS.z+'">'+pt.pos.z.toFixed(1)+'</span>';
+      // координаты будущей точки — каждая ось своей строкой, в цвете оси
+      // (X кр., Y зел., Z син.), тем же кеглем, что и заголовок
+      for(const ax of ['x', 'y', 'z'])
+        msg += '<br><span style="color:'+AXIS_CSS[ax]+'"><b>'+ax.toUpperCase()+'</b> '+pt.pos[ax].toFixed(1)+'</span>';
       if(pt.chain && pt.s !== undefined){ // расстояния до концов ребра (AutoCAD)
         msg += '<br>◀ ' + pt.s.toFixed(1) + ' mm · '
              + (pt.chain.total - pt.s).toFixed(1) + ' mm ▶';
