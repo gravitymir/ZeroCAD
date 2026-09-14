@@ -1522,6 +1522,83 @@ const rectTool = {
   }
 };
 
+// дельты по осям в их цветах — одной строкой
+function axisTriple(dx, dy, dz){
+  return '<span style="color:' + AXIS_CSS.x + '">ΔX ' + dx.toFixed(1) + '</span> · '
+       + '<span style="color:' + AXIS_CSS.y + '">ΔY ' + dy.toFixed(1) + '</span> · '
+       + '<span style="color:' + AXIS_CSS.z + '">ΔZ ' + dz.toFixed(1) + '</span>';
+}
+// T — Рулетка (Tape Measure в SketchUp): расстояние между двумя точками с
+// магнитами и его разложение по осям. Замер держится на экране до нового
+const tapeTool = {
+  hud: 'TAPE MEASURE · click two points · Esc — clear, Esc — exit',
+  a: null, b: null, line: null, dots: [],
+  on(){ this.clear(); },
+  off(){ this.clear(); ghost.visible = false; tipHide(); hideChordHint(); },
+  clear(){
+    this.a = null; this.b = null;
+    if(this.line){ scene.remove(this.line); this.line.geometry.dispose(); this.line = null; }
+    for(const m of this.dots) scene.remove(m);
+    this.dots = [];
+  },
+  addDot(P){
+    const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color: 0xf5c542})));
+    m.position.copy(P); scene.add(m); this.dots.push(m);
+  },
+  drawLine(A, B){
+    if(this.line){ scene.remove(this.line); this.line.geometry.dispose(); }
+    this.line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([A, B]),
+      new THREE.LineDashedMaterial({color: 0xf5c542, dashSize: 1.2, gapSize: 0.8}));
+    this.line.computeLineDistances();
+    scene.add(this.line);
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    const pt = linePickPoint(q);
+    if(!pt) return;
+    if(!this.a || this.b){ // новый замер
+      this.clear(); hideChordHint();
+      this.a = pt.pos.clone(); this.addDot(this.a);
+    } else {
+      this.b = pt.pos.clone(); this.addDot(this.b);
+      this.drawLine(this.a, this.b);
+      ghost.visible = false;
+      this.pin();
+    }
+  },
+  move(e, q){
+    if(!q.inside){ ghost.visible = false; tipHide(); return; }
+    if(!this.a || this.b){ showPickGhost(e, q, 'Tape · from: '); return; }
+    const pt = showPickGhost(e, q, '');
+    if(!pt) return;
+    this.drawLine(this.a, pt.pos);
+    const d = new THREE.Vector3().subVectors(pt.pos, this.a);
+    tipAt(e, 'Distance <b>' + d.length().toFixed(1) + '</b> mm · ' + kindLabel(pt.kind)
+      + '<br>' + axisTriple(d.x, d.y, d.z));
+  },
+  pin(){ // итог замера — в перетаскиваемой палитре, как данные выбранного объекта
+    const d = new THREE.Vector3().subVectors(this.b, this.a);
+    const vr = view.getBoundingClientRect();
+    chordHint.innerHTML = CH_GRIP +
+      '<div style="color:var(--text);font-weight:600">Tape<br>Distance ' + d.length().toFixed(1) + ' mm'
+      + '<br><span style="color:' + AXIS_CSS.x + '">ΔX ' + d.x.toFixed(1) + '</span>'
+      + '<br><span style="color:' + AXIS_CSS.y + '">ΔY ' + d.y.toFixed(1) + '</span>'
+      + '<br><span style="color:' + AXIS_CSS.z + '">ΔZ ' + d.z.toFixed(1) + '</span></div>'
+      + (!hintsChk.checked ? '' :
+        '<div><span class="key">Click</span> — new measurement</div>'
+        + '<div style="opacity:.55">Esc — clear</div>');
+    chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
+    chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 220) + 'px';
+    chordHint.hidden = false;
+    clearTimeout(showChordHint._t);
+    tipHide();
+  },
+  esc(){ // первый Esc стирает замер, второй выходит из рулетки
+    if(!this.a) return false;
+    this.clear(); hideChordHint(); tipHide(); return true;
+  }
+};
+
 // ---------- «Окружность» (G,C — круг в Sketcher FreeCAD) ----------
 // центр (с магнитами) -> радиус мышью или цифрами+Enter -> врезка 48 хордами
 let circleMode = false, circleCenter = null, circlePlane = null, circleR = 0, circleRStr = '';
@@ -4687,6 +4764,13 @@ window.addEventListener('keydown', e=>{
     else setPPMode(!ppMode); // P — Push/Pull, как в SketchUp
     return;
   }
+  // T — рулетка (Tape Measure в SketchUp); G,T занят 3D-текстом
+  if((e.code==='KeyT' || e.key.toLowerCase()==='t') && !chordG && !e.ctrlKey && !e.altKey && !e.metaKey
+     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault();
+    setActiveTool(activeTool === tapeTool ? null : tapeTool);
+    return;
+  }
   // R — прямоугольник (Rectangle в SketchUp); G,R — то же аккордом
   if((e.code==='KeyR' || e.key.toLowerCase()==='r') && !e.ctrlKey && !e.altKey && !e.metaKey
      && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
@@ -5810,6 +5894,7 @@ function loop(t){
   for(const m of divDots) dot(m);
   for(const a of anchors) dot(a.marker);
   for(const d of hintDots) dot(d, 0.0035);
+  if(activeTool && activeTool.dots) for(const m of activeTool.dots) dot(m);
   if(txAnchor) dot(txAnchor, 0.0035);       // якорь текста (красный центр)
   if(txCenterDot) dot(txCenterDot, 0.0035); // центр грани (салатовый)
   dot(selEndA); dot(selEndB);
