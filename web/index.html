@@ -1348,8 +1348,14 @@ const ORBIT_CURSOR = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(
 function updateOrbitCursor(on){
   const toolActive = pointMode || lineMode || circleMode || !!activeTool
     || (typeof textMode !== 'undefined' && textMode);
+  // курсор-орбиту снимаем всегда: окно Extrude могло закрыться (Add/Cut с
+  // зажатым Ctrl), пока Ctrl держали, — иначе кружок так и оставался
+  if(!on){
+    if(canvas.style.cursor === ORBIT_CURSOR) canvas.style.cursor = toolActive ? 'crosshair' : '';
+    return;
+  }
   if(!toolActive && !exLive) return; // окно Extrude тоже даёт Ctrl-орбиту
-  canvas.style.cursor = on ? ORBIT_CURSOR : (toolActive ? 'crosshair' : '');
+  canvas.style.cursor = ORBIT_CURSOR;
 }
 window.addEventListener('keydown', e=>{ if(e.key === 'Control') updateOrbitCursor(true); });
 // Зажатые Ctrl/Shift/Alt: классы на body, по ним в бейджиках белеют слова
@@ -4831,6 +4837,7 @@ function releaseToolInput(){ // фокус обратно на сцену
 }
 function commitExtrude(){
   hideExAxis(); exFaceDrag = null; releaseToolInput();
+  exLive && updateOrbitCursor(false);
   if(!exLive){ exPopup.hidden = true; return; }
   applyExtrudeLive(snapMM(+ex_val.value||0));
   const applied = exLive.applied, n = exLive.n.clone(), op = exOp(), sheet = exLive.sheet;
@@ -5144,6 +5151,7 @@ function buildPatchPrismRange(pos, trisIdx, n, hLow, hHigh){
 }
 function closeExtrude(){ // Esc: стенки уже врезаны — откат всей сессии окна
   hideExAxis(); exFaceDrag = null; releaseToolInput();
+  updateOrbitCursor(false);
   if(exLive){ exLive = null; undo(true); }
   exPopup.hidden = true;
 }
