@@ -184,6 +184,21 @@
   #arrPopup #arr_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
   #circPopup .prow,#rectPopup .prow{font-size:19px;gap:10px}
   #circPopup input,#rectPopup input{font-size:22px;padding:6px 10px;width:110px}
+  /* окно параллельного контура (O) — как окна круга и прямоугольника */
+  #offPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
+    border-radius:10px;padding:14px 16px;font-size:12px;width:330px;box-sizing:border-box}
+  #offPopup[hidden]{display:none}
+  #offPopup .prow{display:flex;align-items:center;gap:10px;margin:4px 0;color:var(--muted);font-size:19px}
+  #offPopup input{font-size:22px;padding:6px 10px;width:110px;background:var(--panel2);color:var(--text);
+    border:1px solid #6b7483;border-radius:6px;transition:border-color .1s,box-shadow .1s}
+  #offPopup input:hover{border-color:#aab3c2}
+  #offPopup input:focus{border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
+  #offPopup .plab{display:inline-block;min-width:88px}
+  #offPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
+  #offPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
+  #offPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
+    border:1px solid var(--line);background:var(--panel2);color:var(--text)}
+  #offPopup #off_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
   /* окно 3D-текста (G,T): крупное, перетаскивается за ручку ⠿ */
   #txtPopup{padding:14px 16px}
   #txtPopup .prow{font-size:19px;gap:10px}
@@ -307,6 +322,14 @@
       <div class="prow"><span class="plab">Segments</span><input id="circ_seg" type="number" step="1" min="3" max="360" value="24"><span id="circ_auto" style="color:#6aff3d">auto</span></div>
       <div class="phint" id="circ_hint">click a center, then drag — or enter Ø/R first and click to place · segments follow the size until you change them · after placing: new Ø, R or segments redraw the circle · OK — finish the tool</div>
       <div class="prow" style="margin-top:8px"><button id="circ_ok">OK</button></div>
+    </div>
+    <div id="offPopup" hidden>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Offset</b><span id="off_state" style="font-size:14px">face</span></div>
+      <div class="prow"><span class="plab">Distance</span><input id="off_d" type="number" step="0.1" value="2"> mm</div>
+      <div class="pinfo" id="off_info">&nbsp;</div>
+      <div class="phint" id="off_hint">A parallel contour inside the selected face, like Offset in SketchUp. Move the cursor over the face to set the distance, or type it — typing takes over from the cursor. Positive is inward, negative is outward. The contour splits the face into a frame and an island: click either one and press E to extrude. Click the face or OK to carve it, Esc — cancel.</div>
+      <div class="prow" style="margin-top:8px;gap:10px"><button id="off_ok">OK</button><button id="off_cancel">Cancel</button></div>
     </div>
     <div id="txtPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
@@ -1407,6 +1430,7 @@ const ORBIT_CURSOR = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(
   '</svg>') + '") 11 11, grab';
 function updateOrbitCursor(on){
   const toolActive = pointMode || lineMode || circleMode || !!activeTool
+    || (typeof offLive !== 'undefined' && !!offLive)
     || (typeof textMode !== 'undefined' && textMode);
   // курсор-орбиту снимаем всегда: окно Extrude могло закрыться (Add/Cut с
   // зажатым Ctrl), пока Ctrl держали, — иначе кружок так и оставался
@@ -2166,7 +2190,7 @@ const tapeTool = {
 // Ошибки и предупреждения. Если открыто окно или палитра, блок встаёт над
 // ним той же ширины (места сверху мало — под ним), иначе — у курсора.
 // Держится 2.8 с
-const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'bevPopup', 'rotPopup',
+const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'offPopup', 'bevPopup', 'rotPopup',
   'arrPopup', 'txtPopup', 'divPopup', 'vpanel', 'popup'];
 function warnTip(msg){
   const box = document.getElementById('warnBox');
@@ -2949,6 +2973,172 @@ function drawCircleRing(center, normal, R){
   return r.anyAir;
 }
 
+// ---------- «Offset» (O — Offset из SketchUp) ----------
+// Параллельный контур внутри выбранной грани. Врезается теми же хордами,
+// что и текст (noExt: сегменты замкнутого контура не продлеваются при
+// расчёте областей), после чего грань распадается на рамку и остров —
+// каждый выбирается кликом и выдавливается E.
+let offLive = null; // {n,u,v,P0,base,ccw,poly,pts,ring,typed}
+function offClearRing(){
+  if(offLive && offLive.ring){ scene.remove(offLive.ring); offLive.ring.geometry.dispose(); offLive.ring = null; }
+}
+function offTo2(loop, u, v, P0){
+  return loop.map(P => { const w = new THREE.Vector3().subVectors(P, P0); return [w.dot(u), w.dot(v)]; });
+}
+function offArea2(poly){
+  let A = 0;
+  for(let i=0;i<poly.length;i++){ const j=(i+1)%poly.length; A += poly[i][0]*poly[j][1] - poly[j][0]*poly[i][1]; }
+  return A/2;
+}
+function offPointIn(poly, p){
+  let c = false;
+  for(let i=0, j=poly.length-1; i<poly.length; j=i++){
+    if((poly[i][1] > p[1]) !== (poly[j][1] > p[1]) &&
+       p[0] < (poly[j][0]-poly[i][0])*(p[1]-poly[i][1])/(poly[j][1]-poly[i][1]) + poly[i][0]) c = !c;
+  }
+  return c;
+}
+// контур грани приходит с мусором: микрорёбра от Т-стыков и лишние точки
+// посреди прямых. Для сдвига важны только настоящие углы — чистим, иначе
+// направление микроребра случайно и «ус» улетает
+function offCleanPoly(poly){
+  let p = poly.slice();
+  for(let pass=0; pass<4; pass++){
+    const out = [];
+    for(let i=0;i<p.length;i++){
+      const a = out.length ? out[out.length-1] : p[(i+p.length-1)%p.length], c = p[(i+1)%p.length], b = p[i];
+      if(Math.hypot(b[0]-a[0], b[1]-a[1]) < 0.01) continue;      // точка-двойник
+      const ax = b[0]-a[0], ay = b[1]-a[1], cx = c[0]-b[0], cy = c[1]-b[1];
+      const L1 = Math.hypot(ax, ay), L2 = Math.hypot(cx, cy);
+      if(L2 > 1e-9 && L1 > 1e-9 &&
+         Math.abs(ax*cy - ay*cx) < 1e-3*L1*L2 && ax*cx + ay*cy > 0) continue; // точка на прямой
+      out.push(b);
+    }
+    if(out.length === p.length){ p = out; break; }
+    p = out;
+    if(p.length < 3) return poly;
+  }
+  return p.length >= 3 ? p : poly;
+}
+// сдвиг замкнутого контура внутрь на d (наружу при d < 0); стыки — «ус»
+// (miter), как в SketchUp и AutoCAD. Слишком большой сдвиг выворачивает
+// контур наизнанку — такой результат отбрасываем (null), окно скажет
+function offsetPoly2(poly, d, ccw){
+  const n = poly.length, sgn = ccw ? 1 : -1, ln = [];
+  for(let i=0;i<n;i++){
+    const a = poly[i], b = poly[(i+1)%n];
+    const dx = b[0]-a[0], dy = b[1]-a[1], L = Math.hypot(dx, dy);
+    if(L < 1e-9) return null;
+    const nx = -dy/L*sgn, ny = dx/L*sgn; // единичная нормаль внутрь контура
+    ln.push({px: a[0] + nx*d, py: a[1] + ny*d, dx: dx/L, dy: dy/L});
+  }
+  const out = [];
+  for(let i=0;i<n;i++){
+    const A = ln[(i+n-1)%n], B = ln[i];
+    const cr = A.dx*B.dy - A.dy*B.dx;
+    if(Math.abs(cr) < 1e-9){ out.push([B.px, B.py]); continue; } // рёбра на одной прямой
+    const t = ((B.px-A.px)*B.dy - (B.py-A.py)*B.dx) / cr;
+    const X = A.px + A.dx*t, Y = A.py + A.dy*t;
+    if(Math.hypot(X-B.px, Y-B.py) > 20*Math.abs(d) + 1e-6) return null; // игла в остром угле
+    out.push([X, Y]);
+  }
+  for(let i=0;i<n;i++){ // ребро развернулось — контур уже схлопнулся
+    const j = (i+1)%n;
+    if((out[j][0]-out[i][0])*ln[i].dx + (out[j][1]-out[i][1])*ln[i].dy < -1e-9) return null;
+  }
+  const A0 = offArea2(poly), A1 = offArea2(out);
+  if(!(A1*A0 > 0) || Math.abs(A1) < 1e-6) return null;
+  return out;
+}
+function offPreview(){
+  offClearRing();
+  if(!offLive) return;
+  const d = snapMM(+off_d.value || 0);
+  offLive.poly = Math.abs(d) < 0.05 ? null : offsetPoly2(offLive.base, d, offLive.ccw);
+  if(!offLive.poly){
+    offLive.pts = null;
+    off_info.innerHTML = Math.abs(d) < 0.05
+      ? '&nbsp;' : '<span style="color:#d9534f;font-weight:700">too large for this face</span>';
+    return;
+  }
+  offLive.pts = offLive.poly.map(([x,y]) =>
+    offLive.P0.clone().addScaledVector(offLive.u, x).addScaledVector(offLive.v, y));
+  const r = airColoredLine(offLive.pts, C_EDGE, true);
+  offLive.ring = new THREE.Line(r.geometry, new THREE.LineBasicMaterial({vertexColors: true}));
+  scene.add(offLive.ring);
+  off_info.innerHTML = (d > 0 ? 'inward' : 'outward') + ' · ' + Math.abs(d).toFixed(1) + ' mm'
+    + (r.anyAir ? ' · <span style="color:#d9534f;font-weight:700">outside the face</span>' : '');
+}
+function openOffset(){
+  if(!ppPatch) return;
+  const loop = patchOutlineLoop(mesh.geometry.attributes.position.array, ppPatch.tris);
+  if(!loop){ warnTip('Offset needs a face with one closed outline'); return; }
+  const n = ppPatch.normal.clone(), b = textBasis(n), P0 = loop[0].clone();
+  const base = offCleanPoly(offTo2(loop, b.u, b.v, P0));
+  offLive = {n, u: b.u, v: b.v, P0, base, ccw: offArea2(base) > 0,
+             poly: null, pts: null, ring: null, typed: false};
+  off_state.textContent = base.length + ' edges';
+  const vr = view.getBoundingClientRect();
+  offPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 340) + 'px';
+  offPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 220) + 'px';
+  offPopup.hidden = false;
+  offPreview();
+  off_d.focus(); off_d.select();
+}
+function closeOffset(){
+  if(!offLive) return;
+  offClearRing();
+  offLive = null;
+  offPopup.hidden = true;
+  releaseToolInput();
+}
+function commitOffset(){
+  if(!offLive) return;
+  if(!offLive.pts){ warnTip('Offset does not fit this face'); return; }
+  const pts = offLive.pts;
+  pushUndo();
+  for(let i=0;i<pts.length;i++){
+    const A = pts[i], B = pts[(i+1)%pts.length];
+    if(A.distanceTo(B) < 1e-6) continue;
+    addGuide(A, B, true);
+    // 'segment' — рез строго по отрезку с веером в его концах. Режим
+    // «вся линия» на круглой грани (веер из центра) оставлял в каждом
+    // углу контура клин 0.01 мм² — те самые лишние линии-осколки
+    splitMeshByChord(A, B, 'segment');
+  }
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  extractEdges();
+  closeOffset();
+  hidePatch(); ppPatch = null; // индексы лоскута устарели — выбор снимаем
+}
+// курсор над гранью задаёт расстояние (как перетаскивание в SketchUp),
+// пока пользователь не ввёл число руками
+function offMove(e, q){
+  if(!offLive || offLive.typed) return;
+  const P = rayOnPlane(q, offLive.n, offLive.P0);
+  if(!P) return;
+  const w = new THREE.Vector3().subVectors(P, offLive.P0);
+  const p = [w.dot(offLive.u), w.dot(offLive.v)], b = offLive.base;
+  let best = Infinity;
+  for(let i=0;i<b.length;i++){
+    const a0 = b[i], a1 = b[(i+1)%b.length];
+    const dx = a1[0]-a0[0], dy = a1[1]-a0[1], L2 = dx*dx + dy*dy;
+    let t = L2 > 1e-12 ? ((p[0]-a0[0])*dx + (p[1]-a0[1])*dy)/L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    best = Math.min(best, Math.hypot(p[0]-a0[0]-dx*t, p[1]-a0[1]-dy*t));
+  }
+  off_d.value = snapMM(offPointIn(b, p) ? best : -best).toFixed(1);
+  offPreview();
+}
+off_d.addEventListener('input', ()=>{ if(offLive) offLive.typed = true; offPreview(); });
+off_d.addEventListener('keydown', e=>{
+  if(e.key === 'Enter'){ e.preventDefault(); commitOffset(); }
+  if(e.key === 'Escape'){ closeOffset(); }
+  e.stopPropagation();
+});
+document.getElementById('off_ok').addEventListener('click', commitOffset);
+document.getElementById('off_cancel').addEventListener('click', closeOffset);
+
 // ---------- «3D Text» (G,T — 3D Text из SketchUp) ----------
 // Свой вшитый пиксельный шрифт 5x7 (8-битная классика): программа не зависит
 // от шрифтов системы, а прямоугольные глифы дружат с BSP и слайсерами.
@@ -3274,6 +3464,7 @@ function makeGripDrag(win){
 }
 makeGripDrag(txtPopup);
 makeGripDrag(circPopup);
+makeGripDrag(offPopup);
 makeGripDrag(arrPopup);
 makeGripDrag(bevPopup);
 for(const inp of [bev_d, bev_s]){
@@ -3435,7 +3626,11 @@ function splitMeshByChord(A, B, wholeLine){
     // а стенка кармана — полоски с лишними рёбрами. Осколки на плоской грани
     // безвредны; одиночной линии допуски оставлены как были
     const SNAP = exact ? 1e-4 : 0.02, NEAR = exact ? 1e-4 : 0.04;
-    const snapV = P => { for(const v of V) if(P.distanceTo(v) < SNAP) return v.clone(); return P; };
+    // точка реза прилипает только к концам СВОЕГО ребра: прилипание к
+    // противоположной вершине тонкого треугольника подворачивало осколок на
+    // соседа — наложения ломали булевы (клинья и лишние линии у текста)
+    const snapE = (P, i, j) => (P.distanceTo(V[i]) < SNAP ? V[i].clone()
+      : (P.distanceTo(V[j]) < SNAP ? V[j].clone() : P));
     const isVert = P => { for(let i=0;i<3;i++) if(P.distanceTo(V[i]) < 1e-6) return i; return -1; };
     // середина линии реза должна лежать внутри отрезка хорды — иначе это
     // продолжение линии за её концом (режет дольки вдоль, до вала)
@@ -3487,7 +3682,7 @@ function splitMeshByChord(A, B, wholeLine){
         }
         const inRange = cand.filter(c=>{ const t=tOf(c.P); return t>-CT && t<chordLen+CT; });
         if(inRange.length !== 1) break;
-        const P = snapV(inRange[0].P);
+        const P = inRange[0].edge >= 0 ? snapE(inRange[0].P, inRange[0].edge, (inRange[0].edge+1)%3) : inRange[0].P;
         if(P.distanceTo(E) < (exact ? 1e-4 : 0.1)) break; // хорда едва зацепила треугольник
         const edge = isVert(P) >= 0 ? -1 : inRange[0].edge;
         const fan = [];
@@ -3511,7 +3706,7 @@ function splitMeshByChord(A, B, wholeLine){
       const a0 = zeroIdx, b0 = (zeroIdx+1)%3, c0 = (zeroIdx+2)%3;
       // рез почти вдоль ребра даёт микроосколки — границей служит само ребро
       if(Math.min(Math.abs(d[b0]), Math.abs(d[c0])) < NEAR) continue;
-      const P = snapV(new THREE.Vector3().lerpVectors(V[b0], V[c0], d[b0]/(d[b0]-d[c0])));
+      const P = snapE(new THREE.Vector3().lerpVectors(V[b0], V[c0], d[b0]/(d[b0]-d[c0])), b0, c0);
       if(isVert(P) >= 0) continue; // рез совпал с существующим ребром
       if(!wholeLine && !inChord(tOf(V[a0]), tOf(P))) continue;
       splitTris.set(ti, [[V[a0].clone(), V[b0].clone(), P], [V[a0].clone(), P.clone(), V[c0].clone()]]);
@@ -3523,8 +3718,8 @@ function splitMeshByChord(A, B, wholeLine){
       const b0 = (a0+1)%3, c0 = (a0+2)%3;
       // рез, прижатый к вершине, оставил бы микроосколок
       if(Math.abs(d[a0]) < NEAR) continue;
-      const Pab = snapV(new THREE.Vector3().lerpVectors(V[a0], V[b0], d[a0]/(d[a0]-d[b0])));
-      const Pca = snapV(new THREE.Vector3().lerpVectors(V[c0], V[a0], d[c0]/(d[c0]-d[a0])));
+      const Pab = snapE(new THREE.Vector3().lerpVectors(V[a0], V[b0], d[a0]/(d[a0]-d[b0])), a0, b0);
+      const Pca = snapE(new THREE.Vector3().lerpVectors(V[c0], V[a0], d[c0]/(d[c0]-d[a0])), c0, a0);
       if(!wholeLine && !inChord(tOf(Pab), tOf(Pca))) continue;
       const va = isVert(Pab), vb = isVert(Pca);
       if(va >= 0 && vb >= 0) continue; // рез вдоль существующего ребра
@@ -7136,9 +7331,17 @@ window.addEventListener('keydown', e=>{
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); deleteFacePatch(); return;
   }
+  // O — параллельный контур внутри грани (Offset в SketchUp)
+  if((e.code==='KeyO' || e.key.toLowerCase()==='o') && !e.ctrlKey && !e.altKey && !e.metaKey
+     && !lineMode && !dragPt && (ppPatch || offLive)
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    if(offLive) closeOffset(); else openOffset();
+    return;
+  }
   // E — точное выдавливание выбранной грани (Extrude, как E в Blender)
   if((e.code==='KeyE' || e.key.toLowerCase()==='e') && !e.ctrlKey && !e.altKey && !e.metaKey
-     && ppPatch && !lineMode && !dragPt
+     && ppPatch && !offLive && !lineMode && !dragPt
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); chordG = 0; hideChordHint(); openExtrude(); return;
   }
@@ -7176,7 +7379,7 @@ window.addEventListener('keydown', e=>{
       if(pushed) undo(true);
     }
     closePopup(); deselect(); tipHide(); clearEdgeSel();
-    hideChordHint(); chordG = 0; closeExtrude(); cancelDivide();
+    hideChordHint(); chordG = 0; closeExtrude(); closeOffset(); cancelDivide();
     hidePatch(); ppPatch=null; // снять выбор плоскости
     if(pointMode) setPointMode(false);
     if(activeTool && !(activeTool.esc && activeTool.esc())) setActiveTool(null);
@@ -7386,6 +7589,10 @@ canvas.addEventListener('pointerdown', e=>{
         try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
       }
     }
+    return;
+  }
+  if(offLive){ // окно Offset: клик по сцене врезает контур
+    if(e.button === 0 && q.inside) commitOffset();
     return;
   }
   if(activeTool){ activeTool.down(e, q); return; }
@@ -7858,6 +8065,7 @@ canvas.addEventListener('pointermove', e=>{
     } else { ghost.visible = false; tipHide(); }
     return;
   }
+  if(offLive){ offMove(e, q); return; }
   if(activeTool){ activeTool.move(e, q); return; }
   if(circleMode){ // превью окружности за курсором
     if(!q.inside){ ghost.visible=false; killRing(); tipHide(); return; }
