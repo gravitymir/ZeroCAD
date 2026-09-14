@@ -133,6 +133,14 @@
   #exPopup .excmd{font-size:22px;color:var(--muted)}
   #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
+  /* поле ввода видно как поле и без фокуса: заметная рамка; наведение —
+     светлее, фокус — синяя рамка с ореолом (во всех окнах инструментов) */
+  :is(#exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup,#bevPopup,#rotPopup,#vpanel) input:not([type=checkbox]):not([type=radio]){
+    border:1px solid #6b7483;transition:border-color .1s,box-shadow .1s}
+  :is(#exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup,#bevPopup,#rotPopup,#vpanel) input:not([type=checkbox]):not([type=radio]):hover{
+    border-color:#aab3c2}
+  :is(#exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup,#bevPopup,#rotPopup,#vpanel) input:not([type=checkbox]):not([type=radio]):focus{
+    border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
   /* окно окружности (G,C): число сегментов, перетаскивается за ⠿ */
   #circPopup,#arrPopup,#bevPopup,#rotPopup{padding:14px 16px}
   #arrPopup .prow,#bevPopup .prow,#rotPopup .prow{font-size:19px;gap:10px}
