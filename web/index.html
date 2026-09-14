@@ -127,7 +127,8 @@
   #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden],#arrPopup[hidden],#bevPopup[hidden],#rotPopup[hidden]{display:none}
   #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow,#arrPopup .prow,#bevPopup .prow,#rotPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
   /* короткие строки-подсказки окна Extrude, по одной строке */
-  #exPopup .exline{font-size:14px;color:var(--muted);margin:6px 0 0;white-space:nowrap}
+  #exPopup .exline{font-size:14px;line-height:1.45;color:var(--muted);margin:6px 0 0;max-width:340px}
+  #exPopup .exline div{margin:3px 0}
   /* строка команды — как пункт палитры, всегда видна */
   #exPopup .excmd{font-size:22px;color:var(--muted)}
   #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
@@ -289,8 +290,13 @@
       <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Extrude</b></div>
       <div class="prow"><input id="ex_val" type="number" step="0.1" value="5"> mm</div>
       <div class="prow excmd" id="ex_ctrl"><span class="key">Ctrl</span> — cut</div>
-      <div class="prow" style="gap:10px;margin-top:8px"><button id="ex_ok">Add</button><button id="ex_cancel">Cancel</button></div>
-      <div class="exline">Drag the face with the mouse</div>
+      <div class="exline">
+        <div>Drag the face with the mouse or type the height; a minus goes against the face direction.</div>
+        <div>Hold <span class="key">Ctrl</span> while dragging, or press <span class="key">Ctrl</span>+Enter — the face cuts material instead of adding it. Released the face with Ctrl held — the button stays Cut.</div>
+        <div>Without Ctrl it picks itself: into the body — Cut, outward or from a face in the air — Add.</div>
+        <div>Enter — apply · Esc — cancel</div>
+      </div>
+      <div class="prow" style="gap:10px;margin-top:10px"><button id="ex_ok">Add</button><button id="ex_cancel">Cancel</button></div>
     </div>
     <div id="vcnav">
       <button data-act="home" title="Home view">⌂</button>
@@ -1406,7 +1412,7 @@ function setLineMode(on){
   lnb.hidden = !on;
   lineStart = null; lastLinePt = null; lineLenStr = ''; lineDirLock = null;
   killRubber();
-  if(on){ setHover(null); tipHide(); if(activeTool) setActiveTool(null); }
+  if(on){ hideChordHint(); setHover(null); tipHide(); if(activeTool) setActiveTool(null); }
   else { ghost.visible = false; vGhost.visible = false; tipHide(); }
   canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
@@ -1618,7 +1624,7 @@ function commitLinePoint(pos){
 let pointMode = false;
 function setPointMode(on){
   pointMode = on;
-  if(on){ setLineMode(false); if(typeof circleMode !== 'undefined' && circleMode) setCircleMode(false);
+  if(on){ hideChordHint(); setLineMode(false); if(typeof circleMode !== 'undefined' && circleMode) setCircleMode(false);
           if(activeTool) setActiveTool(null); setHover(null); tipHide(); }
   else { ghost.visible = false; tipHide(); }
   canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
@@ -1635,6 +1641,7 @@ function setActiveTool(tool){
   activeTool = null;
   if(prev) prev.off();
   if(tool){
+    hideChordHint(); // палитра выбора не нужна, пока в руке инструмент
     setLineMode(false);
     if(circleMode) setCircleMode(false);
     
@@ -2590,6 +2597,7 @@ function setCircleMode(on){
   killRing(); hidePlaneTargets();
   circleDown = null; circLast = null; circAuto = true; circFixedR = null; circRLock = false;
   if(on){
+    hideChordHint();
     setLineMode(false); if(activeTool) setActiveTool(null);
     setHover(null); tipHide();
     const vr = view.getBoundingClientRect();
@@ -2698,6 +2706,7 @@ let txPlaceDrag = null; // зажатая ЛКМ тащит стартовую �
 function setTextMode(on){
   textMode = on;
   if(on){
+    hideChordHint();
     setLineMode(false);
     if(circleMode) setCircleMode(false);
     
