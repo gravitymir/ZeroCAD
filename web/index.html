@@ -3467,7 +3467,7 @@ function showChordHint(){
     row('M', 'Polyline (chained)', true) +
     row('R', 'Rectangle on face', true) +
     row('A', 'Polar array (selected lines)', edgeSel.some(x=>x.isGuide) || !!selAnchor) +
-    row('C', 'Circle on face', true) +
+    row('C', 'Circle on face — also C', true) +
     row('T', '3D Text on face', true) +
     row('Y', 'Point (with snaps) — also P', true) +
     row('E', 'Extrude face ±mm', !!ppPatch) +
@@ -6486,12 +6486,13 @@ window.addEventListener('keydown', e=>{
     e.preventDefault(); chordG = 0; hideChordHint();
     openTextPopup(); return;
   }
-  // G,C — окружность
-  if((e.code==='KeyC' || e.key.toLowerCase()==='c') && chordG
-     && performance.now() - chordG < 4000 && !e.ctrlKey && !e.altKey && !e.metaKey
-     && document.activeElement.tagName!=='INPUT'){
-    e.preventDefault(); chordG = 0; hideChordHint();
-    setCircleMode(true); return;
+  // C — окружность (Circle, как C в SketchUp); G,C — то же аккордом
+  if((e.code==='KeyC' || e.key.toLowerCase()==='c') && !e.ctrlKey && !e.altKey && !e.metaKey
+     && !dragPt && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault();
+    if(chordG){ chordG = 0; hideChordHint(); setCircleMode(true); }
+    else setCircleMode(!circleMode);
+    return;
   }
   // F — залить выбранный контур, а без выбора — дырку (Fill, как F в Blender)
   if((e.code==='KeyF' || e.key.toLowerCase()==='f') && !e.ctrlKey && !e.altKey && !e.metaKey
