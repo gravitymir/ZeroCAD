@@ -111,14 +111,19 @@
   .chgrip:hover{color:var(--text)}
   #chordHint .chgrip:hover{color:var(--text)}
   /* окна точного выдавливания (E) и деления ребра точками */
-  #exPopup,#divPopup,#txtPopup,#circPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
+  #exPopup,#divPopup,#txtPopup,#circPopup,#arrPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
     border-radius:10px;padding:10px 12px;font-size:12px}
-  #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden]{display:none}
-  #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
-  #exPopup input,#divPopup input,#txtPopup input,#circPopup input{width:80px;background:var(--panel2);color:var(--text);
+  #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden],#arrPopup[hidden]{display:none}
+  #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow,#arrPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
+  #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#arrPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
   /* окно окружности (G,C): число сегментов, перетаскивается за ⠿ */
-  #circPopup{padding:14px 16px}
+  #circPopup,#arrPopup{padding:14px 16px}
+  #arrPopup .prow{font-size:19px;gap:10px}
+  #arrPopup input{font-size:22px;padding:6px 10px;width:110px}
+  #arrPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
+    border:1px solid var(--line);background:var(--panel2);color:var(--text)}
+  #arrPopup #arr_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
   #circPopup .prow{font-size:19px;gap:10px}
   #circPopup input{font-size:22px;padding:6px 10px;width:110px}
   /* окно 3D-текста (G,T): крупное, перетаскивается за ручку ⠿ */
@@ -188,6 +193,14 @@
         <button id="dv_ok" class="primary" style="flex:1">OK</button>
         <button id="dv_cancel" style="flex:1">Cancel</button>
       </div>
+    </div>
+    <div id="arrPopup" hidden>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Polar array</b></div>
+      <div class="prow">Count <input id="arr_n" type="number" step="1" min="2" max="360" value="6"></div>
+      <div class="prow">Angle <input id="arr_a" type="number" step="1" min="1" max="360" value="360"> °</div>
+      <div class="prow" id="arr_status" style="font-size:13px">click the array center</div>
+      <div class="prow" style="gap:10px;margin-top:8px"><button id="arr_ok">OK</button><button id="arr_cancel">Cancel</button></div>
     </div>
     <div id="circPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
@@ -1599,6 +1612,272 @@ const tapeTool = {
   }
 };
 
+// красное короткое сообщение у курсора
+function warnTip(msg){
+  tipAt({clientX: lastMX, clientY: lastMY}, '<span style="color:#d9534f;font-weight:700">' + msg + '</span>');
+  clearTimeout(warnTip._t);
+  warnTip._t = setTimeout(tipHide, 1800);
+}
+// нарисованная линия, на которой лежит отрезок A-B (линия может быть длиннее)
+function guideFor(A, B){
+  for(const g of guides){
+    const d = new THREE.Vector3().subVectors(g.b, g.a);
+    const L = d.length();
+    if(L < 1e-6) continue;
+    const u = d.multiplyScalar(1/L);
+    const vA = new THREE.Vector3().subVectors(A, g.a), vB = new THREE.Vector3().subVectors(B, g.a);
+    const tA = vA.dot(u), tB = vB.dot(u);
+    if(vA.addScaledVector(u, -tA).length() > 0.02 || vB.addScaledVector(u, -tB).length() > 0.02) continue;
+    if(Math.max(tA, tB) < 0.05 || Math.min(tA, tB) > L - 0.05) continue;
+    return g;
+  }
+  return null;
+}
+// Что умеют крутить и копировать Q и круговой массив: выбранные нарисованные
+// линии (по сегментам между перекрёстками) или выбранная точка. Сетку тела
+// не трогаем — поворот её части исказил бы деталь
+function collectRotItems(){
+  const segs = [];
+  for(const es of edgeSel){
+    if(!es.isGuide) continue;
+    for(let i=0;i+1<es.pts.length;i++){
+      const A = es.pts[i].clone(), B = es.pts[i+1].clone();
+      const g = guideFor(A, B);
+      segs.push({A, B, noExt: g ? !!g.noExt : false, curve: g ? (g.curve || 0) : 0});
+    }
+  }
+  return {segs, pts: selAnchor ? [selAnchor.pos.clone()] : [], anchor: selAnchor};
+}
+// поставить повёрнутую копию; curveMap: старый id кривой -> id копии
+function placeRotated(items, center, n, angle, curveMap){
+  const qn = new THREE.Quaternion().setFromAxisAngle(n, angle);
+  const rot = P => P.clone().sub(center).applyQuaternion(qn).add(center);
+  for(const sg of items.segs){
+    let cv = 0;
+    if(sg.curve){
+      if(!curveMap.has(sg.curve)) curveMap.set(sg.curve, ++curveSeq);
+      cv = curveMap.get(sg.curve);
+    }
+    const A2 = rot(sg.A), B2 = rot(sg.B);
+    addGuide(A2, B2, sg.noExt, cv);
+    splitMeshByChord(A2, B2, !!(sg.noExt || sg.curve));
+  }
+  for(const P of items.pts) makeAnchor(rot(P));
+}
+// пунктирные призраки повёрнутых копий для предпросмотра
+function rotGhosts(items, center, n, angles){
+  const objs = [];
+  const mat = new THREE.LineDashedMaterial({color: C_EDGE, dashSize: 1.0, gapSize: 0.6});
+  for(const a of angles){
+    const qn = new THREE.Quaternion().setFromAxisAngle(n, a);
+    const rot = P => P.clone().sub(center).applyQuaternion(qn).add(center);
+    const pts = [];
+    for(const sg of items.segs) pts.push(rot(sg.A), rot(sg.B));
+    if(pts.length){
+      const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), mat);
+      l.computeLineDistances(); scene.add(l); objs.push(l);
+    }
+    for(const P of items.pts){
+      const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color: C_EDGE})));
+      m.position.copy(rot(P)); scene.add(m); objs.push(m);
+    }
+  }
+  return objs;
+}
+function killObjs(objs){
+  for(const o of objs){ scene.remove(o); if(o.geometry && o.geometry !== sphereGeo) o.geometry.dispose(); }
+  objs.length = 0;
+}
+// точка в плоскости инструмента: с магнитами, а без них — просто под курсором
+function planePick(q, n, P0){
+  const pt = linePickPoint(q);
+  if(pt){
+    const off = new THREE.Vector3().subVectors(pt.pos, P0).dot(n);
+    return {pos: pt.pos.clone().addScaledVector(n, -off), kind: pt.kind};
+  }
+  const h = rayOnPlane(q, n, P0);
+  return h ? {pos: h, kind: 'on plane'} : null;
+}
+function rotItemsEmpty(it){ return !it.segs.length && !it.pts.length; }
+// короткое нажатие Ctrl (без клика и других клавиш) — переключатель
+// «копия», как в SketchUp; зажатый Ctrl с мышью по-прежнему крутит камеру
+let ctrlTapT = 0, ctrlTapDirty = true;
+window.addEventListener('keydown', e=>{
+  if(e.key === 'Control'){ if(!e.repeat){ ctrlTapT = performance.now(); ctrlTapDirty = false; } }
+  else ctrlTapDirty = true;
+});
+window.addEventListener('pointerdown', ()=>{ ctrlTapDirty = true; }, true);
+window.addEventListener('keyup', e=>{
+  if(e.key !== 'Control' || ctrlTapDirty) return;
+  if(performance.now() - ctrlTapT < 450 && activeTool && activeTool.ctrlTap) activeTool.ctrlTap();
+});
+
+// Q — Поворот (Rotate в SketchUp): центр → опорное направление → угол.
+// Протрактор лежит в плоскости грани, липнет к шагу 15°; угол можно ввести
+const rotTool = {
+  get hud(){
+    return 'ROTATE · center → reference → angle · type ° + Enter · Ctrl — copy: '
+      + (this.copy ? '<span style="color:#6aff3d">ON</span>' : 'off') + ' · Esc';
+  },
+  items: null, center: null, n: null, ref: null, angle: 0, copy: false, str: '',
+  ghosts: [], rubber: null,
+  on(){ this.center = null; this.ref = null; this.angle = 0; this.str = ''; this.copy = false; },
+  off(){ this.clearView(); ghost.visible = false; tipHide(); },
+  clearView(){
+    killObjs(this.ghosts);
+    if(this.rubber){ scene.remove(this.rubber); this.rubber.geometry.dispose(); this.rubber = null; }
+  },
+  drawRubber(A, B){
+    if(this.rubber){ scene.remove(this.rubber); this.rubber.geometry.dispose(); }
+    this.rubber = new THREE.Line(new THREE.BufferGeometry().setFromPoints([A, B]),
+      new THREE.LineDashedMaterial({color: 0xf5c542, dashSize: 1.2, gapSize: 0.8}));
+    this.rubber.computeLineDistances();
+    scene.add(this.rubber);
+  },
+  tip(e){
+    const deg = this.angle * 180 / Math.PI;
+    let html;
+    if(!this.center) return;
+    if(!this.ref) html = 'Rotate · reference direction' + (this.str ? '<br>typed ' + this.str + '° (Enter)' : '<br>or type an angle + Enter');
+    else html = 'Rotate <b>' + deg.toFixed(1) + '°</b>' + (this.snapped ? ' <span style="color:#6aff3d">15°</span>' : '')
+      + '<br>' + (this.copy ? 'copy' : 'move') + (this.str ? ' · typed ' + this.str + '° (Enter)' : '');
+    tipAt(e || {clientX: lastMX, clientY: lastMY}, html);
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    if(!this.center){
+      const pk = pickOnFace(q);
+      if(!pk) return;
+      this.center = pk.pos; this.n = pk.n;
+      return;
+    }
+    const pk = planePick(q, this.n, this.center);
+    if(!pk) return;
+    const dir = pk.pos.clone().sub(this.center);
+    if(dir.length() < 0.3) return;
+    if(!this.ref){ this.ref = dir.normalize(); return; }
+    this.apply(this.angle);
+  },
+  move(e, q){
+    if(!q.inside){ ghost.visible = false; tipHide(); return; }
+    if(!this.center){ showPickGhost(e, q, 'Rotate · center: '); return; }
+    ghost.visible = false;
+    const pk = planePick(q, this.n, this.center);
+    if(!pk) return;
+    this.drawRubber(this.center, pk.pos);
+    const dir = pk.pos.clone().sub(this.center);
+    if(this.ref && dir.length() > 1e-6){
+      let a = Math.atan2(new THREE.Vector3().crossVectors(this.ref, dir).dot(this.n), this.ref.dot(dir));
+      const deg = a * 180 / Math.PI, near = Math.round(deg / 15) * 15;
+      this.snapped = Math.abs(deg - near) < 2.5;
+      if(this.snapped) a = near * Math.PI / 180;
+      this.angle = a;
+      killObjs(this.ghosts);
+      this.ghosts = rotGhosts(this.items, this.center, this.n, [a]);
+    }
+    this.tip(e);
+  },
+  ctrlTap(){
+    this.copy = !this.copy;
+    toolb.innerHTML = this.hud + '<br>';
+    this.tip();
+  },
+  key(e){
+    if(!this.center) return false;
+    const k = e.key;
+    if(/^[0-9.]$/.test(k) || (k === '-' && !this.str)){ this.str += k; this.tip(); e.preventDefault(); return true; }
+    if(k === 'Backspace'){ this.str = this.str.slice(0, -1); this.tip(); e.preventDefault(); return true; }
+    if(k === 'Enter'){
+      const deg = parseFloat(this.str);
+      if(isFinite(deg)) this.apply(deg * Math.PI / 180);
+      e.preventDefault(); return true;
+    }
+    return false;
+  },
+  esc(){ // первый Esc сбрасывает начатый поворот, второй выходит
+    if(!this.center) return false;
+    this.center = null; this.ref = null; this.str = ''; this.angle = 0;
+    this.clearView(); tipHide(); return true;
+  },
+  apply(angle){
+    if(Math.abs(angle) < 1e-9){ this.esc(); return; }
+    pushUndo();
+    const curveMap = new Map();
+    if(!this.copy){
+      // перенос: исходные сегменты стираются, кривая сохраняет свой id
+      for(const sg of this.items.segs){
+        eraseGuideSegment(sg.A, sg.B);
+        if(sg.curve) curveMap.set(sg.curve, sg.curve);
+      }
+      const an = this.items.anchor;
+      if(an){
+        const i = anchors.indexOf(an);
+        scene.remove(an.marker);
+        if(i >= 0) anchors.splice(i, 1);
+      }
+    }
+    placeRotated(this.items, this.center, this.n, angle, curveMap);
+    if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+    clearEdgeSel(); deselect(); hideChordHint();
+    setActiveTool(null);
+    extractEdges();
+  }
+};
+
+// G,A — Круговой массив (PolarPattern во FreeCAD): выбранные линии/точка
+// размножаются вокруг центра. Угол 360 — копии ровно по кругу, меньше —
+// веером от исходника до крайней копии включительно
+const arrTool = {
+  hud: 'POLAR ARRAY · click the center · count and angle in the window · Enter — OK · Esc',
+  items: null, center: null, n: null, ghosts: [],
+  on(){
+    this.center = null;
+    const vr = view.getBoundingClientRect();
+    arrPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 340) + 'px';
+    arrPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 300) + 'px';
+    arr_status.textContent = 'click the array center';
+    arrPopup.hidden = false;
+  },
+  off(){ killObjs(this.ghosts); arrPopup.hidden = true; releaseToolInput(); ghost.visible = false; tipHide(); },
+  angles(){
+    const cnt = Math.max(2, Math.min(360, Math.round(+arr_n.value || 6)));
+    const total = Math.max(1, Math.min(360, +arr_a.value || 360));
+    const step = Math.abs(total - 360) < 1e-6 ? 360 / cnt : total / (cnt - 1);
+    const out = [];
+    for(let k=1;k<cnt;k++) out.push(k * step * Math.PI / 180);
+    return out;
+  },
+  preview(){
+    killObjs(this.ghosts);
+    if(this.center) this.ghosts = rotGhosts(this.items, this.center, this.n, this.angles());
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    const pk = pickOnFace(q);
+    if(!pk) return;
+    this.center = pk.pos; this.n = pk.n;
+    arr_status.textContent = 'center set · click to move it · Enter — OK';
+    this.preview();
+  },
+  move(e, q){
+    if(!q.inside){ ghost.visible = false; tipHide(); return; }
+    showPickGhost(e, q, this.center ? 'Array · move center: ' : 'Array · center: ');
+  },
+  key(e){
+    if(e.key === 'Enter'){ this.commit(); e.preventDefault(); return true; }
+    return false;
+  },
+  commit(){
+    if(!this.center){ arr_status.textContent = 'click the array center first'; return; }
+    pushUndo();
+    for(const a of this.angles()) placeRotated(this.items, this.center, this.n, a, new Map());
+    if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+    clearEdgeSel(); deselect(); hideChordHint();
+    setActiveTool(null);
+    extractEdges();
+  }
+};
+
 // ---------- «Окружность» (G,C — круг в Sketcher FreeCAD) ----------
 // центр (с магнитами) -> радиус мышью или цифрами+Enter -> врезка 48 хордами
 let circleMode = false, circleCenter = null, circlePlane = null, circleR = 0, circleRStr = '';
@@ -1981,6 +2260,17 @@ function makeGripDrag(win){
 }
 makeGripDrag(txtPopup);
 makeGripDrag(circPopup);
+makeGripDrag(arrPopup);
+for(const inp of [arr_n, arr_a]){
+  inp.addEventListener('input', ()=>{ if(activeTool === arrTool) arrTool.preview(); });
+  inp.addEventListener('keydown', e=>{
+    if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === arrTool) arrTool.commit(); }
+    if(e.key === 'Escape'){ e.preventDefault(); setActiveTool(null); }
+    e.stopPropagation();
+  });
+}
+arr_ok.addEventListener('click', ()=>{ if(activeTool === arrTool) arrTool.commit(); });
+arr_cancel.addEventListener('click', ()=>setActiveTool(null));
 // густота круга меняется вживую: предпросмотр перерисовывается сразу
 circ_seg.addEventListener('input', ()=>{
   if(!circleMode || !circleCenter || circleR <= 0.1) return;
@@ -2405,6 +2695,7 @@ function showChordHint(){
     row('L', 'Line (single segments)', true) +
     row('M', 'Polyline (chained)', true) +
     row('R', 'Rectangle on face', true) +
+    row('A', 'Polar array (selected lines)', edgeSel.some(x=>x.isGuide) || !!selAnchor) +
     row('C', 'Circle on face', true) +
     row('T', '3D Text on face', true) +
     row('Y', 'Point (with snaps)', true) +
@@ -2538,7 +2829,7 @@ function eraseGuideSegment(A, B){
     if(t1 < L-0.05) tails.push([g.a.clone().addScaledVector(u, t1), g.b.clone()]);
     scene.remove(g.line); g.line.geometry.dispose();
     guides.splice(i,1);
-    for(const [pa,pb] of tails) addGuide(pa, pb, noExt);
+    for(const [pa,pb] of tails) addGuide(pa, pb, noExt, g.curve);
     return true;
   }
   return false;
@@ -3815,6 +4106,8 @@ function showEdgePalette(ch){
     '<div><span class="key">G,V</span> — move by X/Y/Z</div>' +
     '<div><span class="key">G,Y</span> — point / divide</div>' +
     '<div><span class="key">Del</span> — erase edge / line</div>' +
+    (ch && ch.isGuide ? '<div><span class="key">Q</span> — rotate / copy</div>'
+      + '<div><span class="key">G,A</span> — polar array</div>' : '') +
     '<div><span class="key">Ctrl+click</span> — multi-select</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 420) + 'px';
@@ -4762,6 +5055,26 @@ window.addEventListener('keydown', e=>{
     e.preventDefault();
     if(chordG){ chordG = 0; hideChordHint(); setPPMode(true); }
     else setPPMode(!ppMode); // P — Push/Pull, как в SketchUp
+    return;
+  }
+  // Q — поворот/копия выбранных линий или точки (Rotate в SketchUp)
+  if((e.code==='KeyQ' || e.key.toLowerCase()==='q') && !chordG && !e.ctrlKey && !e.altKey && !e.metaKey
+     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault();
+    if(activeTool === rotTool){ setActiveTool(null); return; }
+    const it = collectRotItems();
+    if(rotItemsEmpty(it)){ warnTip('Select drawn lines or a point to rotate'); return; }
+    hideChordHint();
+    rotTool.items = it; setActiveTool(rotTool);
+    return;
+  }
+  // G,A — круговой массив выбранных линий или точки (PolarPattern во FreeCAD)
+  if((e.code==='KeyA' || e.key.toLowerCase()==='a') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    const it = collectRotItems();
+    if(rotItemsEmpty(it)){ warnTip('Select drawn lines or a point for the array'); return; }
+    arrTool.items = it; setActiveTool(arrTool);
     return;
   }
   // T — рулетка (Tape Measure в SketchUp); G,T занят 3D-текстом
