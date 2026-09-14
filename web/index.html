@@ -5166,6 +5166,10 @@ function extrudeLooksClean(snapPos, applied, patchArea){
   if(!(patchArea > 0)) return false;
   if(countBoundaryEdges() !== 0) return false;
   const want = meshVolumeOf(snapPos) + applied * patchArea;
+  // грань ушла на всю толщину и дальше — прошла сквозь противоположную
+  // стенку: объём формально сходится (64000 − 42·1600 = −3200), но тело
+  // вывернуто. Такой результат не берём — вычитание сделает BSP честно
+  if(want <= 0.5) return false;
   const got = meshVolumeOf(mesh.geometry.attributes.position.array);
   return Math.abs(got - want) < Math.max(0.5, Math.abs(applied) * patchArea * 0.002);
 }
