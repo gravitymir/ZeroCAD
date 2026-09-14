@@ -126,10 +126,10 @@
     border-radius:10px;padding:10px 12px;font-size:12px}
   #exPopup[hidden],#divPopup[hidden],#txtPopup[hidden],#circPopup[hidden],#arrPopup[hidden],#bevPopup[hidden],#rotPopup[hidden]{display:none}
   #exPopup .prow,#divPopup .prow,#txtPopup .prow,#circPopup .prow,#arrPopup .prow,#bevPopup .prow,#rotPopup .prow{display:flex;align-items:center;gap:6px;margin:4px 0;color:var(--muted)}
-  #exPopup .exop{padding:3px 12px;border-radius:6px;cursor:pointer;border:1px solid var(--line);
-    background:var(--panel2);color:var(--text);font-size:12px}
-  #exPopup .exop.on#ex_join{background:#2ecc40;border-color:#2ecc40;color:#10131a;font-weight:700}
-  #exPopup .exop.on#ex_cut{background:#ff4d4d;border-color:#ff4d4d;color:#10131a;font-weight:700}
+  /* главная строка окна: Ctrl — вычитание; пока операция Cut — строка красная */
+  #exPopup #ex_ctrl{color:var(--text)}
+  #exPopup #ex_ctrl.cut{color:#ff4d4d}
+  #exPopup #ex_ctrl.cut .key{color:#ff4d4d}
   #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
   /* окно окружности (G,C): число сегментов, перетаскивается за ⠿ */
@@ -285,12 +285,9 @@
     <div id="exPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
       <div class="prow" style="padding-right:44px">Extrude: <input id="ex_val" type="number" step="0.1" value="5"> mm</div>
-      <div class="prow">Operation <button id="ex_join" class="exop on">Join</button><button id="ex_cut" class="exop">Cut</button><span id="ex_auto" style="color:#6aff3d">auto</span></div>
-      <div id="ex_hint" style="font-size:12px;max-width:320px;color:var(--muted);margin:4px 0">
-        <div><span class="key">Ctrl+drag</span> the face — Cut</div>
-        <div><span class="key">Ctrl</span> short tap — switch Join / Cut</div>
-        <div>Join adds, Cut removes — in either direction (− against the normal) · auto: into a solid — Cut, otherwise Join</div>
-      </div>
+      <div class="prow" id="ex_ctrl"><span class="key">Ctrl</span>+drag / Enter — Cut</div>
+      <div id="ex_state" style="font-size:14px;margin:2px 0;color:var(--text)"></div>
+      <div id="ex_hint" style="font-size:12px;max-width:330px;color:var(--muted);margin:4px 0">Without Ctrl: into a solid — Cut, out of it or from a sheet — Join · works in either direction (− against the normal)</div>
       <div class="prow" style="gap:10px"><button id="ex_ok">OK</button><button id="ex_cancel">Cancel</button></div>
     </div>
     <div id="vcnav">
@@ -1358,6 +1355,9 @@ window.addEventListener('keydown', e=>{ if(e.key === 'Control') updateOrbitCurso
 // нажатия клавиши) — так оно не «залипает», если клавишу отпустили вне окна
 function syncModifierClasses(e){
   if(activeTool && activeTool.modChange) activeTool.modChange(e);
+  if(typeof exLive !== 'undefined' && exLive && !!(e.ctrlKey || e.metaKey) !== exCtrl){
+    exCtrl = !!(e.ctrlKey || e.metaKey); paintExOp();
+  }
   const b = document.body.classList;
   b.toggle('ctrlHeld', !!(e.ctrlKey || e.metaKey));
   b.toggle('shiftHeld', !!e.shiftKey);
@@ -1365,7 +1365,10 @@ function syncModifierClasses(e){
 }
 for(const type of ['keydown', 'keyup', 'pointermove', 'pointerdown'])
   window.addEventListener(type, syncModifierClasses, true);
-window.addEventListener('blur', ()=>document.body.classList.remove('ctrlHeld', 'shiftHeld', 'altHeld'));
+window.addEventListener('blur', ()=>{
+  document.body.classList.remove('ctrlHeld', 'shiftHeld', 'altHeld');
+  if(typeof exLive !== 'undefined' && exLive && exCtrl){ exCtrl = false; paintExOp(); } // Ctrl отпущен вне окна
+});
 // слова модификаторов в подписях клавиш оборачиваем автоматически — любые
 // нынешние и будущие бейджики получают подсветку без правок в их коде
 const MOD_RE = /\b(Ctrl|Cmd|Shift|Alt)\b/g;
@@ -1995,7 +1998,6 @@ window.addEventListener('keyup', e=>{
   if(e.key !== 'Control' || ctrlTapDirty) return;
   if(performance.now() - ctrlTapT >= 450) return;
   if(activeTool && activeTool.ctrlTap) activeTool.ctrlTap();
-  else if(typeof exLive !== 'undefined' && exLive) setExOp(exOp() === 'join' ? 'cut' : 'join');
 });
 
 // Q — Поворот (Rotate в SketchUp): центр → опорное направление → угол.
@@ -4673,17 +4675,23 @@ let exLive = null; // живой предпросмотр: {idx, set, n, applied
 // Операция выдавливания (Fusion 360: Join / Cut, знак расстояния — только
 // направление). Пока пользователь не выбрал сам, операция следует за
 // направлением: в тело — Cut, из тела — Join; у листа в воздухе — Join всегда
-let exOpManual = null; // null — авто, 'join' | 'cut' — выбрано руками
+// Одно правило: зажатый Ctrl — Cut (тянуть грань, Enter или OK с Ctrl).
+// Грань, отпущенная с зажатым Ctrl, помнит Cut до конца сессии окна
+let exOpManual = null; // null — авто, 'cut' — закреплено Ctrl+тянуть
+let exCtrl = false;    // Ctrl зажат прямо сейчас
 function exOp(){
   if(exOpManual) return exOpManual;
+  if(exCtrl) return 'cut';
   if(!exLive) return 'join';
   return (!exLive.sheet && exLive.applied < 0) ? 'cut' : 'join';
 }
 function paintExOp(){
   const op = exOp();
-  ex_join.classList.toggle('on', op === 'join');
-  ex_cut.classList.toggle('on', op === 'cut');
-  ex_auto.hidden = !!exOpManual;
+  ex_ctrl.classList.toggle('cut', op === 'cut');
+  ex_state.innerHTML = op === 'cut'
+    ? '<span style="color:#ff4d4d;font-weight:700">Cut</span> — removes material'
+    : '<span style="color:#2ecc40;font-weight:700">Join</span> — adds material';
+  ex_state.innerHTML += exOpManual || exCtrl ? '' : ' <span style="color:var(--muted)">(auto)</span>';
   ex_hint.hidden = !hintsChk.checked;
 }
 function setExOp(op){ exOpManual = op; paintExOp(); }
@@ -4783,7 +4791,7 @@ function openExtrude(){
   const sheet = patchIsSheet(posC, ppPatch.tris);
   exLive = {idx: ex.idx, fac: ex.fac, set: new Set(ex.idx),
             n: ppPatch.normal.clone(), applied: 0, sheet};
-  exOpManual = null;
+  exOpManual = null; exCtrl = false;
   paintExOp();
   showExAxis(c, ppPatch.normal);
   const vr = view.getBoundingClientRect();
@@ -5145,13 +5153,11 @@ ex_val.addEventListener('input', ()=>{
   if(Number.isFinite(v)) applyExtrudeLive(snapMM(v)); else paintExVal();
 });
 ex_val.addEventListener('keydown', e=>{
-  if(e.key === 'Enter'){ e.preventDefault(); commitExtrude(); }
+  if(e.key === 'Enter'){ e.preventDefault(); if(e.ctrlKey) setExOp('cut'); commitExtrude(); }
   if(e.key === 'Escape'){ closeExtrude(); }
   e.stopPropagation();
 });
-document.getElementById('ex_ok').addEventListener('click', commitExtrude);
-ex_join.addEventListener('click', ()=>{ if(exLive) setExOp('join'); });
-ex_cut.addEventListener('click', ()=>{ if(exLive) setExOp('cut'); });
+document.getElementById('ex_ok').addEventListener('click', e=>{ if(e.ctrlKey) setExOp('cut'); commitExtrude(); });
 document.getElementById('ex_cancel').addEventListener('click', closeExtrude);
 makeGripDrag(exPopup); // ручка ⠿ окна Extrude
 const vpanel = document.getElementById('vpanel'), vp_t = document.getElementById('vp_t'),
@@ -6858,11 +6864,8 @@ canvas.addEventListener('pointerdown', e=>{
           q0: {cam: q.cam, ox: q.ox, oy: q.oy, w: q.w, h: q.h},
           base: f.point.clone(), n: exLive.n.clone(),
           t0: rayLineParam(raycaster.ray, f.point, exLive.n),
-          v0: exLive.applied,
-          // Ctrl+тянуть — Cut, пока Ctrl зажат; отпустил — прежняя операция
-          ctrl: e.ctrlKey, prevOp: exOpManual
+          v0: exLive.applied
         };
-        if(e.ctrlKey) setExOp('cut');
         try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
         return;
       }
@@ -7094,6 +7097,7 @@ canvas.addEventListener('pointerup', e=>{
   }
   if(exFaceDrag){ // отпустили лоскут — значение остаётся, окно живёт
     exFaceDrag = null;
+    setExOp(e.ctrlKey ? 'cut' : null); // отпустил с Ctrl — Cut закреплён
     return;
   }
   if(edgeDrag){
@@ -7273,10 +7277,6 @@ canvas.addEventListener('pointermove', e=>{
       }
     }
     return;
-  }
-  if(exFaceDrag && !!e.ctrlKey !== exFaceDrag.ctrl){
-    exFaceDrag.ctrl = !!e.ctrlKey;
-    setExOp(exFaceDrag.ctrl ? 'cut' : exFaceDrag.prevOp);
   }
   if(exFaceDrag){ // окно Extrude: лоскут едет за мышью, цифры — за ним
     const rc = canvas.getBoundingClientRect();
