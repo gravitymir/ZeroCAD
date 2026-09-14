@@ -163,7 +163,7 @@
       <div class="vplabel quadonly" style="left:10px;top:calc(50% + 10px)"><b>+Y</b> view (side) · grid 1/10 mm</div>
       <div class="vplabel quadonly" style="left:calc(50% + 10px);top:calc(50% + 10px)"><b>+Z</b> view (top) · grid 1/10 mm</div>
     </div>
-    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>PUSH/PULL · drag a face · P/Esc — exit<br></b><b id="lnb" style="color:var(--accent2)" hidden>LINE · click–click — chord · type length + Enter · Esc/L — exit<br></b><b id="txb" style="color:var(--accent2)" hidden>3D TEXT · click a face — anchor (center of text) · Esc — cancel<br></b><b id="fps"></b></div>
+    <div id="hud"><b id="ppb" style="color:var(--accent2)" hidden>PUSH/PULL · drag a face · P/Esc — exit<br></b><b id="lnb" style="color:var(--accent2)" hidden>LINE · click–click — chord · type length + Enter · Esc/L — exit<br></b><b id="txb" style="color:var(--accent2)" hidden>3D TEXT · click a face — anchor (center of text) · Esc — cancel<br></b><b id="toolb" style="color:var(--accent2)" hidden></b><b id="fps"></b></div>
     <div id="popup" hidden>
       <div class="prow">Edge: <b id="p_len">–</b> mm</div>
       <div class="prow">Offset: <input id="p_off" type="number" step="0.1" min="0"> mm</div>
@@ -605,6 +605,7 @@ let pendingEdge = null; // нажатие на ребро: клик => выбо�
 // автосохранение включается только после первой загрузки модели: иначе
 // стартовая сборка затёрла бы сохранённую работу раньше, чем её восстановят
 let autosaveArmed = false, autosaveT = 0, projectDirty = false;
+let activeTool = null; // инструмент на общем каркасе: R, T, Q, массив
 let pendingVertex = null; // нажатие на вершину: клик => выбор, движение => камера
 let edgeDrag = null;    // перенос целого ребра (как перетаскивание линии в Sketcher)
 let vpEdge = null;      // окно G,V в режиме ребра: {pts0, idx, mid} — двигаем середину
@@ -1103,7 +1104,7 @@ const ORBIT_CURSOR = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(
   '<path d="M6.2 2.2l-1.9 5.6 5.8-1.2z" fill="#f2f5fa" stroke="#10131a" stroke-width="1"/>' +
   '</svg>') + '") 11 11, grab';
 function updateOrbitCursor(on){
-  const toolActive = pointMode || lineMode || circleMode || ppMode
+  const toolActive = pointMode || lineMode || circleMode || ppMode || !!activeTool
     || (typeof textMode !== 'undefined' && textMode);
   if(!toolActive && !exLive) return; // окно Extrude тоже даёт Ctrl-орбиту
   canvas.style.cursor = on ? ORBIT_CURSOR : (toolActive ? 'crosshair' : '');
@@ -1127,7 +1128,7 @@ function setPPMode(on){
   ppMode = on;
   ppb.hidden = !on;
   ppPatch = null; hidePatch();
-  if(on){ setHover(null); tipHide(); if(lineMode) setLineMode(false); }
+  if(on){ setHover(null); tipHide(); if(lineMode) setLineMode(false); if(activeTool) setActiveTool(null); }
   canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
 }
@@ -1143,7 +1144,7 @@ function setLineMode(on){
   lnb.hidden = !on;
   lineStart = null; lastLinePt = null; lineLenStr = ''; lineDirLock = null;
   killRubber();
-  if(on){ setHover(null); tipHide(); if(ppMode) setPPMode(false); }
+  if(on){ setHover(null); tipHide(); if(ppMode) setPPMode(false); if(activeTool) setActiveTool(null); }
   else { ghost.visible = false; vGhost.visible = false; tipHide(); }
   canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
@@ -1356,11 +1357,170 @@ let pointMode = false;
 function setPointMode(on){
   pointMode = on;
   if(on){ setLineMode(false); if(typeof circleMode !== 'undefined' && circleMode) setCircleMode(false);
-          if(ppMode) setPPMode(false); setHover(null); tipHide(); }
+          if(ppMode) setPPMode(false); if(activeTool) setActiveTool(null); setHover(null); tipHide(); }
   else { ghost.visible = false; tipHide(); }
   canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
 }
+
+// ---------- каркас простых инструментов: R, T, Q, круговой массив ----------
+// Инструмент — объект с методами on/off/down/move/up/key/esc и строкой hud.
+// К событиям мыши и клавиатуры каркас подключён один раз, поэтому новый
+// инструмент не требует правок в обработчиках.
+function setActiveTool(tool){
+  if(activeTool === tool) return;
+  const prev = activeTool;
+  activeTool = null;
+  if(prev) prev.off();
+  if(tool){
+    setLineMode(false);
+    if(circleMode) setCircleMode(false);
+    if(ppMode) setPPMode(false);
+    if(pointMode) setPointMode(false);
+    if(textMode || txtLive) cancelText();
+    setHover(null); tipHide();
+    activeTool = tool;
+    tool.on();
+  }
+  toolb.hidden = !tool;
+  if(tool) toolb.innerHTML = tool.hud + '<br>';
+  canvas.style.cursor = tool ? 'crosshair' : ''; // после выключения других режимов
+  updateToolTag();
+}
+// точка под курсором на плоскости (за краем грани — тоже: черчение в воздухе)
+function rayOnPlane(q, n, P0){
+  raycaster.setFromCamera({x: q.mx/q.w*2-1, y: -(q.my/q.h*2-1)}, q.cam);
+  const hit = new THREE.Vector3();
+  return raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(n, P0), hit)
+    ? hit : null;
+}
+// цвет оси, вдоль которой лежит направление (для подписи размеров)
+function axisCssOf(dir){
+  if(Math.abs(dir.x) > 0.99) return AXIS_CSS.x;
+  if(Math.abs(dir.y) > 0.99) return AXIS_CSS.y;
+  if(Math.abs(dir.z) > 0.99) return AXIS_CSS.z;
+  return 'var(--text)';
+}
+// привязанная точка для старта инструмента: магниты + проекция в плоскость грани
+function pickOnFace(q){
+  const f = raycastFace(q);
+  const pt = linePickPoint(q);
+  if(!f || !pt) return null;
+  const n = triNormalAt(f.faceIndex);
+  const off = new THREE.Vector3().subVectors(pt.pos, f.point).dot(n);
+  return {pos: pt.pos.clone().addScaledVector(n, -off), n, kind: pt.kind, pt};
+}
+function showPickGhost(e, q, label){
+  const pt = linePickPoint(q);
+  if(!pt){ ghost.visible = false; tipHide(); return null; }
+  ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
+  ghost.position.copy(pt.pos); ghost.visible = true;
+  showHintFor(pt);
+  tipAt(e, label + kindLabel(pt.kind));
+  return pt;
+}
+
+// R — Прямоугольник (Rectangle в SketchUp): угол → противоположный угол.
+// Лежит в плоскости грани по её осям; W,H + Enter — точный размер
+const rectTool = {
+  hud: 'RECTANGLE · click a corner, then drag or click · W,H + Enter · Esc — exit',
+  start: null, n: null, u: null, v: null, end: null, str: '', downAt: null, ring: null,
+  on(){ this.reset(); },
+  off(){ this.reset(); ghost.visible = false; tipHide(); },
+  reset(){ this.start = null; this.end = null; this.str = ''; this.downAt = null; this.kill(); },
+  kill(){ if(this.ring){ scene.remove(this.ring); this.ring.geometry.dispose(); this.ring = null; } },
+  corners(){
+    const d = new THREE.Vector3().subVectors(this.end, this.start);
+    const w = snapMM(d.dot(this.u)), h = snapMM(d.dot(this.v));
+    const A = this.start.clone();
+    const B = A.clone().addScaledVector(this.u, w);
+    const C = B.clone().addScaledVector(this.v, h);
+    const D = A.clone().addScaledVector(this.v, h);
+    return {A, B, C, D, w, h};
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    if(!this.start){
+      const pk = pickOnFace(q);
+      if(!pk) return;
+      this.start = pk.pos; this.n = pk.n;
+      const b = textBasis(pk.n); this.u = b.u; this.v = b.v;
+      this.end = this.start.clone();
+      this.downAt = {x: e.clientX, y: e.clientY};
+    } else this.commit();
+  },
+  move(e, q){
+    if(!q.inside){ ghost.visible = false; tipHide(); return; }
+    if(!this.start){
+      showPickGhost(e, q, 'Rectangle · corner: ');
+      return;
+    }
+    ghost.visible = false;
+    const P = rayOnPlane(q, this.n, this.start);
+    if(P) this.end = P;
+    this.preview(e);
+  },
+  preview(e){
+    this.kill();
+    const c = this.corners();
+    if(Math.abs(c.w) >= 0.1 && Math.abs(c.h) >= 0.1){
+      this.ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints([c.A, c.B, c.C, c.D, c.A]),
+        new THREE.LineBasicMaterial({color: C_EDGE}));
+      scene.add(this.ring);
+    }
+    tipAt(e || {clientX: lastMX, clientY: lastMY},
+      'Rectangle <b><span style="color:' + axisCssOf(this.u) + '">' + Math.abs(c.w).toFixed(1)
+      + '</span> × <span style="color:' + axisCssOf(this.v) + '">' + Math.abs(c.h).toFixed(1)
+      + '</span></b> mm<br>' + Math.abs(c.w * c.h).toFixed(1) + ' mm²'
+      + (this.str ? '<br>typed ' + this.str + ' mm (Enter)' : ''));
+  },
+  up(e){
+    if(!this.start || !this.downAt) return false;
+    const moved = Math.hypot(e.clientX - this.downAt.x, e.clientY - this.downAt.y) > 4;
+    this.downAt = null;
+    if(moved){ this.commit(); return true; } // тянули и отпустили — прямоугольник встал
+    return false;
+  },
+  key(e){
+    if(!this.start) return false;
+    const k = e.key;
+    if(/^[0-9.]$/.test(k) || k === ',' || k === ';' || k === '*' || k === 'x' || k === 'X'){
+      this.str += /^[0-9.]$/.test(k) ? k : ',';
+      this.preview(); e.preventDefault(); return true;
+    }
+    if(k === 'Backspace'){ this.str = this.str.slice(0, -1); this.preview(); e.preventDefault(); return true; }
+    if(k === 'Enter'){
+      const parts = this.str.split(',').map(t => parseFloat(t));
+      if(parts.length === 2 && parts.every(t => t > 0)){
+        // знак — туда, куда сейчас тянется прямоугольник
+        const d = new THREE.Vector3().subVectors(this.end, this.start);
+        const sw = Math.sign(d.dot(this.u)) || 1, sh = Math.sign(d.dot(this.v)) || 1;
+        this.end = this.start.clone().addScaledVector(this.u, sw * parts[0]).addScaledVector(this.v, sh * parts[1]);
+        this.commit();
+      }
+      e.preventDefault(); return true;
+    }
+    return false;
+  },
+  esc(){ // первый Esc отменяет начатый прямоугольник, второй выходит
+    if(!this.start) return false;
+    this.reset(); tipHide(); return true;
+  },
+  commit(){
+    const c = this.corners();
+    if(Math.abs(c.w) < 0.1 || Math.abs(c.h) < 0.1) return;
+    pushUndo();
+    // замкнутый контур, как у текста: точный барьер заливки (noExt) и рез
+    // по всем задетым треугольникам — внутренняя область станет гранью
+    for(const [a, b] of [[c.A, c.B], [c.B, c.C], [c.C, c.D], [c.D, c.A]]){
+      addGuide(a, b, true);
+      splitMeshByChord(a, b, true);
+    }
+    if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+    extractEdges();
+    this.reset(); tipHide();
+  }
+};
 
 // ---------- «Окружность» (G,C — круг в Sketcher FreeCAD) ----------
 // центр (с магнитами) -> радиус мышью или цифрами+Enter -> врезка 48 хордами
@@ -1382,7 +1542,8 @@ function setCircleMode(on){
   killRing();
   circleDown = null;
   if(on){
-    setLineMode(false); if(ppMode) setPPMode(false); setHover(null); tipHide();
+    setLineMode(false); if(ppMode) setPPMode(false); if(activeTool) setActiveTool(null);
+    setHover(null); tipHide();
     const vr = view.getBoundingClientRect();
     circPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 330) + 'px';
     circPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 200) + 'px';
@@ -1478,6 +1639,7 @@ function setTextMode(on){
     if(circleMode) setCircleMode(false);
     if(ppMode) setPPMode(false);
     if(pointMode) setPointMode(false);
+    if(activeTool) setActiveTool(null);
     setHover(null); tipHide();
   }
   txb.hidden = !on;
@@ -2165,6 +2327,7 @@ function showChordHint(){
   chordHint.innerHTML =
     row('L', 'Line (single segments)', true) +
     row('M', 'Polyline (chained)', true) +
+    row('R', 'Rectangle on face', true) +
     row('C', 'Circle on face', true) +
     row('T', '3D Text on face', true) +
     row('Y', 'Point (with snaps)', true) +
@@ -4007,6 +4170,7 @@ function loadProjectData(d, name){
   if(lineMode) setLineMode(false);
   if(circleMode) setCircleMode(false);
   if(pointMode) setPointMode(false);
+  if(activeTool) setActiveTool(null);
   hidePatch(); ppPatch = null; ppParts = null;
   setMeshFromArray(b64ToF32(d.mesh));
   restoreGuides((d.guides || []).map(g=>({a: a3v(g.a), b: a3v(g.b), noExt: g.noExt, curve: g.curve})));
@@ -4523,6 +4687,14 @@ window.addEventListener('keydown', e=>{
     else setPPMode(!ppMode); // P — Push/Pull, как в SketchUp
     return;
   }
+  // R — прямоугольник (Rectangle в SketchUp); G,R — то же аккордом
+  if((e.code==='KeyR' || e.key.toLowerCase()==='r') && !e.ctrlKey && !e.altKey && !e.metaKey
+     && !dragPt && !ppDrag && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault();
+    if(chordG){ chordG = 0; hideChordHint(); setActiveTool(rectTool); }
+    else setActiveTool(activeTool === rectTool ? null : rectTool);
+    return;
+  }
   // G,V — фокус в поля X/Y/Z выбранной вершины/точки или ребра (середина)
   if((e.code==='KeyV' || e.key.toLowerCase()==='v') && chordG
      && (sel || selAnchor || edgeSel.length === 1)
@@ -4569,6 +4741,8 @@ window.addEventListener('keydown', e=>{
     }
     return;
   }
+  // клавиши активного инструмента каркаса (размеры, Enter)
+  if(activeTool && activeTool.key && document.activeElement.tagName!=='INPUT' && activeTool.key(e)) return;
   // ввод радиуса окружности цифрами
   if(circleMode && circleCenter){
     if(/^[0-9]$/.test(e.key) || e.key==='.' || e.key===','){
@@ -4604,7 +4778,7 @@ window.addEventListener('keydown', e=>{
   }
   // F — залить выбранный контур, а без выбора — дырку (Fill, как F в Blender)
   if((e.code==='KeyF' || e.key.toLowerCase()==='f') && !e.ctrlKey && !e.altKey && !e.metaKey
-     && !dragPt && !ppDrag && !lineMode && !pointMode && !circleMode && !ppMode && !textMode
+     && !dragPt && !ppDrag && !lineMode && !pointMode && !circleMode && !ppMode && !textMode && !activeTool
      && document.activeElement.tagName!=='INPUT'){
     const selLoop = edgeSelLoop();
     if(selLoop && fillLoop(selLoop)){ clearEdgeSel(); hideChordHint(); e.preventDefault(); return; }
@@ -4674,6 +4848,7 @@ window.addEventListener('keydown', e=>{
     hideChordHint(); chordG = 0; closeExtrude(); cancelDivide();
     if(!ppMode){ hidePatch(); ppPatch=null; } // снять выбор плоскости
     if(pointMode) setPointMode(false);
+    if(activeTool && !(activeTool.esc && activeTool.esc())) setActiveTool(null);
     if(circleMode){
       if(circleCenter){ circleCenter=null; circleRStr=''; killRing(); }
       else setCircleMode(false);
@@ -4813,7 +4988,7 @@ canvas.addEventListener('pointerdown', e=>{
   // в режимах инструментов камера не отнимается: ПКМ — сдвиг, СКМ — вращение,
   // а Ctrl+ЛКМ — временная орбита (отпустил — инструмент снова в руке)
   if((e.button === 2 || e.button === 1 || (e.button === 0 && e.ctrlKey))
-     && (pointMode || circleMode || lineMode || ppMode || textMode) && q.is3D){
+     && (pointMode || circleMode || lineMode || ppMode || textMode || activeTool) && q.is3D){
     drag = {x: e.clientX, y: e.clientY, b: e.button === 0 ? 1 : e.button};
     try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
     return;
@@ -4876,6 +5051,7 @@ canvas.addEventListener('pointerdown', e=>{
     }
     return;
   }
+  if(activeTool){ activeTool.down(e, q); return; }
   if(circleMode){ // режим «Окружность»: центр, затем радиус
     if(e.button===0 && q.inside){
       if(!circleCenter){
@@ -5000,6 +5176,7 @@ canvas.addEventListener('pointerdown', e=>{
   }
 });
 canvas.addEventListener('pointerup', e=>{
+  if(activeTool && activeTool.up && activeTool.up(e)){ drag = null; return; }
   if(circleMode && circleCenter && circleDown){
     // тянули от центра и отпустили — круг ставится сразу, а не ждёт клика
     const moved = Math.hypot(e.clientX-circleDown.x, e.clientY-circleDown.y) > 4;
@@ -5036,7 +5213,7 @@ canvas.addEventListener('pointerup', e=>{
     selectVertex(pv.pos);
     showVertexPalette();
   }
-  if(drag && drag.click && !pointMode && !lineMode && !circleMode && !ppMode && !textMode && !divCtx
+  if(drag && drag.click && !pointMode && !lineMode && !circleMode && !ppMode && !textMode && !divCtx && !activeTool
      && Math.hypot(e.clientX-drag.click.x, e.clientY-drag.click.y) < 3){
     // клик ЛКМ без движения: по грани — выбрать её, в пустоту — снять весь выбор
     const q = quadPos(e);
@@ -5376,6 +5553,7 @@ canvas.addEventListener('pointermove', e=>{
     } else { ghost.visible = false; tipHide(); }
     return;
   }
+  if(activeTool){ activeTool.move(e, q); return; }
   if(circleMode){ // превью окружности за курсором
     if(!q.inside){ ghost.visible=false; killRing(); tipHide(); return; }
     if(!circleCenter){
@@ -5551,7 +5729,7 @@ canvas.addEventListener('dblclick', e=>{
   // пока работает инструмент, двойной клик ничего не выбирает: в SketchUp
   // и FreeCAD активный инструмент забирает клики себе целиком
   if(!q.inside || lineMode || ppMode || placing
-     || textMode || pointMode || circleMode || exLive || divCtx) return;
+     || textMode || pointMode || circleMode || exLive || divCtx || activeTool) return;
   const c = pickCorner(q);
   if(c){
     selectVertex(c.pos);
