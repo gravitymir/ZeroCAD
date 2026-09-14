@@ -273,10 +273,21 @@
     <div class="stat">Rust gen time<b id="s_gen">–</b></div>
     <div class="stat">Manual edits<b id="s_mod">no</b></div>
 
-    <div class="btns">
-      <button id="reset">Reset</button>
-      <button id="stl" class="primary">⬇ Download STL</button>
+    <div class="sec">File</div>
+    <div class="stat">Project<b id="s_file">untitled</b></div>
+    <div class="btns" style="margin-top:10px">
+      <button id="f_open" title="Ctrl+O">Open…</button>
+      <button id="f_save" class="primary" title="Ctrl+S · Ctrl+Shift+S — save as">Save</button>
+      <button id="reset" title="Start over from the shape preset">Reset</button>
     </div>
+    <div class="sec">Export</div>
+    <div class="btns" style="margin-top:10px">
+      <button id="stl" title="Binary STL, millimetres">STL</button>
+      <button id="x_3mf" title="3MF — slicers (PrusaSlicer, Bambu, Orca, Cura); keeps units">3MF</button>
+      <button id="x_obj" title="Wavefront OBJ">OBJ</button>
+      <button id="x_step" title="Faceted STEP (AP214): a solid of flat faces, no exact cylinders">STEP</button>
+    </div>
+    <input type="file" id="f_file" accept=".zcad,application/json" hidden>
 
     <p class="hint"><b>L</b> — Line (SketchUp pencil): click a vertex, edge or
     face to place a point; the second click draws a dashed guide chord (it is
@@ -591,6 +602,9 @@ let placing = null;     // {chain, s} — открыта всплывашка
 let anchors = [];       // поставленные точки {pos, marker, bend?}
 let dragPt = null;      // текущее перетаскивание {a?, isSel, start, plane, idx|bendRun, markers}
 let pendingEdge = null; // нажатие на ребро: клик => выбор, движение => камера
+// автосохранение включается только после первой загрузки модели: иначе
+// стартовая сборка затёрла бы сохранённую работу раньше, чем её восстановят
+let autosaveArmed = false, autosaveT = 0, projectDirty = false;
 let pendingVertex = null; // нажатие на вершину: клик => выбор, движение => камера
 let edgeDrag = null;    // перенос целого ребра (как перетаскивание линии в Sketcher)
 let vpEdge = null;      // окно G,V в режиме ребра: {pts0, idx, mid} — двигаем середину
@@ -749,6 +763,7 @@ function extractEdges(){
     if(a) auxSnaps.push(a.center.clone());
   }
   cachedPatch = null; // меш изменился — кэш грани недействителен
+  scheduleAutosave();
   if(typeof vGhost !== 'undefined') vGhost.visible = false;
   // выбранные рёбра больше не соответствуют сетке
   if(typeof edgeSel !== 'undefined' && edgeSel.length) clearEdgeSel();
@@ -3910,6 +3925,7 @@ async function rebuild(){
   const buf = await res.arrayBuffer();
   setMeshFromArray(parseSTL(buf));
   closePopup(); clearAnchors(); deselect(); tipHide(); setPPMode(false); setLineMode(false);
+  restoreGuides([]); curveSeq = 0; // новая модель — старые линии над ней не висят
   modified = false; s_mod.textContent = 'no';
   undoStack = []; // новая серверная модель — новая точка отсчёта
   extractEdges();
@@ -3923,41 +3939,316 @@ async function rebuild(){
   if(isCube) camTarget.set(p.dia/2, p.dia/2, p.dia/2);
   else camTarget.set(0, 0, p.thk/2);
   updateOrthoPoses();
+  projectHandle = null; projectName = 'untitled'; setProjectDirty(false);
   s_apex.textContent = res.headers.get('X-Apex-Mm')+' mm';
   s_pitch.textContent = res.headers.get('X-Pitch-Mm')+' mm';
   const us = +res.headers.get('X-Gen-Us');
   s_gen.textContent = us >= 1000 ? (us/1000).toFixed(1)+' ms' : us+' µs';
 }
 
-// экспорт ИЗМЕНЁННОГО меша из браузера (binary STL)
-function exportLocalSTL(){
+// ---------- файл: проект .zcad, автосохранение, экспорт ----------
+// Правда модели — меш в браузере (после ручных правок сервер про него не
+// знает), поэтому и проект, и все экспорты берутся отсюда.
+const PROJECT_FORMAT = 'zerocad', PROJECT_VERSION = 1, AUTOSAVE_KEY = 'zc_autosave';
+let projectHandle = null;   // File System Access API: Ctrl+S пишет в тот же файл
+let projectName = 'untitled';
+
+function downloadBlob(blob, name){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+function f32ToB64(f32){
+  const u8 = new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength);
+  let bin = '';
+  for(let i=0;i<u8.length;i+=0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i+0x8000));
+  return btoa(bin);
+}
+function b64ToF32(b64){
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i);
+  return new Float32Array(u8.buffer);
+}
+const v3a = v => [+v.x.toFixed(6), +v.y.toFixed(6), +v.z.toFixed(6)];
+const a3v = a => new THREE.Vector3(a[0], a[1], a[2]);
+
+function setProjectDirty(d){
+  projectDirty = d;
+  s_file.textContent = projectName + (d ? ' •' : '');
+  document.title = (d ? '• ' : '') + projectName + ' — ZeroCAD';
+}
+function projectData(){
+  return {
+    format: PROJECT_FORMAT, version: PROJECT_VERSION,
+    build: window.ZC_BUILD, saved: new Date().toISOString(),
+    shape: document.querySelector('input[name=shape]:checked').value,
+    params: {dia:+dia.value, thk:+thk.value, sh:+sh.value, n:+n.value, dep:+dep.value, w:+w.value},
+    mesh: f32ToB64(mesh.geometry.attributes.position.array),
+    guides: guides.map(g=>({a: v3a(g.a), b: v3a(g.b), noExt: !!g.noExt, curve: g.curve || 0})),
+    anchors: anchors.map(a=>({pos: v3a(a.pos),
+      bend: a.bend ? {pts0: a.bend.pts0.map(v3a), t: a.bend.t.slice(), j: a.bend.j} : null})),
+    curveSeq,
+    camera: {yaw, pitch, camDist, target: v3a(camTarget)}
+  };
+}
+function loadProjectData(d, name){
+  if(!d || d.format !== PROJECT_FORMAT) throw new Error('not a ZeroCAD project');
+  if(d.version > PROJECT_VERSION) throw new Error('project from a newer ZeroCAD');
+  const radio = document.querySelector('input[name=shape][value="' + d.shape + '"]');
+  if(radio) radio.checked = true;
+  applyShapeUI();
+  for(const id in (d.params || {})){ const el = document.getElementById(id); if(el) el.value = d.params[id]; }
+  // закрыть всё, что висело от прежней модели
+  closeExtrude(); cancelText(); closePopup(); deselect(); clearEdgeSel(); hideChordHint(); tipHide();
+  if(ppMode) setPPMode(false);
+  if(lineMode) setLineMode(false);
+  if(circleMode) setCircleMode(false);
+  if(pointMode) setPointMode(false);
+  hidePatch(); ppPatch = null; ppParts = null;
+  setMeshFromArray(b64ToF32(d.mesh));
+  restoreGuides((d.guides || []).map(g=>({a: a3v(g.a), b: a3v(g.b), noExt: g.noExt, curve: g.curve})));
+  clearAnchors();
+  for(const sa of (d.anchors || [])){
+    const a = makeAnchor(a3v(sa.pos));
+    if(sa.bend) a.bend = {pts0: sa.bend.pts0.map(a3v), t: sa.bend.t, j: sa.bend.j};
+  }
+  curveSeq = Math.max(d.curveSeq || 0, ...guides.map(g=>g.curve || 0), 0);
+  if(d.camera){
+    yaw = d.camera.yaw; pitch = d.camera.pitch; camDist = d.camera.camDist;
+    camTarget.copy(a3v(d.camera.target));
+  }
+  undoStack = []; redoStack = [];
+  modified = true; s_mod.textContent = 'yes';
+  extractEdges();
+  if(name) projectName = name.replace(/\.zcad$/i, '');
+  setProjectDirty(false);
+}
+function scheduleAutosave(){
+  if(!autosaveArmed) return;
+  setProjectDirty(true);
+  clearTimeout(autosaveT);
+  autosaveT = setTimeout(()=>{
+    // тяжёлая сетка может не влезть в квоту localStorage — тогда молча
+    // пропускаем: файл проекта (Ctrl+S) остаётся надёжным путём
+    try{ localStorage.setItem(AUTOSAVE_KEY,
+      JSON.stringify(Object.assign(projectData(), {name: projectName}))); }catch(_){}
+  }, 800);
+}
+async function saveProject(saveAs){
+  if(!mesh) return;
+  const blob = new Blob([JSON.stringify(projectData())], {type: 'application/json'});
+  if(window.showSaveFilePicker){
+    try{
+      if(!projectHandle || saveAs){
+        projectHandle = await window.showSaveFilePicker({
+          suggestedName: projectName + '.zcad',
+          types: [{description: 'ZeroCAD project', accept: {'application/json': ['.zcad']}}]});
+      }
+      const wr = await projectHandle.createWritable();
+      await wr.write(blob); await wr.close();
+      projectName = projectHandle.name.replace(/\.zcad$/i, '');
+      setProjectDirty(false);
+      return;
+    }catch(err){
+      if(err && err.name === 'AbortError') return; // закрыли диалог — ничего не делаем
+      projectHandle = null;                        // нет доступа — обычная загрузка
+    }
+  }
+  downloadBlob(blob, projectName + '.zcad');
+  setProjectDirty(false);
+}
+function loadProjectText(text, name){
+  try{ loadProjectData(JSON.parse(text), name); }
+  catch(err){ alert('Cannot open project: ' + err.message); }
+}
+async function openProject(){
+  if(window.showOpenFilePicker){
+    try{
+      const [h] = await window.showOpenFilePicker({
+        types: [{description: 'ZeroCAD project', accept: {'application/json': ['.zcad']}}]});
+      const file = await h.getFile();
+      loadProjectText(await file.text(), file.name);
+      projectHandle = h;
+      return;
+    }catch(err){ if(err && err.name === 'AbortError') return; }
+  }
+  f_file.value = '';
+  f_file.click();
+}
+
+// --- геометрия для экспорта: вершины без дублей (ключ 0.001 мм) ---
+function indexedMesh(){
   const pos = mesh.geometry.attributes.position.array;
-  const n = pos.length/9;
-  const buf = new ArrayBuffer(84 + n*50);
+  const map = new Map(), verts = [], tris = [];
+  for(let i=0;i<pos.length;i+=9){
+    const f = [];
+    for(let j=0;j<3;j++){
+      const x = pos[i+j*3], y = pos[i+j*3+1], z = pos[i+j*3+2];
+      const k = keyOf(x, y, z);
+      let id = map.get(k);
+      if(id === undefined){ id = verts.length; verts.push([x, y, z]); map.set(k, id); }
+      f.push(id);
+    }
+    if(f[0] !== f[1] && f[1] !== f[2] && f[0] !== f[2]) tris.push(f); // без вырожденных
+  }
+  return {verts, tris};
+}
+function buildSTL(){
+  const pos = mesh.geometry.attributes.position.array;
+  const cnt = pos.length/9;
+  const buf = new ArrayBuffer(84 + cnt*50);
   const dv = new DataView(buf);
-  dv.setUint32(80, n, true);
+  dv.setUint32(80, cnt, true);
   const A=new THREE.Vector3(),B=new THREE.Vector3(),C=new THREE.Vector3(),
         e1=new THREE.Vector3(),e2=new THREE.Vector3(),N=new THREE.Vector3();
-  let off=84;
+  let off = 84;
   for(let i=0;i<pos.length;i+=9){
     A.fromArray(pos,i); B.fromArray(pos,i+3); C.fromArray(pos,i+6);
     N.crossVectors(e1.subVectors(B,A), e2.subVectors(C,A)).normalize();
     for(const v of [N,A,B,C]){ dv.setFloat32(off,v.x,true); dv.setFloat32(off+4,v.y,true); dv.setFloat32(off+8,v.z,true); off+=12; }
-    dv.setUint16(off,0,true); off+=2;
+    dv.setUint16(off, 0, true); off += 2;
   }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([buf],{type:'model/stl'}));
-  a.download = 'wheel_edited.stl';
-  a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  return buf;
 }
-function downloadSTL(){
-  if(modified){ exportLocalSTL(); return; }
-  const a = document.createElement('a');
-  a.href = '/api/wheel.stl?'+queryString(readParams());
-  a.download = 'wheel.stl';
-  a.click();
+function buildOBJ(){
+  const {verts, tris} = indexedMesh();
+  const out = ['# ZeroCAD ' + window.ZC_BUILD + ' — units: millimetres, Z up', 'o ' + projectName];
+  for(const v of verts) out.push('v ' + v[0].toFixed(4) + ' ' + v[1].toFixed(4) + ' ' + v[2].toFixed(4));
+  for(const t of tris) out.push('f ' + (t[0]+1) + ' ' + (t[1]+1) + ' ' + (t[2]+1));
+  return out.join('\n') + '\n';
 }
+// --- 3MF: ZIP без сжатия (STORE) + XML модели; единицы — миллиметры ---
+const CRC_TABLE = (()=>{
+  const t = new Uint32Array(256);
+  for(let q=0;q<256;q++){ let c = q; for(let k=0;k<8;k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[q] = c >>> 0; }
+  return t;
+})();
+function crc32(u8){
+  let c = 0xFFFFFFFF;
+  for(let i=0;i<u8.length;i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function makeZipStore(files){ // [{name, data: Uint8Array}]
+  const enc = new TextEncoder(), now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  const parts = [], central = [];
+  let offset = 0;
+  for(const f of files){
+    const nm = enc.encode(f.name), crc = crc32(f.data), sz = f.data.length;
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0, true);
+    lh.setUint16(8, 0, true); lh.setUint16(10, dosTime, true); lh.setUint16(12, dosDate, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, sz, true); lh.setUint32(22, sz, true);
+    lh.setUint16(26, nm.length, true); lh.setUint16(28, 0, true);
+    parts.push(new Uint8Array(lh.buffer), nm, f.data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true);
+    ch.setUint16(8, 0, true); ch.setUint16(10, 0, true); ch.setUint16(12, dosTime, true);
+    ch.setUint16(14, dosDate, true); ch.setUint32(16, crc, true); ch.setUint32(20, sz, true);
+    ch.setUint32(24, sz, true); ch.setUint16(28, nm.length, true);
+    ch.setUint32(42, offset, true);
+    central.push(new Uint8Array(ch.buffer), nm);
+    offset += 30 + nm.length + sz;
+  }
+  const cdSize = central.reduce((acc, u) => acc + u.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+  end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+  const all = [...parts, ...central, new Uint8Array(end.buffer)];
+  const out = new Uint8Array(all.reduce((acc, u) => acc + u.length, 0));
+  let o = 0;
+  for(const u of all){ out.set(u, o); o += u.length; }
+  return out;
+}
+function build3MF(){
+  const {verts, tris} = indexedMesh();
+  const enc = new TextEncoder();
+  const xml = ['<?xml version="1.0" encoding="UTF-8"?>',
+    '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">',
+    '<metadata name="Application">ZeroCAD ' + window.ZC_BUILD + '</metadata>',
+    '<resources><object id="1" type="model"><mesh><vertices>'];
+  for(const v of verts) xml.push('<vertex x="' + v[0].toFixed(4) + '" y="' + v[1].toFixed(4) + '" z="' + v[2].toFixed(4) + '"/>');
+  xml.push('</vertices><triangles>');
+  for(const t of tris) xml.push('<triangle v1="' + t[0] + '" v2="' + t[1] + '" v3="' + t[2] + '"/>');
+  xml.push('</triangles></mesh></object></resources>', '<build><item objectid="1"/></build>', '</model>');
+  return makeZipStore([
+    {name: '[Content_Types].xml', data: enc.encode(
+      '<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>')},
+    {name: '_rels/.rels', data: enc.encode(
+      '<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>')},
+    {name: '3D/3dmodel.model', data: enc.encode(xml.join('\n'))}
+  ]);
+}
+// --- STEP AP214, гранёное тело (FACETED_BREP): каждый треугольник — плоская
+// грань. Точных цилиндров нет — для них нужно B-rep ядро (OCCT/truck) ---
+function buildSTEP(){
+  const {verts, tris} = indexedMesh();
+  const num = v => { let t = (+v.toFixed(6)).toString(); if(!/[.eE]/.test(t)) t += '.'; return t; };
+  const esc = t => t.replace(/'/g, "''");
+  const nm = esc(projectName);
+  const L = [];
+  let id = 0;
+  const add = txt => { L.push('#' + (++id) + '=' + txt + ';'); return id; };
+  const appCtx = add("APPLICATION_CONTEXT('core data for automotive mechanical design processes')");
+  add("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#" + appCtx + ")");
+  const prodCtx = add("PRODUCT_CONTEXT('',#" + appCtx + ",'mechanical')");
+  const prod = add("PRODUCT('" + nm + "','" + nm + "','',(#" + prodCtx + "))");
+  add("PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,(#" + prod + "))");
+  const form = add("PRODUCT_DEFINITION_FORMATION('','',#" + prod + ")");
+  const defCtx = add("PRODUCT_DEFINITION_CONTEXT('part definition',#" + appCtx + ",'design')");
+  const pdef = add("PRODUCT_DEFINITION('design','',#" + form + ",#" + defCtx + ")");
+  const pds = add("PRODUCT_DEFINITION_SHAPE('','',#" + pdef + ")");
+  const uLen = add("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
+  const uAng = add("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))");
+  const uSol = add("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())");
+  const unc = add("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-05),#" + uLen + ",'distance_accuracy_value','confusion accuracy')");
+  const ctx = add("(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#" + unc +
+    "))GLOBAL_UNIT_ASSIGNED_CONTEXT((#" + uLen + ",#" + uAng + ",#" + uSol + "))REPRESENTATION_CONTEXT('Context #1','3D Context with UNIT and UNCERTAINTY'))");
+  const o = add("CARTESIAN_POINT('',(0.,0.,0.))");
+  const dz = add("DIRECTION('',(0.,0.,1.))");
+  const dx = add("DIRECTION('',(1.,0.,0.))");
+  const ax = add("AXIS2_PLACEMENT_3D('',#" + o + ",#" + dz + ",#" + dx + ")");
+  const pts = verts.map(v => add("CARTESIAN_POINT('',(" + num(v[0]) + "," + num(v[1]) + "," + num(v[2]) + "))"));
+  const faces = tris.map(t => {
+    const loop = add("POLY_LOOP('',(#" + pts[t[0]] + ",#" + pts[t[1]] + ",#" + pts[t[2]] + "))");
+    const bound = add("FACE_OUTER_BOUND('',#" + loop + ",.T.)");
+    return add("FACE('',(#" + bound + "))");
+  });
+  const shell = add("CLOSED_SHELL('',(" + faces.map(f => '#' + f).join(',') + "))");
+  const brep = add("FACETED_BREP('" + nm + "',#" + shell + ")");
+  const rep = add("FACETED_BREP_SHAPE_REPRESENTATION('" + nm + "',(#" + brep + ",#" + ax + "),#" + ctx + ")");
+  add("SHAPE_DEFINITION_REPRESENTATION(#" + pds + ",#" + rep + ")");
+  const stamp = new Date().toISOString().slice(0, 19);
+  return ['ISO-10303-21;', 'HEADER;',
+    "FILE_DESCRIPTION(('ZeroCAD faceted solid'),'2;1');",
+    "FILE_NAME('" + nm + ".step','" + stamp + "',(''),(''),'ZeroCAD " + esc(String(window.ZC_BUILD)) + "','ZeroCAD','');",
+    "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));",
+    'ENDSEC;', 'DATA;', ...L, 'ENDSEC;', 'END-ISO-10303-21;', ''].join('\n');
+}
+function exportAs(kind){
+  if(!mesh) return;
+  if(kind === 'stl') downloadBlob(new Blob([buildSTL()], {type: 'model/stl'}), projectName + '.stl');
+  if(kind === 'obj') downloadBlob(new Blob([buildOBJ()], {type: 'text/plain'}), projectName + '.obj');
+  if(kind === '3mf') downloadBlob(new Blob([build3MF()], {type: 'model/3mf'}), projectName + '.3mf');
+  if(kind === 'step'){
+    // гранёный STEP описывает ТВЁРДОЕ тело: с дырой в оболочке он был бы
+    // некорректным файлом, а не «почти» моделью
+    if(countBoundaryEdges() !== 0){
+      alert('STEP needs a closed solid. The model has holes — close them (F) and export again.');
+      return;
+    }
+    downloadBlob(new Blob([buildSTEP()], {type: 'application/step'}), projectName + '.step');
+  }
+}
+function downloadSTL(){ exportAs('stl'); }
 
 // ---------- мышь ----------
 // режим окон: false = одно 3D на весь вьюпорт, true = 4 окна
@@ -5416,7 +5707,27 @@ function applyHints(){
 }
 hintsChk.addEventListener('change', applyHints);
 applyHints();
-document.getElementById('stl').addEventListener('click', downloadSTL);
+document.getElementById('stl').addEventListener('click', ()=>exportAs('stl'));
+document.getElementById('x_3mf').addEventListener('click', ()=>exportAs('3mf'));
+document.getElementById('x_obj').addEventListener('click', ()=>exportAs('obj'));
+document.getElementById('x_step').addEventListener('click', ()=>exportAs('step'));
+document.getElementById('f_save').addEventListener('click', e=>saveProject(e.shiftKey));
+document.getElementById('f_open').addEventListener('click', openProject);
+f_file.addEventListener('change', async ()=>{
+  const file = f_file.files && f_file.files[0];
+  if(file) loadProjectText(await file.text(), file.name);
+});
+// Ctrl+S / Ctrl+Shift+S / Ctrl+O — как во всех редакторах; по e.code, чтобы
+// работало и в русской раскладке, и прямо из полей ввода
+window.addEventListener('keydown', e=>{
+  if(!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  if(e.code === 'KeyS'){ e.preventDefault(); e.stopPropagation(); saveProject(e.shiftKey); }
+  else if(e.code === 'KeyO'){ e.preventDefault(); e.stopPropagation(); openProject(); }
+}, true);
+// несохранённые правки в открытом файле: браузер спросит перед закрытием
+window.addEventListener('beforeunload', e=>{
+  if(projectDirty && projectHandle){ e.preventDefault(); e.returnValue = ''; }
+});
 document.getElementById('reset').addEventListener('click', ()=>{
   applyShapePreset(); // стартовая конфигурация текущей фигуры
   yaw=-1.1; pitch=0.55;
@@ -5456,7 +5767,21 @@ function updateVcArrows(){
   vcDown.style.visibility = pitch <= -1.5 + 1e-3 ? 'hidden' : '';
 }
 
-resize(); rebuild(); requestAnimationFrame(loop);
+resize();
+(async ()=>{
+  let restored = false;
+  try{
+    const txt = localStorage.getItem(AUTOSAVE_KEY);
+    if(txt){
+      const d = JSON.parse(txt);
+      loadProjectData(d, d.name ? d.name + '.zcad' : null);
+      restored = true;
+    }
+  }catch(err){ console.warn('autosave not restored', err); }
+  if(!restored) await rebuild();
+  autosaveArmed = true;
+})();
+requestAnimationFrame(loop);
 </script>
 </body>
 </html>
