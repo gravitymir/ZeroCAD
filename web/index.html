@@ -1803,6 +1803,13 @@ const rectTool = {
     this.patch = null; this.snapKind = ''; this.exact = false; },
   kill(){ if(this.ring){ scene.remove(this.ring); this.ring.geometry.dispose(); this.ring = null; } },
   lastValid(){ return !!(this.last && undoStack.length && undoStack[undoStack.length-1] === this.last.snap); },
+  lastEdges(){ // рёбра только что поставленного — пока его правят, они не ориентиры
+    if(!this.lastValid()) return null;
+    const L = this.last;
+    const A = L.A, B = A.clone().addScaledVector(L.u, L.sw * L.w);
+    const C = B.clone().addScaledVector(L.v, L.sh * L.h), D = A.clone().addScaledVector(L.v, L.sh * L.h);
+    return [[A, B], [B, C], [C, D], [D, A]];
+  },
   typed(){ return this.lockW != null && this.lockH != null; },
   corners(){
     const d = new THREE.Vector3().subVectors(this.end, this.start);
@@ -1887,8 +1894,8 @@ const rectTool = {
     if(!this.start){
       // ориентиры плоскости под курсором: вершины, середины рёбер, центры
       const pk0 = pickOnFace(q);
-      if(pk0 && pk0.faceIndex !== undefined) showPlaneTargets(pk0.n, pk0.pos, facePatchCached(pk0.faceIndex));
-      else if(pk0) showPlaneTargets(GROUND_N, new THREE.Vector3(), null);
+      if(pk0 && pk0.faceIndex !== undefined) showPlaneTargets(pk0.n, pk0.pos, facePatchCached(pk0.faceIndex), this.lastEdges());
+      else if(pk0) showPlaneTargets(GROUND_N, new THREE.Vector3(), null, this.lastEdges());
       else hidePlaneTargets();
       if(pk0){
         ghost.material.color.setHex(pk0.kind==='vertex' || pk0.kind==='center' || pk0.kind==='origin' ? C_VERT : C_EDGE);
@@ -2747,10 +2754,13 @@ function hidePlaneTargets(){
   if(planeTargetLines){ scene.remove(planeTargetLines); planeTargetLines.geometry.dispose(); planeTargetLines = null; }
   planeTargetKey = ''; planeTargetChains = null;
 }
-function showPlaneTargets(n, P0, patch){
+// skip — отрезки [A, B], чьи рёбра не показывать: только что поставленная
+// фигура, которую ещё правят в окне, — её же вершины и середины бессмысленны
+function showPlaneTargets(n, P0, patch, skip){
   const d = n.dot(P0);
   const key = n.x.toFixed(3) + ',' + n.y.toFixed(3) + ',' + n.z.toFixed(3) + ',' + d.toFixed(2)
-    + '|' + (patch && patch.tris.length ? patch.tris[0] : -1) + '|' + guides.length;
+    + '|' + (patch && patch.tris.length ? patch.tris[0] : -1) + '|' + guides.length
+    + '|' + (skip ? skip.map(sg => keyOf(sg[0].x, sg[0].y, sg[0].z)).join(';') : '');
   if(key === planeTargetKey && planeTargetChains === chains) return;
   hidePlaneTargets();
   planeTargetKey = key; planeTargetChains = chains;
@@ -2764,8 +2774,15 @@ function showPlaneTargets(n, P0, patch){
     m.position.copy(P); scene.add(m); planeTargets.push(m);
   };
   const lp = [];
+  const onSkip = P => skip && skip.some(([A, B]) => {
+    const AB = new THREE.Vector3().subVectors(B, A), L2 = AB.lengthSq();
+    if(L2 < 1e-12) return false;
+    const t = new THREE.Vector3().subVectors(P, A).dot(AB) / L2;
+    return t > -1e-4 && t < 1 + 1e-4 && A.clone().addScaledVector(AB, t).distanceToSquared(P) < 1e-6;
+  });
   for(const ch of chains){
     if(!ch.pts.every(inPl)) continue;
+    if(skip && ch.pts.every(onSkip)) continue;
     for(let i=0;i+1<ch.pts.length;i++) lp.push(ch.pts[i], ch.pts[i+1]);
     if(ch.closed || ch.curve) continue; // у окружности ориентир — центр
     add(ch.pts[0], 0xe8ecf2); add(ch.pts[ch.pts.length-1], 0xe8ecf2);
