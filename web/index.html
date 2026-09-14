@@ -101,6 +101,10 @@
     font-size:22px;line-height:1.6;color:var(--muted);pointer-events:none}
   #chordHint[hidden]{display:none}
   #chordHint .key{color:var(--accent2);font-weight:700}
+  /* части составного выбора — кликабельные карточки внутри палитры */
+  #chordHint .selcard{margin:6px 0;padding:6px 10px;border:1px solid var(--line);border-radius:8px;
+    background:rgba(255,255,255,.04);cursor:pointer;font-weight:600}
+  #chordHint .selcard:hover{background:rgba(255,204,0,.14);border-color:#ffcc00}
   #exPopup .key{color:var(--accent2);font-weight:700}
   /* зажатый модификатор: в подписи клавиши белеет само слово Ctrl/Shift/Alt
      («Ctrl+click» — белое «Ctrl», «+click» остаётся синим) */
@@ -3485,7 +3489,10 @@ function showChordHint(){
   clearTimeout(showChordHint._t);
   showChordHint._t = setTimeout(()=>{ hideChordHint(); chordG = 0; }, 4000);
 }
-function hideChordHint(){ chordHint.hidden = true; clearTimeout(showChordHint._t); }
+function hideChordHint(){
+  chordHint.hidden = true; clearTimeout(showChordHint._t);
+  if(typeof selCardHi !== 'undefined') unhiSelGroup(); // карточки исчезли — подсветка тоже
+}
 // палитра операций для выбранной грани
 function showFacePalette(){
   tipHide(); // информация объекта — в шапке палитры
@@ -3809,6 +3816,7 @@ function killSelPreview(){
   }
 }
 function clearEdgeSel(){
+  if(typeof selCardHi !== 'undefined') unhiSelGroup();
   for(const s of edgeSel){ scene.remove(s.line); s.line.geometry.dispose(); }
   edgeSel = [];
   syncGuideOverlays();
@@ -5295,45 +5303,102 @@ function curveInfo(id){
   for(const c of cs) segs += c.pts.length - 1;
   return {R: R/pts.length, ctr, segs};
 }
-// Что выбрано, если рёбер несколько (после B, Ctrl+клика): окружности —
-// нарисованная кривая целиком или замкнутое круглое ребро тела — считаются
-// одним объектом, остальное — отрезками/рёбрами. Шапка палитры говорит
-// «Circle», а не «Edge», и команды подбираются под состав выбора
+// Что выбрано, если рёбер несколько (после B, Ctrl+клика). Выбор делится на
+// части: окружность (нарисованная кривая целиком и/или замкнутое круглое
+// ребро тела — лежащие друг на друге считаются одной), остальные рёбра —
+// по связности концов: квадрат, прямоугольник, замкнутый контур, цепочка.
+// Каждую часть палитра показывает карточкой: наведение — жёлтым на модели,
+// клик — выбрать только её
 function describeEdgeSel(){
   const byKey = new Map(chains.map(c => [edgeSelKey(c), c]));
   const sel = edgeSel.map(s => byKey.get(s.key)).filter(Boolean);
-  const circles = [], rest = [];
+  const groups = [];
   const curveIds = new Set();
+  const rest = [];
   for(const c of sel){
     if(c.curve){ curveIds.add(c.curve); continue; }
     const arc = c.closed && c.pts.length >= 7 ? fitArc(c) : null;
-    if(arc) circles.push({R: arc.R, segs: c.pts.length - 1, body: true, ctr: arc.center});
+    if(arc) groups.push({kind: 'circle', R: arc.R, segs: c.pts.length - 1, body: true, ctr: arc.center, chains: [c]});
     else rest.push(c);
   }
   for(const id of curveIds){
     const all = chains.filter(c => c.curve === id);
     const inSel = sel.filter(c => c.curve === id);
-    if(inSel.length === all.length){ const ci = curveInfo(id); circles.push({R: ci.R, segs: ci.segs, body: false, ctr: ci.ctr}); }
-    else rest.push(...inSel);
+    if(inSel.length !== all.length){ rest.push(...inSel); continue; }
+    const ci = curveInfo(id);
+    // кривая на круглом ребре тела — одна окружность: данные кривой, рёбра обоих
+    const twin = groups.find(g => g.kind === 'circle' && g.body && Math.abs(g.R - ci.R) < 0.05 && g.ctr.distanceTo(ci.ctr) < 0.05);
+    if(twin){ Object.assign(twin, {R: ci.R, segs: ci.segs, body: false, ctr: ci.ctr}); twin.chains.push(...inSel); }
+    else groups.push({kind: 'circle', R: ci.R, segs: ci.segs, body: false, ctr: ci.ctr, chains: inSel});
   }
-  // нарисованная окружность, лежащая ровно на круглом ребре тела (B по
-  // залитой грани берёт оба), — одна окружность: остаётся запись кривой
-  for(let i=circles.length-1;i>=0;i--){
-    const c = circles[i];
-    if(c.body && circles.some(o => !o.body && Math.abs(o.R - c.R) < 0.05 && o.ctr.distanceTo(c.ctr) < 0.05))
-      circles.splice(i, 1);
+  // остальное — связные куски по общим концам
+  const K = p => keyOf(p.x, p.y, p.z);
+  const par = rest.map((_, i) => i);
+  const root = i => { while(par[i] !== i){ par[i] = par[par[i]]; i = par[i]; } return i; };
+  const byEnd = new Map();
+  rest.forEach((c, i) => {
+    for(const P of [c.pts[0], c.pts[c.pts.length-1]]){
+      const k = K(P);
+      if(byEnd.has(k)){ const r1 = root(i), r2 = root(byEnd.get(k)); if(r1 !== r2) par[r1] = r2; }
+      else byEnd.set(k, i);
+    }
+  });
+  const comps = new Map();
+  rest.forEach((c, i) => { const r = root(i); if(!comps.has(r)) comps.set(r, []); comps.get(r).push(c); });
+  for(const cs of comps.values()){
+    const deg = new Map();
+    for(const c of cs) for(const P of [c.pts[0], c.pts[c.pts.length-1]]) deg.set(K(P), (deg.get(K(P))||0) + 1);
+    const closed = cs.length > 1 && [...deg.values()].every(d => d === 2);
+    const len = cs.reduce((sum, c) => sum + c.total, 0);
+    const straight = c => { const A = c.pts[0], B = c.pts[c.pts.length-1], d = new THREE.Vector3().subVectors(B, A);
+      return d.length() > 1e-6 && Math.abs(c.total - d.length()) < 1e-3; };
+    let kind = closed ? 'contour' : 'chain', dims = null;
+    if(closed && cs.length === 4 && cs.every(straight)){
+      const dir = c => new THREE.Vector3().subVectors(c.pts[c.pts.length-1], c.pts[0]).normalize();
+      // у прямоугольника каждое ребро перпендикулярно двум соседним
+      const perp = cs.every(c => cs.filter(o => o !== c && Math.abs(dir(o).dot(dir(c))) < 1e-3).length === 2);
+      if(perp){
+        const ls = cs.map(c => c.total).sort((x, y) => x - y);
+        dims = [ls[0], ls[3]];
+        kind = Math.abs(ls[0] - ls[3]) < 0.05 ? 'square' : 'rectangle';
+      }
+    }
+    groups.push({kind, chains: cs, len, dims,
+      lines: cs.filter(c => c.isGuide).length, edges: cs.filter(c => !c.isGuide).length});
   }
-  return {circles, rest, sel,
+  return {groups, sel,
     guidesOnly: sel.length > 0 && sel.every(c => c.isGuide),
-    bodyStraight: rest.length > 0 && !circles.length && rest.every(c => !c.isGuide && !c.closed)};
+    bodyStraight: sel.length > 0 && !groups.some(g => g.kind === 'circle')
+      && sel.every(c => !c.isGuide && !c.closed)};
+}
+// подсветка части выбора при наведении на её карточку: жёлтые линии поверх,
+// зелёные линии этих рёбер на время прячутся (иначе мерцают вперемешку)
+let selCardHi = {lines: [], hidden: []};
+function unhiSelGroup(){
+  for(const l of selCardHi.lines){ scene.remove(l); l.geometry.dispose(); }
+  for(const sl of selCardHi.hidden) sl.visible = true;
+  selCardHi = {lines: [], hidden: []};
+}
+function hiSelGroup(g){
+  unhiSelGroup();
+  for(const ch of g.chains){
+    const key = edgeSelKey(ch);
+    const s = edgeSel.find(x => x.key === key);
+    if(s && s.line.visible){ s.line.visible = false; selCardHi.hidden.push(s.line); }
+    const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ch.pts),
+      new THREE.LineBasicMaterial({color: C_EDGE}));
+    l.renderOrder = 3; scene.add(l); selCardHi.lines.push(l);
+  }
 }
 function showEdgePalette(ch){
+  unhiSelGroup();
   const d = edgeSel.length ? describeEdgeSel() : null;
   // одна нарисованная окружность и одно ребро/отрезок — прежняя палитра
   // (у отрезка там концы с координатами); круглое ребро тела и составной
-  // выбор — сводка
-  const bodyCircle = d && d.circles.length === 1 && !d.rest.length && d.circles[0].body;
-  if(d && (bodyCircle || (edgeSel.length > 1 && !(d.circles.length === 1 && !d.rest.length)))){
+  // выбор — сводка по частям
+  const g0 = d && d.groups.length === 1 ? d.groups[0] : null;
+  const plainCircle = g0 && g0.kind === 'circle' && !g0.body && g0.chains.every(c => c.curve);
+  if(d && d.groups.length && !plainCircle && !(edgeSel.length === 1 && (!g0 || g0.kind !== 'circle'))){
     showEdgeSelSummary(d);
     return;
   }
@@ -5384,25 +5449,26 @@ function showEdgePalette(ch){
   clearTimeout(showChordHint._t); // палитра выбора живёт, пока выбор жив
 }
 function showEdgeSelSummary(d){
-  tipHide(); hideSelEnds();
-  // каждый параметр — своей строкой, с отступом под маркером
-  const circ = c => 'Circle' + (c.body ? ' <span style="opacity:.6">(edge of the body)</span>' : '')
-    + '<div style="padding-left:18px">Ø <b>' + (2*c.R).toFixed(1) + '</b> mm</div>'
-    + '<div style="padding-left:18px">R ' + c.R.toFixed(1) + ' mm</div>'
-    + '<div style="padding-left:18px">' + c.segs + ' segments</div>';
-  const len = d.rest.reduce((sum, c) => sum + c.total, 0);
-  const restLabel = n => {
-    const lines = d.rest.filter(c => c.isGuide).length, edges = n - lines;
-    return [edges ? edges + (edges === 1 ? ' edge' : ' edges') : '', lines ? lines + (lines === 1 ? ' line' : ' lines') : '']
+  tipHide(); hideSelEnds(); unhiSelGroup();
+  const ind = t => '<div style="padding-left:18px">' + t + '</div>';
+  const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+  const card = g => {
+    if(g.kind === 'circle')
+      return 'Circle' + (g.body ? ' <span style="opacity:.6">(edge of the body)</span>' : '')
+        + ind('Ø <b>' + (2*g.R).toFixed(1) + '</b> mm') + ind('R ' + g.R.toFixed(1) + ' mm') + ind(g.segs + ' segments');
+    const what = [g.edges ? plural(g.edges, 'edge', 'edges') : '', g.lines ? plural(g.lines, 'line', 'lines') : '']
       .filter(Boolean).join(' + ');
+    if(g.kind === 'square') return 'Square' + ind('side <b>' + g.dims[0].toFixed(1) + '</b> mm') + ind(what);
+    if(g.kind === 'rectangle') return 'Rectangle' + ind('<b>' + g.dims[1].toFixed(1) + ' × ' + g.dims[0].toFixed(1) + '</b> mm') + ind(what);
+    return (g.kind === 'contour' ? 'Closed contour' : (g.chains.length === 1 ? (g.lines ? 'Line' : 'Edge') : 'Chain'))
+      + ind('<b>' + g.len.toFixed(1) + '</b> mm') + (g.chains.length > 1 ? ind(what) : '');
   };
-  let info;
-  if(d.circles.length === 1 && !d.rest.length) info = circ(d.circles[0]);
-  else {
-    const parts = d.circles.map(c => '<div>● ' + circ(c) + '</div>');
-    if(d.rest.length) parts.push('<div>● ' + restLabel(d.rest.length) + ' · ' + len.toFixed(1) + ' mm</div>');
-    info = 'Selection · ' + (d.circles.length + (d.rest.length ? 1 : 0) > 1 ? 'mixed' : restLabel(d.rest.length)) + parts.join('');
-  }
+  const many = d.groups.length > 1;
+  const info = many
+    ? 'Selection · ' + d.groups.length + ' parts'
+      + '<div style="font-size:.8em;font-weight:400;opacity:.6">hover — show · click — select only it</div>'
+      + d.groups.map((g, i) => '<div class="selcard" data-g="' + i + '">' + card(g) + '</div>').join('')
+    : card(d.groups[0]);
   const lp = edgeSelLoop();
   let fillRow = '';
   if(lp){
@@ -5421,6 +5487,20 @@ function showEdgeSelSummary(d){
     '<div><span class="key">Del</span> — erase edges / lines</div>' +
     '<div><span class="key">Ctrl+click</span> — add / remove</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
+  if(many){
+    for(const el of chordHint.querySelectorAll('.selcard')){
+      const g = d.groups[+el.dataset.g];
+      el.addEventListener('mouseenter', ()=>hiSelGroup(g));
+      el.addEventListener('mouseleave', unhiSelGroup);
+      el.addEventListener('click', ev=>{
+        ev.stopPropagation();
+        unhiSelGroup();
+        clearEdgeSel();
+        for(const ch of g.chains) toggleEdgeSel(ch);
+        showEdgePalette(g.chains[0]);
+      });
+    }
+  }
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 460) + 'px';
   chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 170) + 'px';
   chordHint.hidden = false;
