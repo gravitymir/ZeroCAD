@@ -131,6 +131,7 @@
      раздвигают окно, когда текст меняется вместе с числом сегментов */
   #bevPopup{width:300px;box-sizing:border-box}
   #circPopup{width:330px;box-sizing:border-box}
+  #circPopup .dim input{width:84px}
   #bevPopup .pinfo,#circPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
   #bevPopup .phint,#circPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
   #arrPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
@@ -226,10 +227,11 @@
     <div id="circPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
       <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Circle</b><span id="circ_state" style="font-size:14px">center</span></div>
+      <div class="prow dim">Ø <input id="circ_d" type="number" step="0.1" min="0.2" placeholder="—"> R <input id="circ_r" type="number" step="0.1" min="0.1" placeholder="—"> mm</div>
       <div class="pinfo" id="circ_info">&nbsp;</div>
       <div class="pinfo" id="circ_typed" hidden></div>
       <div class="prow">Segments <input id="circ_seg" type="number" step="1" min="3" max="360" value="24"><span id="circ_auto" style="font-size:13px;color:#6aff3d">auto</span></div>
-      <div class="phint" id="circ_hint">click a center, then drag or type Ø + Enter · segments follow the size until you change them · after placing: new segments or Ø + Enter redraw the circle</div>
+      <div class="phint" id="circ_hint">click a center, then drag — or enter Ø/R first and click to place · segments follow the size until you change them · after placing: new Ø, R or segments redraw the circle</div>
     </div>
     <div id="txtPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
@@ -2214,6 +2216,9 @@ function autoCircSegs(R){
 let circAuto = true;   // сегменты следуют за размером, пока их не поменяли руками
 let circLast = null;   // только что поставленный круг: {center, plane, R, snap}
 let circPatch = null;  // область грани, на которой стоит центр
+let circFixedR = null; // размер введён до центра: круг едет за курсором, клик ставит
+let circRLock = false; // размер введён при растягивании: мышь его не перебивает
+const circ_d = document.getElementById('circ_d'), circ_r = document.getElementById('circ_r');
 function circLastValid(){ // правка возможна, пока после круга ничего не делали
   return !!(circLast && undoStack.length && undoStack[undoStack.length-1] === circLast.snap);
 }
@@ -2246,15 +2251,23 @@ function circleBeyondFace(){
 function updateCircInfo(snapKind, beyond){
   const live = !!circleCenter;
   const R = live ? circleR : (circLastValid() ? circLast.R : 0);
-  let h = R > 0.1
-    ? 'Ø <b>' + (2*R).toFixed(1) + '</b> mm · R ' + R.toFixed(1) + ' mm'
-    : '&nbsp;';
-  if(snapKind) h += ' · <span style="color:#6aff3d">' + snapKind + '</span>';
-  if(beyond) h += '<br><span style="color:#ffb347">beyond the face — part in the air</span>';
+  // поля Ø/R показывают текущий размер, пока пользователь в них не пишет
+  const shown = R > 0.1 ? R : (circFixedR || 0);
+  if(document.activeElement !== circ_d && document.activeElement !== circ_r){
+    circ_d.value = shown > 0.1 ? +(2*shown).toFixed(3) : '';
+    circ_r.value = shown > 0.1 ? +shown.toFixed(3) : '';
+  }
+  let h = '';
+  if(snapKind) h += '<span style="color:#6aff3d">' + snapKind + '</span>';
+  if(circRLock && live) h += '<span style="color:#6aff3d">typed size · Enter — place</span>';
+  if(!live && !(R > 0.1) && circFixedR) h += '<span style="color:#6aff3d">fixed size · click to place</span>';
+  if(beyond) h += (h ? '<br>' : '') + '<span style="color:#ffb347">beyond the face — part in the air</span>';
+  if(!h) h = '&nbsp;';
   circ_info.innerHTML = h;
   circ_typed.hidden = !circleRStr;
   circ_typed.textContent = circleRStr ? 'typed Ø ' + circleRStr + ' mm (Enter)' : '';
   circ_state.textContent = live ? 'size' : (R > 0.1 ? 'placed' : 'center');
+  if(!live && circFixedR) circ_state.textContent += ' · fixed Ø';
   circ_auto.hidden = !circAuto;
   circ_hint.hidden = !hintsChk.checked;
 }
@@ -2316,7 +2329,7 @@ function setCircleMode(on){
   circleMode = on;
   circleCenter = null; circlePlane = null; circleRStr = '';
   killRing(); hidePlaneTargets();
-  circleDown = null; circLast = null; circAuto = true;
+  circleDown = null; circLast = null; circAuto = true; circFixedR = null; circRLock = false;
   if(on){
     setLineMode(false); if(ppMode) setPPMode(false); if(activeTool) setActiveTool(null);
     setHover(null); tipHide();
@@ -2358,9 +2371,17 @@ function commitCircle(){
   }
   extractEdges();
   killRing(); hidePlaneTargets(); ghost.visible = false;
-  circleCenter = null; circleRStr = ''; circleDown = null;
+  circleCenter = null; circleRStr = ''; circleDown = null; circRLock = false;
   tipHide();
   updateCircInfo();
+}
+function drawCircleRing(center, normal, R){
+  killRing();
+  if(!(R > 0.1)) return;
+  const cps = circlePoints(center, normal, R);
+  circleRing = new THREE.Line(new THREE.BufferGeometry().setFromPoints([...cps, cps[0]]),
+    new THREE.LineBasicMaterial({color:C_EDGE}));
+  scene.add(circleRing);
 }
 
 // ---------- «3D Text» (G,T — 3D Text из SketchUp) ----------
@@ -2721,6 +2742,50 @@ circ_seg.addEventListener('input', ()=>{
     new THREE.LineBasicMaterial({color:C_EDGE}));
   scene.add(circleRing);
 });
+// Ø и R — одно число в двух видах. До центра размер фиксируется (FreeCAD:
+// радиус в панели, клик ставит круг), при растягивании перебивает мышь,
+// после постановки перерисовывает только что поставленный круг
+let circFieldT = 0;
+function applyCircField(R, final){
+  clearTimeout(circFieldT);
+  if(!circleMode) return;
+  const ok = R > 0.05;
+  if(circleCenter){
+    if(!ok){ circRLock = false; updateCircInfo(); return; }
+    circleR = R; circRLock = true;
+    if(circAuto) circ_seg.value = autoCircSegs(R);
+    drawCircleRing(circleCenter, circlePlane, R);
+    if(final) commitCircle();
+    updateCircInfo('', circleBeyondFace());
+    return;
+  }
+  if(!ok){ circFixedR = null; killRing(); updateCircInfo(); return; }
+  if(circFixedR !== null || !circLastValid()) circFixedR = R; // размер следующих кругов
+  if(circAuto) circ_seg.value = autoCircSegs(R);
+  if(circLastValid()){
+    const run = ()=>{ recommitCircle(R); updateCircInfo(); };
+    if(final) run(); else circFieldT = setTimeout(run, 200);
+  }
+  updateCircInfo();
+}
+for(const [inp, other, toR] of [[circ_d, circ_r, v => v/2], [circ_r, circ_d, v => v]]){
+  inp.addEventListener('input', ()=>{
+    const v = parseFloat(inp.value);
+    other.value = v > 0 ? +(inp === circ_d ? v/2 : v*2).toFixed(3) : '';
+    applyCircField(v > 0 ? toR(v) : 0, false);
+  });
+  inp.addEventListener('keydown', e=>{
+    if(e.key === 'Enter'){
+      e.preventDefault();
+      const v = parseFloat(inp.value);
+      applyCircField(v > 0 ? toR(v) : 0, true);
+      releaseToolInput();
+      updateCircInfo();
+    }
+    if(e.key === 'Escape'){ e.preventDefault(); releaseToolInput(); }
+    e.stopPropagation(); // цифры поля не уходят во ввод диаметра с клавиатуры
+  });
+}
 circ_seg.addEventListener('keydown', e=>{
   if(e.key === 'Enter' || e.key === 'Escape'){ e.preventDefault(); releaseToolInput(); }
   e.stopPropagation(); // цифры поля не уходят во ввод диаметра
@@ -5492,9 +5557,21 @@ function projToQuad(v, cam, w, h, out){
   return out;
 }
 // ближайшее ребро к курсору (в пикселях 3D-окна)
+// Точка закрыта телом? Луч из камеры в точку упирается в грань раньше неё.
+// Рёбра и вершины за телом не видны — магнитить и подсвечивать их нельзя
+// (курсор над верхней гранью ловил заднее вертикальное ребро на той же
+// экранной линии). Допуск — чтобы ребро на самой грани оставалось видимым
+function isOccluded(q, P){
+  const o = projToQuad(P, q.cam, q.w, q.h, {x:0,y:0,z:0});
+  raycaster.setFromCamera({x: o.x/q.w*2-1, y: -(o.y/q.h*2-1)}, q.cam);
+  const hits = raycaster.intersectObject(mesh);
+  if(!hits.length) return false;
+  const t = new THREE.Vector3().subVectors(P, raycaster.ray.origin).dot(raycaster.ray.direction);
+  return hits[0].distance < t - (0.02 + t*0.002);
+}
 function pickEdge(q, excl){
   const P1={x:0,y:0,z:0}, P2={x:0,y:0,z:0};
-  let best=null, bestD=8; // порог 8px
+  const cands = []; // порог 8px; ближайшее к курсору видимое
   for(const ch of chains){
     for(let i=1;i<ch.pts.length;i++){
       if(excl && (ch.pts[i-1].distanceTo(excl)<1e-3 || ch.pts[i].distanceTo(excl)<1e-3)) continue;
@@ -5507,10 +5584,11 @@ function pickEdge(q, excl){
       t=Math.max(0,Math.min(1,t));
       const ex=P1.x+t*dx-q.mx, ey=P1.y+t*dy-q.my;
       const d=Math.hypot(ex,ey);
-      if(d<bestD){ bestD=d; best={chain:ch, i}; }
+      if(d<8) cands.push({d, chain:ch, i});
     }
   }
-  if(best){
+  cands.sort((a,b)=>a.d-b.d);
+  for(const best of cands){
     // перспективно-честная позиция: ближайшая точка 3D-отрезка к лучу курсора
     // (экранная доля пути в перспективе врёт — точка «обгоняла» курсор)
     const ch = best.chain, i = best.i;
@@ -5519,6 +5597,7 @@ function pickEdge(q, excl){
     raycaster.setFromCamera({x: q.mx/q.w*2-1, y: -(q.my/q.h*2-1)}, q.cam);
     const dir = new THREE.Vector3().subVectors(B, A).normalize();
     const t3 = Math.max(0, Math.min(segLen, rayLineParam(raycaster.ray, A, dir)));
+    if(isOccluded(q, A.clone().addScaledVector(dir, t3))) continue;
     return {chain: ch, s: ch.cum[i-1] + t3};
   }
   return null;
@@ -5540,7 +5619,7 @@ function pickCorner(q, excl){
     projToQuad(c.pos, q.cam, q.w, q.h, P);
     if(P.z>1||P.z<-1) continue;
     const d=Math.hypot(P.x-q.mx, P.y-q.my);
-    if(d<bestD){ bestD=d; best=c; }
+    if(d<bestD && !isOccluded(q, c.pos)){ bestD=d; best=c; }
   }
   return best;
 }
@@ -5954,7 +6033,7 @@ window.addEventListener('keydown', e=>{
     if(pointMode) setPointMode(false);
     if(activeTool && !(activeTool.esc && activeTool.esc())) setActiveTool(null);
     if(circleMode){
-      if(circleCenter){ circleCenter=null; circleRStr=''; killRing(); hidePlaneTargets(); updateCircInfo(); }
+      if(circleCenter){ circleCenter=null; circleRStr=''; circRLock = false; killRing(); hidePlaneTargets(); updateCircInfo(); }
       else setCircleMode(false);
     }
     if(lineMode){
@@ -6170,7 +6249,12 @@ canvas.addEventListener('pointerdown', e=>{
           circleR = 0;
           circleDown = {x: e.clientX, y: e.clientY};
           circPatch = facePatchCached(f.faceIndex);
-          circLast = null; circAuto = true; circleRStr = '';
+          circLast = null; circAuto = true; circleRStr = ''; circRLock = false;
+          if(circFixedR){ // размер уже задан в окне — клик ставит круг
+            circleR = circFixedR; circleDown = null;
+            circ_seg.value = autoCircSegs(circleR);
+            commitCircle();
+          }
           updateCircInfo();
         }
       } else {
@@ -6289,7 +6373,7 @@ canvas.addEventListener('pointerup', e=>{
     // тянули от центра и отпустили — круг ставится сразу, а не ждёт клика
     const moved = Math.hypot(e.clientX-circleDown.x, e.clientY-circleDown.y) > 4;
     circleDown = null;
-    if(moved && circleR > 0.3){ commitCircle(); return; }
+    if(moved && circleR > 0.3 && !circRLock){ commitCircle(); return; }
   }
   if(txPlaceDrag){ // отпустили точку текста — финальная перестройка
     if(txPlaceDrag.dirty && txtLive){
@@ -6688,8 +6772,13 @@ canvas.addEventListener('pointermove', e=>{
         ghost.position.copy(pt.pos); ghost.visible = true;
         showHintFor(pt);
         tipAt(e, 'Circle · center: ' + kindLabel(pt.kind)
-                 + '<br>click, then drag — Ø');
-      } else { ghost.visible = false; tipHide(); }
+                 + (circFixedR ? '<br>click — place Ø ' + (2*circFixedR).toFixed(1) : '<br>click, then drag — Ø'));
+        if(circFixedR && hf){
+          const n = triNormalAt(hf.faceIndex);
+          const off = new THREE.Vector3().subVectors(pt.pos, hf.point).dot(n);
+          drawCircleRing(pt.pos.clone().addScaledVector(n, -off), n, circFixedR);
+        } else killRing();
+      } else { ghost.visible = false; tipHide(); killRing(); }
       return;
     }
     tipHide(); // размеры — в окне круга, второй тултип не нужен
@@ -6697,9 +6786,11 @@ canvas.addEventListener('pointermove', e=>{
     // Магниты радиуса: вершина, середина ребра, центр, точка на ребре и
     // перпендикуляр к ребру (круг, вписанный в квадрат, касается сторон)
     let snapKind = '';
-    const pt = linePickPoint(q);
+    const pt = circRLock ? null : linePickPoint(q);
     const inPlane = P => Math.abs(new THREE.Vector3().subVectors(P, circleCenter).dot(circlePlane)) < 0.05;
-    if(pt && pt.kind !== 'on face' && inPlane(pt.pos)){
+    if(circRLock){
+      ghost.visible = false; // размер введён в окне — мышь его не меняет
+    } else if(pt && pt.kind !== 'on face' && inPlane(pt.pos)){
       let P = pt.pos, kind = kindLabel(pt.kind);
       if(pt.kind === 'on edge' && pt.chain){
         // основание перпендикуляра из центра на отрезок ребра под курсором
