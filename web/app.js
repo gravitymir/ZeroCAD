@@ -966,6 +966,43 @@ function patchPlaneD(p){
   const pos = mesh.geometry.attributes.position.array, o = p.tris[0]*9;
   return p.normal.x*pos[o] + p.normal.y*pos[o+1] + p.normal.z*pos[o+2];
 }
+// Ctrl+I — инвертировать выбор (Select → Invert в Blender, Invert Selection
+// в SketchUp): выбираются все ДРУГИЕ области той же плоскости с той же
+// стороной, выбранные снимаются. Выделил середину — получил всё вокруг,
+// дальше E с Ctrl вырезает остальное
+function invertFaceSelection(){
+  if(!ppParts || !ppParts.length) return false;
+  const pos = mesh.geometry.attributes.position.array;
+  const base = ppParts[0], n = base.normal, d = patchPlaneD(base);
+  const taken = new Set();
+  for(const p of ppParts) for(const t of p.tris) taken.add(t);
+  const parts = [];
+  for(let t=0; t<pos.length/9; t++){
+    if(taken.has(t)) continue;
+    const o = t*9;
+    if(Math.abs(n.x*pos[o] + n.y*pos[o+1] + n.z*pos[o+2] - d) > 0.05) continue;
+    const tn = triNormalAt(t);
+    if(tn.dot(n) < 0.999) continue;
+    const pa = facePatchAt(t);
+    let area = 0;
+    for(const u of pa.tris){
+      taken.add(u);
+      const q = u*9;
+      const ux=pos[q+3]-pos[q], uy=pos[q+4]-pos[q+1], uz=pos[q+5]-pos[q+2];
+      const vx=pos[q+6]-pos[q], vy=pos[q+7]-pos[q+1], vz=pos[q+8]-pos[q+2];
+      area += Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx) / 2;
+    }
+    if(area < 1e-4) continue; // вырожденные осколки не выбираем
+    pa.area = area;
+    parts.push(pa);
+  }
+  if(!parts.length){ warnTip('Nothing else on this plane'); return false; }
+  ppParts = parts;
+  ppPatch = compositeParts();
+  showPatch(ppPatch, C_SEL);
+  showFacePalette();
+  return true;
+}
 // курсор «поворот камеры»: кружок-стрелка, пока в инструменте зажат Ctrl
 // (Ctrl+ЛКМ — временная орбита); отпустил Ctrl — снова крестик рисования
 const ORBIT_CURSOR = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(
@@ -3773,6 +3810,7 @@ function showFacePalette(){
     (!hintsChk.checked ? '' :
     '<div><span class="key">E</span> — Extrude: drag or value · Join / Cut</div>' +
     '<div><span class="key">Ctrl+click</span> — multi-select (same plane)</div>' +
+    '<div><span class="key">Ctrl+I</span> — invert: the other areas of this plane</div>' +
     '<div><span class="key">B</span> — bounding edges</div>' +
     '<div><span class="key">Del</span> — Delete face</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
@@ -4823,7 +4861,40 @@ function csgFan(polys, out){ // полигон -> веер треугольни�
     for(let i=2;i<p.v.length;i++) out.push([p.v[0], p.v[i-1], p.v[i]]);
   return out;
 }
+// Второе тело из нескольких далёких кусков (Ctrl+I выбрал шесть сегментов по
+// ободу) целиком снова накрывает габаритом всю модель — локальность не
+// работает, и швы у обода расходились (102 дыры). Куски, чьи габариты не
+// соприкасаются, обрабатываются по очереди, каждый локально; соседние
+// (буквы текста) остаются одной группой
+function csgClusters(tris){
+  const par = tris.map((_, i) => i);
+  const root = i => { while(par[i] !== i){ par[i] = par[par[i]]; i = par[i]; } return i; };
+  const byKey = new Map();
+  tris.forEach((t, i) => { for(const v of t){ const k = keyOf(v.x, v.y, v.z); const j = byKey.get(k); if(j === undefined) byKey.set(k, i); else { const a = root(i), b = root(j); if(a !== b) par[a] = b; } } });
+  const comps = new Map();
+  tris.forEach((t, i) => { const r = root(i); if(!comps.has(r)) comps.set(r, []); comps.get(r).push(t); });
+  let groups = [...comps.values()].map(ts => { const box = new THREE.Box3(); for(const t of ts) for(const v of t) box.expandByPoint(v); return {ts, box: box.expandByScalar(0.5)}; });
+  for(let merged = true; merged && groups.length > 1;){ // сливаем группы с пересекающимися габаритами
+    merged = false;
+    outer: for(let i=0;i<groups.length;i++) for(let j=i+1;j<groups.length;j++){
+      if(groups[i].box.intersectsBox(groups[j].box)){
+        groups[i].ts.push(...groups[j].ts); groups[i].box.union(groups[j].box); groups.splice(j, 1); merged = true; break outer;
+      }
+    }
+  }
+  return groups.map(g => g.ts);
+}
 function csgUnion(aTris, bTris){
+  const groups = csgClusters(bTris);
+  if(groups.length > 1){ let cur = aTris; for(const g of groups) cur = csgUnionOne(cur, g); return cur; }
+  return csgUnionOne(aTris, bTris);
+}
+function csgSubtract(aTris, bTris){
+  const groups = csgClusters(bTris);
+  if(groups.length > 1){ let cur = aTris; for(const g of groups) cur = csgSubtractOne(cur, g); return cur; }
+  return csgSubtractOne(aTris, bTris);
+}
+function csgUnionOne(aTris, bTris){
   const {near, far} = csgSplitByBox(aTris, bTris);
   const aAll = csgNode(csgMk(aTris)), aN = csgNode(csgMk(near)), b = csgNode(csgMk(bTris));
   csgClipTo(aN, b);
@@ -4835,7 +4906,7 @@ function csgUnion(aTris, bTris){
   csgFan(csgAllPolys(aN, []), out);
   return csgFan(csgAllPolys(b, []), out);
 }
-function csgSubtract(aTris, bTris){
+function csgSubtractOne(aTris, bTris){
   const {near, far} = csgSplitByBox(aTris, bTris);
   const aAll = csgNode(csgMk(aTris)), aN = csgNode(csgMk(near)), b = csgNode(csgMk(bTris));
   csgInvert(aAll); csgInvert(aN);
@@ -5413,7 +5484,10 @@ function healAll(){
   weldVertices(0.0015); // полтора кванта: сшивает только «расщеплённые» точки
   cleanupMesh();
   healCoplanarOverlaps(); // самый дорогой проход — ровно один раз
-  for(let i=0;i<40;i++){  // Т-стыки: healTJunctions чинит ≤16 за вызов
+  // Т-стыки: healTJunctions чинит ≤16 за вызов. Потолок 40 проходов (640
+  // стыков) не хватал на вырез сразу нескольких областей (шесть сегментов
+  // обода — 108 дыр оставалось); цикл и так выходит, когда сетка сошлась
+  for(let i=0;i<250;i++){
     const len0 = mesh.geometry.attributes.position.array.length;
     cleanupMesh(); healTJunctions();
     if(mesh.geometry.attributes.position.array.length === len0) break;
@@ -7495,6 +7569,11 @@ window.addEventListener('keydown', e=>{
     e.preventDefault(); chordG = 0; hideChordHint();
     if(offLive) closeOffset(); else openOffset();
     return;
+  }
+  // Ctrl+I — инвертировать выбор областей плоскости (Blender Select → Invert)
+  if((e.code==='KeyI' || e.key.toLowerCase()==='i' || e.key.toLowerCase()==='ш') && (e.ctrlKey || e.metaKey)
+     && !e.altKey && !e.shiftKey && ppPatch && !exLive && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); invertFaceSelection(); return;
   }
   // E — точное выдавливание выбранной грани (Extrude, как E в Blender)
   if((e.code==='KeyE' || e.key.toLowerCase()==='e') && !e.ctrlKey && !e.altKey && !e.metaKey
