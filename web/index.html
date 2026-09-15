@@ -263,8 +263,20 @@
     letter-spacing:.12em;color:var(--text);text-transform:uppercase}
   #stHud[hidden]{display:none}
   #stScore{position:absolute;top:14px;left:0;right:0;text-align:center;color:var(--accent)}
-  #stMsg{position:absolute;bottom:9%;left:0;right:0;text-align:center;color:var(--muted);font-size:16px}
+  /* низ HUD — одна колонка: подсказка, клавиши, управление (в узком окне не наезжают) */
+  #stBottom{position:absolute;bottom:7%;left:12px;right:12px;display:flex;flex-direction:column;align-items:center;gap:12px}
+  #stMsg{text-align:center;color:var(--muted);font-size:16px}
   #stMsg b{color:var(--accent2)}
+  /* панель инструментов-оружия: те же клавиши, что в редакторе */
+  #stTools{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;
+    font-size:14px;letter-spacing:.06em}
+  #stTools span{padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(30,33,40,.75);color:var(--muted);
+    transition:border-color .15s,color .15s}
+  #stTools span b{color:var(--accent2);margin-right:6px}
+  #stTools span.on{border-color:var(--accent);color:var(--text)}
+  #stTip{min-height:1.4em;text-align:center;color:var(--text);font-size:17px;
+    letter-spacing:.04em;text-transform:none;font-family:system-ui,sans-serif;font-weight:600;transition:opacity .3s}
+  #stTip b{color:var(--accent);font-family:ui-monospace,Consolas,monospace;margin-right:8px}
   #startScreen .st-sub{color:var(--muted);font-size:15px;letter-spacing:.04em;margin-top:-6px}
   #startScreen .st-head{color:var(--accent2);font-size:12px;text-transform:uppercase;letter-spacing:.12em;margin-top:22px}
   #startScreen .st-cards{display:grid;grid-template-columns:repeat(4, 150px);gap:16px}
@@ -283,7 +295,7 @@
 <body>
 <div id="startScreen" hidden>
   <canvas id="startCanvas"></canvas>
-  <div id="stHud" hidden><div id="stScore"></div><div id="stMsg"></div></div>
+  <div id="stHud" hidden><div id="stScore"></div><div id="stBottom"><div id="stTip"></div><div id="stTools"></div><div id="stMsg"></div></div></div>
   <div id="stUI">
   <div id="stTitleSpace"></div>
   <div class="st-sub">Parametric CAD in the browser</div>

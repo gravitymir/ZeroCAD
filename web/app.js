@@ -8591,25 +8591,10 @@ function updateVcArrows(){
 // пиксельным шрифтом и тем же построителем, что у 3D Text (buildTextSolid),
 // ставится над карточками и вписывается в окно с запасом на покачивание.
 // Если долго ничего не трогать — пасхалка CAD INVADERS (attract mode, как
-// у аркадных автоматов): захватчики маршируют, Space — играть, Esc — назад
+// у аркадных автоматов): цифры-захватчики маршируют, Space — играть, Esc — назад
 const startScreen = document.getElementById('startScreen');
 let startGL = null;
 const INVADER_IDLE_MS = 30000;
-// спрайты — строки клеток, как FONT57: '1' — закрашено, верхняя строка сверху
-const INV_SPRITES = {
-  squid: [['00011000','00111100','01111110','11011011','11111111','00100100','01011010','10100101'],
-          ['00011000','00111100','01111110','11011011','11111111','01011010','10000001','01000010']],
-  crab:  [['00100000100','00010001000','00111111100','01101110110','11111111111','10111111101','10100000101','00011011000'],
-          ['00100000100','10010001001','10111111101','11101110111','11111111111','01111111110','00100000100','01000000010']],
-  octo:  [['000011110000','011111111110','111111111111','111001100111','111111111111','000110011000','001101101100','110000000011'],
-          ['000011110000','011111111110','111111111111','111001100111','111111111111','001110011100','011001100110','001100001100']],
-  ship:  [['0000001000000','0000011100000','0000011100000','0111111111110','1111111111111','1111111111111','1111111111111','1111111111111']]
-};
-function spriteCells(rows){
-  const cells = new Set(), hgt = rows.length;
-  rows.forEach((row, r) => { for(let c=0;c<row.length;c++) if(row[c] === '1') cells.add(c + ',' + (hgt - 1 - r)); });
-  return {cells, w: rows[0].length, h: hgt};
-}
 // объёмный пиксельный меш по клеткам (центр в нуле): крышки светлые,
 // стенки цветные — как название
 function pixelGeometry(cells, w, hgt, depth, topHex, sideHex){
@@ -8652,50 +8637,83 @@ function startTitleScene(){
   scn.add(title);
 
   // ---- CAD INVADERS ----
+  // Игра — пособие: оружие — это инструменты редактора на тех же клавишах.
+  // L/Space — линия, P — три точки веером через 5°, C — корабль рисует
+  // круг и пускает его (замкнутый контур забирает всех внутри), R —
+  // прямоугольник, E — плоский профиль на глазах выдавливается в тело и
+  // пробивает колонну. Поле объёмное: наклон, сетка, толстые спрайты
   const FW = 96, FH = 64;                       // полуширина и полувысота поля, клетки
   const field = new THREE.Group(); field.visible = false; scn.add(field);
-  const gameTitle = textGroup('CAD INVADERS', 1.4, 0x4da3ff);
-  gameTitle.scale.setScalar(1.3); gameTitle.position.set(0, -24, 2);
+  const floorGrid = new THREE.GridHelper(240, 24, 0x3a4150, 0x262b35);
+  floorGrid.rotation.x = Math.PI / 2; floorGrid.position.z = -8; field.add(floorGrid);
+  const gameTitle = textGroup('CAD INVADERS', 2.2, 0x4da3ff);
+  gameTitle.scale.setScalar(1.3); gameTitle.position.set(0, -24, 3);
   field.add(gameTitle);
-  const kinds = {
-    squid: {side: 0x4da3ff, pts: 30}, crab: {side: 0x6aff3d, pts: 20}, octo: {side: 0xff8a3d, pts: 10}
-  };
-  for(const k in kinds){
-    kinds[k].geos = INV_SPRITES[k].map(rows => { const s = spriteCells(rows); return pixelGeometry(s.cells, s.w, s.h, 2, 0xf2f4f7, kinds[k].side); });
-    kinds[k].w = INV_SPRITES[k][0][0].length;
+  // захватчики — цифры 1…9 нашим шрифтом (очки = цифра × 10), корабль —
+  // ноль: Zero из ZeroCAD. Все объёмные, и каждый качается по-своему
+  const DIGIT_SCALE = 1.6;
+  const DIGIT_SIDE = [0, 0x6aff3d, 0x6aff3d, 0x4da3ff, 0x4da3ff, 0xff8a3d, 0xff8a3d, 0xd9534f, 0xd9534f, 0xf5c542];
+  const kinds = {};
+  for(let d=1; d<=9; d++){
+    kinds[d] = {geo: pixelGeometry(textCellsOf(String(d)), 5, 7, 3, 0xf2f4f7, DIGIT_SIDE[d]),
+                pts: d * 10, w: 5 * DIGIT_SCALE, h: 7 * DIGIT_SCALE};
   }
-  const shipS = spriteCells(INV_SPRITES.ship[0]);
-  const ship = new THREE.Mesh(pixelGeometry(shipS.cells, shipS.w, shipS.h, 2, 0xf2f4f7, 0x6aff3d), lambert);
+  const ship = new THREE.Mesh(pixelGeometry(textCellsOf('0'), 5, 7, 3, 0xf2f4f7, 0x4da3ff), lambert);
+  ship.scale.setScalar(DIGIT_SCALE);
+  const SHIP_HW = 5 * DIGIT_SCALE / 2, SHIP_HH = 7 * DIGIT_SCALE / 2;
   field.add(ship);
-  const shotGeo = new THREE.BoxGeometry(1, 4, 1);
-  const shot = new THREE.Mesh(shotGeo, new THREE.MeshLambertMaterial({color: 0xff8a3d}));
-  shot.visible = false; field.add(shot);
+  const bombGeo = new THREE.BoxGeometry(1.2, 4, 1.2);
   const bombs = [0, 1, 2].map(() => {
-    const m = new THREE.Mesh(shotGeo, new THREE.MeshLambertMaterial({color: 0xf2f4f7}));
+    const m = new THREE.Mesh(bombGeo, new THREE.MeshLambertMaterial({color: 0xf2f4f7}));
     m.visible = false; field.add(m); return m;
   });
+  const orange = new THREE.MeshLambertMaterial({color: 0xff8a3d});
+  const blue = new THREE.MeshLambertMaterial({color: 0x4da3ff});
+  const white = new THREE.MeshLambertMaterial({color: 0xf7f9fc});
+  const darkEdge = new THREE.LineBasicMaterial({color: 0x23262c});
+  const SHIP_Y = -FH + 6, NOSE_Y = SHIP_Y + SHIP_HH + 1.5;
+  // оружие-инструменты: клавиша, подпись, перезарядка, как учит
+  const WEAPONS = {
+    line:   {key: 'L', name: 'Line',      cd: 0.3,  tip: 'Line — the thinnest cut: one edge, one target'},
+    points: {key: 'P', name: 'Points',    cd: 0.55, tip: 'Points — three points fan out 5° apart'},
+    circle: {key: 'C', name: 'Circle',    cd: 1.1,  tip: 'Circle — a closed curve takes everything inside'},
+    rect:   {key: 'R', name: 'Rectangle', cd: 0.9,  tip: 'Rectangle — a wide closed contour'},
+    extrude:{key: 'E', name: 'Extrude',   cd: 2.0,  tip: 'Extrude — a flat profile grows into a solid and pierces the column'}
+  };
+  const hudTools = document.getElementById('stTools'), hudTip = document.getElementById('stTip');
+  hudTools.innerHTML = Object.entries(WEAPONS).map(([id, w]) => '<span data-w="' + id + '"><b>' + (id === 'line' ? 'L/Space' : w.key) + '</b>' + w.name + '</span>').join('');
+  const shots = [];
+  const cool = {};
+  let tipT = 0;
   const HI_KEY = 'zc_invaders_hi';
   let hi = 0; try{ hi = +localStorage.getItem(HI_KEY) || 0; }catch(_){}
   const hud = document.getElementById('stHud'), hudScore = document.getElementById('stScore'), hudMsg = document.getElementById('stMsg');
-  const G = {mode: 'off', invaders: [], dir: 1, stepT: 0, frame: 0, score: 0, lives: 3, wave: 0,
-             keys: {left: false, right: false}, shipX: 0, hitT: 0, lastAct: performance.now(), demoT: 0};
+  const G = {mode: 'off', invaders: [], dir: 1, stepT: 0, score: 0, lives: 3, wave: 0,
+             keys: {left: false, right: false}, shipX: 0, hitT: 0, lastAct: performance.now(), demoT: 0, t: 0};
+  function clearShots(){ for(const p of shots) field.remove(p.obj); shots.length = 0; }
   function newWave(){
     for(const inv of G.invaders) field.remove(inv.mesh);
     G.invaders = [];
-    const rows = ['squid', 'crab', 'crab', 'octo', 'octo'];
+    // сверху крупные цифры (больше очков), снизу мелкие
+    const ROW_DIGITS = [[8, 9], [6, 7], [4, 5], [2, 3], [1, 2]];
     const drop = Math.min(G.wave, 4) * 4;
-    rows.forEach((k, r) => {
+    ROW_DIGITS.forEach((pair, r) => {
       for(let c=0;c<11;c++){
-        const mesh = new THREE.Mesh(kinds[k].geos[0], lambert);
-        const inv = {k, x: -80 + c * 16, y: 48 - r * 13 - drop, alive: true, mesh};
+        const k = pair[Math.floor(Math.random() * pair.length)];
+        const mesh = new THREE.Mesh(kinds[k].geo, lambert);
+        mesh.scale.setScalar(DIGIT_SCALE);
+        // своя фаза, скорость и размах покачивания у каждой цифры
+        const inv = {k, x: -80 + c * 16, y: 48 - r * 13 - drop, alive: true, mesh,
+                     ph: Math.random() * Math.PI * 2, sp: 0.7 + Math.random() * 1.6,
+                     ay: 0.25 + Math.random() * 0.45, ax: 0.1 + Math.random() * 0.3};
         mesh.position.set(inv.x, inv.y, 0);
         field.add(mesh); G.invaders.push(inv);
       }
     });
-    G.dir = 1; G.stepT = 0; G.frame = 0;
-    shot.visible = false; for(const bm of bombs) bm.visible = false;
+    G.dir = 1; G.stepT = 0;
+    clearShots(); for(const bm of bombs) bm.visible = false;
   }
-  function resetGame(){ G.score = 0; G.lives = 3; G.wave = 0; G.shipX = 0; G.hitT = 0; newWave(); }
+  function resetGame(){ G.score = 0; G.lives = 3; G.wave = 0; G.shipX = 0; G.hitT = 0; for(const id in cool) cool[id] = 0; newWave(); }
   function saveHi(){ if(G.score > hi){ hi = G.score; try{ localStorage.setItem(HI_KEY, String(hi)); }catch(_){} } }
   function paintHud(){
     const pad = n => String(n).padStart(4, '0');
@@ -8703,7 +8721,13 @@ function startTitleScene(){
       : 'SCORE ' + pad(G.score) + '    LIVES ' + '♥'.repeat(Math.max(0, G.lives)) + '    HI ' + pad(Math.max(hi, G.score));
     hudMsg.innerHTML = G.mode === 'attract' ? '<b>Space</b> — play · <b>Esc</b> — back to ZeroCAD'
       : G.mode === 'over' ? 'Game over · <b>Space</b> — again · <b>Esc</b> — back'
-      : '<b>← →</b> move · <b>Space</b> fire · <b>Esc</b> — back';
+      : '<b>← →</b> move · tool keys fire · <b>Esc</b> — back';
+  }
+  function showTip(id){
+    const w = WEAPONS[id];
+    hudTip.innerHTML = '<b>' + w.key + '</b>' + w.tip;
+    hudTip.style.opacity = 1; tipT = 1.8;
+    for(const el of hudTools.children) el.classList.toggle('on', el.dataset.w === id);
   }
   function setMode(m){
     G.mode = m;
@@ -8712,29 +8736,130 @@ function startTitleScene(){
     hud.hidden = !inGame;
     field.visible = inGame; title.visible = !inGame;
     gameTitle.visible = m === 'attract' || m === 'over';
-    ship.visible = m !== 'attract';
+    ship.visible = m !== 'over';
     if(m === 'attract') resetGame();
     if(m === 'play'){ resetGame(); gameTitle.visible = false; }
-    if(m === 'off'){ G.lastAct = performance.now(); G.keys.left = G.keys.right = false; }
+    if(m === 'off'){ G.lastAct = performance.now(); G.keys.left = G.keys.right = false; clearShots(); }
+    hudTip.style.opacity = 0; tipT = 0;
+    for(const el of hudTools.children) el.classList.remove('on');
     downAt = null;
     paintHud();
   }
-  function fire(){
-    if(shot.visible) return; // одна пуля за раз, как в оригинале
-    shot.position.set(G.shipX, -FH + 10, 0); shot.visible = true;
+  // ---- выстрелы: у каждого инструмента свой снаряд и своя «анимация построения»
+  function edgeBox(w, hgt, d, mat){ // объёмный брусок с тёмными рёбрами, как тело в редакторе
+    const g = new THREE.Group();
+    const geo = new THREE.BoxGeometry(w, hgt, d);
+    g.add(new THREE.Mesh(geo, mat));
+    g.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), darkEdge));
+    return g;
+  }
+  function fire(id){
+    if(!WEAPONS[id] || (cool[id] || 0) > 0) return false;
+    cool[id] = WEAPONS[id].cd;
+    showTip(id);
+    const x = G.shipX;
+    const add = p => { field.add(p.obj); shots.push(p); };
+    if(id === 'line'){
+      add({id, x, y: NOSE_Y, vx: 0, vy: 130, age: 0, build: 0, hw: 0.6, hh: 3, pierce: false, hits: new Set(),
+           obj: edgeBox(0.9, 6, 0.9, orange)});
+    } else if(id === 'points'){
+      for(const deg of [-5, 0, 5]){
+        const a = deg * Math.PI / 180, obj = addOutline(new THREE.Mesh(sphereGeo, white));
+        obj.scale.setScalar(1.3);
+        add({id, x, y: NOSE_Y, vx: Math.sin(a) * 115, vy: Math.cos(a) * 115, age: 0, build: 0, hw: 1.3, hh: 1.3, pierce: false, hits: new Set(), obj});
+      }
+    } else if(id === 'circle'){
+      const obj = new THREE.Group();
+      add({id, x, y: NOSE_Y + 7, vx: 0, vy: 80, age: 0, build: 0.3, r: 7, pierce: false, area: true, hits: new Set(), obj, arc: -1});
+    } else if(id === 'rect'){
+      const obj = new THREE.Group(), W = 22, Hh = 8, t = 1;
+      const sides = [[0, Hh/2, W, t], [W/2, 0, t, Hh], [0, -Hh/2, W, t], [-W/2, 0, t, Hh]];
+      for(const [sx, sy, sw, sh] of sides){ const e = edgeBox(sw, sh, t, blue); e.position.set(sx, sy, 0); e.visible = false; obj.add(e); }
+      add({id, x, y: NOSE_Y + 5, vx: 0, vy: 95, age: 0, build: 0.28, hw: W/2, hh: Hh/2, pierce: false, area: true, hits: new Set(), obj});
+    } else if(id === 'extrude'){
+      const obj = edgeBox(14, 6, 1, orange);
+      obj.scale.z = 0.15;
+      add({id, x, y: NOSE_Y + 4, vx: 0, vy: 70, age: 0, build: 0.4, hw: 7, hh: 3, pierce: true, hits: new Set(), obj});
+    }
+    return true;
+  }
+  function killInvader(i){
+    i.alive = false; field.remove(i.mesh);
+    if(G.mode === 'play'){ G.score += kinds[i.k].pts; paintHud(); }
+  }
+  function updateShots(dt, alive){
+    for(let n = shots.length - 1; n >= 0; n--){
+      const p = shots[n];
+      p.age += dt;
+      const building = p.age < p.build;
+      if(building){
+        // построение у носа корабля: круг дорисовывается дугой, рамка —
+        // сторона за стороной, профиль вытягивается в тело
+        const f = p.age / p.build;
+        p.x = G.shipX;
+        if(p.id === 'circle'){
+          const arc = Math.max(0.05, f * Math.PI * 2);
+          if(Math.abs(arc - p.arc) > 0.01){
+            for(const c of p.obj.children) c.geometry.dispose();
+            p.obj.clear();
+            p.obj.add(new THREE.Mesh(new THREE.TorusGeometry(p.r, 0.7, 6, 40, arc), blue));
+            p.arc = arc;
+          }
+        } else if(p.id === 'rect'){
+          p.obj.children.forEach((e, k) => { e.visible = f >= k / 4; });
+        } else if(p.id === 'extrude'){
+          p.obj.scale.z = 0.15 + f * 7.85;
+        }
+      } else {
+        if(p.id === 'circle' && p.arc < Math.PI * 2 - 0.01){
+          for(const c of p.obj.children) c.geometry.dispose();
+          p.obj.clear(); p.obj.add(new THREE.Mesh(new THREE.TorusGeometry(p.r, 0.7, 6, 40, Math.PI * 2), blue)); p.arc = Math.PI * 2;
+        }
+        if(p.id === 'rect') p.obj.children.forEach(e => { e.visible = true; });
+        if(p.id === 'extrude') p.obj.scale.z = 8;
+        p.x += p.vx * dt; p.y += p.vy * dt;
+      }
+      p.obj.position.set(p.x, p.y, p.id === 'extrude' ? 4 : 0);
+      if(p.id === 'circle') p.obj.rotation.z += dt * 2;
+      let done = p.y > FH + 8 || Math.abs(p.x) > FW + 10;
+      if(!building && !done){
+        const hitNow = [];
+        for(const i of alive){
+          if(!i.alive || p.hits.has(i)) continue;
+          const iw = kinds[i.k].w / 2, ih = kinds[i.k].h / 2;
+          const hit = p.r
+            ? Math.hypot(Math.max(Math.abs(p.x - i.x) - iw, 0), Math.max(Math.abs(p.y - i.y) - ih, 0)) <= p.r
+            : Math.abs(p.x - i.x) <= iw + p.hw && Math.abs(p.y - i.y) <= ih + p.hh;
+          if(hit) hitNow.push(i);
+        }
+        if(hitNow.length){
+          // линия и точки берут одного, контур — всех внутри, тело — насквозь
+          const take = p.area || p.pierce ? hitNow : [hitNow.sort((a, b) => a.y - b.y)[0]];
+          for(const i of take){ killInvader(i); p.hits.add(i); }
+          if(!p.pierce) done = true;
+        }
+      }
+      if(done){ field.remove(p.obj); shots.splice(n, 1); }
+    }
   }
   function update(dt){
     const alive = G.invaders.filter(i => i.alive);
     const playing = G.mode === 'play';
+    for(const id in cool) cool[id] = Math.max(0, cool[id] - dt);
+    G.t += dt;
+    // покачивание в объёме: у каждой цифры свой ритм
+    for(const i of alive){
+      i.mesh.rotation.y = Math.sin(G.t * i.sp + i.ph) * i.ay;
+      i.mesh.rotation.x = Math.sin(G.t * i.sp * 0.7 + i.ph * 1.3) * i.ax;
+    }
+    if(tipT > 0){ tipT -= dt; if(tipT <= 0) hudTip.style.opacity = 0; }
     // марш: чем меньше захватчиков, тем чаще шаг
     G.stepT -= dt;
     if(G.stepT <= 0 && alive.length){
       G.stepT = 0.06 + 0.7 * alive.length / 55;
-      G.frame ^= 1;
       const edge = alive.some(i => Math.abs(i.x + G.dir * 2) > FW - 8);
       for(const i of alive){
         if(edge) i.y -= 4; else i.x += G.dir * 2;
-        i.mesh.geometry = kinds[i.k].geos[G.frame];
         i.mesh.position.set(i.x, i.y, 0);
       }
       if(edge) G.dir = -G.dir;
@@ -8745,37 +8870,29 @@ function startTitleScene(){
         for(const i of alive) if(!cols.has(i.x) || cols.get(i.x).y > i.y) cols.set(i.x, i);
         const shooters = [...cols.values()];
         const s = shooters[Math.floor(Math.random() * shooters.length)];
-        free.position.set(s.x, s.y - 5, 0); free.visible = true;
+        free.position.set(s.x, s.y - kinds[s.k].h / 2 - 1, 0); free.visible = true;
       }
-      if(playing && alive.some(i => i.y - 4 <= -FH + 12)){ G.lives = 0; saveHi(); setMode('over'); return; }
+      if(playing && alive.some(i => i.y - kinds[i.k].h / 2 <= SHIP_Y + SHIP_HH)){ G.lives = 0; saveHi(); setMode('over'); return; }
     }
-    if(!playing && alive.some(i => i.y < -8)) newWave(); // демо и «game over» идут по кругу
+    if(!playing && (alive.some(i => i.y < -8) || !alive.length)) newWave(); // демо и «game over» идут по кругу
     // корабль
     if(playing){
       G.shipX += ((G.keys.right ? 1 : 0) - (G.keys.left ? 1 : 0)) * 75 * dt;
     }
     G.shipX = Math.max(-FW + 8, Math.min(FW - 8, G.shipX));
-    ship.position.set(G.shipX, -FH + 5, 0);
-    if(G.hitT > 0){ G.hitT -= dt; ship.visible = Math.floor(G.hitT * 10) % 2 === 0; if(G.hitT <= 0) ship.visible = G.mode !== 'attract'; }
-    // пуля
-    if(shot.visible){
-      shot.position.y += 120 * dt;
-      if(shot.position.y > FH) shot.visible = false;
-      for(const i of alive){
-        const w = kinds[i.k].w;
-        if(Math.abs(shot.position.x - i.x) <= w / 2 && Math.abs(shot.position.y - i.y) <= 5){
-          i.alive = false; field.remove(i.mesh); shot.visible = false;
-          G.score += kinds[i.k].pts; paintHud();
-          break;
-        }
-      }
-    }
+    ship.position.set(G.shipX, SHIP_Y, 0);
+    // ноль тоже объёмный: качается и кренится в сторону движения
+    const lean = playing ? (G.keys.right ? 1 : 0) - (G.keys.left ? 1 : 0) : 0;
+    ship.rotation.y = Math.sin(G.t * 1.4) * 0.35 + lean * 0.35;
+    ship.rotation.x = Math.sin(G.t * 1.1) * 0.12;
+    if(G.hitT > 0){ G.hitT -= dt; ship.visible = Math.floor(G.hitT * 10) % 2 === 0; if(G.hitT <= 0) ship.visible = G.mode !== 'over'; }
+    updateShots(dt, alive);
     // бомбы
     for(const bm of bombs){
       if(!bm.visible) continue;
       bm.position.y -= 45 * dt;
       if(bm.position.y < -FH - 4){ bm.visible = false; continue; }
-      if(playing && G.hitT <= 0 && Math.abs(bm.position.x - G.shipX) <= 6.5 && Math.abs(bm.position.y - (-FH + 5)) <= 4){
+      if(playing && G.hitT <= 0 && Math.abs(bm.position.x - G.shipX) <= SHIP_HW + 0.6 && Math.abs(bm.position.y - SHIP_Y) <= SHIP_HH + 2){
         bm.visible = false; G.lives--; G.hitT = 1.2; paintHud();
         if(G.lives <= 0){ saveHi(); setMode('over'); return; }
       }
@@ -8812,12 +8929,21 @@ function startTitleScene(){
       title.rotation.x = -0.28 + Math.sin(s * 0.45) * 0.08;
       if(now - G.lastAct > INVADER_IDLE_MS) setMode('attract');
     } else {
-      camZ = Math.max((FW + 8) / (tanH * cam.aspect), (FH + 10) / tanH);
-      field.rotation.x = -0.18; field.position.y = 0;
+      // поле наклонено и медленно покачивается — видно, что всё объёмное
+      camZ = 1.12 * Math.max((FW + 8) / (tanH * cam.aspect), (FH + 10) / tanH);
+      field.rotation.x = -0.42; field.rotation.y = Math.sin(s * 0.25) * 0.12;
+      field.position.y = 4;
       if(G.mode === 'attract'){
-        // демо: корабль гуляет сам
+        // демо: корабль гуляет сам и по очереди показывает инструменты
         G.shipX = Math.sin(s * 0.9) * 50;
         gameTitle.rotation.y = Math.sin(s * 0.8) * 0.2;
+        G.demoT -= dt;
+        if(G.demoT <= 0){
+          const order = ['line', 'points', 'circle', 'rect', 'extrude'];
+          G.demoIdx = ((G.demoIdx || 0) + 1) % order.length;
+          fire(order[G.demoIdx]);
+          G.demoT = 1.6;
+        }
       }
       if(G.mode === 'over') gameTitle.rotation.y = Math.sin(s * 0.8) * 0.2;
       update(dt);
@@ -8854,14 +8980,18 @@ function startTitleScene(){
       if(G.mode === 'over'){ if(k === ' ') setMode('play'); return true; }
       if(left) G.keys.left = true;
       if(right) G.keys.right = true;
-      if(k === ' ' && !e.repeat) fire();
+      if(!e.repeat){
+        // по e.code — клавиши работают и в русской раскладке, как в редакторе
+        const id = k === ' ' || e.code === 'KeyL' ? 'line' : {KeyP: 'points', KeyC: 'circle', KeyR: 'rect', KeyE: 'extrude'}[e.code];
+        if(id) fire(id);
+      }
       return true;
     },
     get mode(){ return G.mode; },
     // n кадров по dtMs без requestAnimationFrame — для проверок и будущего
     // слоя команд (скрытая вкладка не крутит rAF)
     step(n, dtMs){ for(let i=0;i<n;i++) draw(last + (dtMs || 16)); },
-    setMode, G
+    setMode, G, fire, shots
   };
 }
 function openStartScreen(){
