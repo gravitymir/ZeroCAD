@@ -1,8 +1,11 @@
 //! ZeroCAD — параметрический CAD-сервер на чистом Rust (ноль зависимостей).
-//! Отдаёт браузерный вьюер и генерирует STL колеса-дозатора на лету.
+//! Редактор целиком живёт в браузере (web/: те же файлы — и расширение
+//! браузера); сервер отдаёт его и держит резервный движок csgrs.
 //!
-//!   GET /                  -> вьюер (web/index.html, вшит в бинарник)
-//!   GET /api/wheel.stl?... -> бинарный STL с параметрами из query
+//!   GET /                    -> страница (web/index.html, вшита в бинарник)
+//!   GET /app.js              -> редактор: ядро, команды, интерфейс
+//!   GET /vendor/three.min.js -> three.js r128 (локально: расширениям CDN нельзя)
+//!   GET /api/wheel.stl?...   -> бинарный STL с параметрами из query
 //!
 //! Параметры query: dia, thk, shaft, n, depth, mouth (дефолты — в geometry.rs).
 
@@ -15,6 +18,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
+const APP_JS: &str = include_str!("../web/app.js");
+const THREE_JS: &str = include_str!("../web/vendor/three.min.js");
 const BUILD: &str = env!("ZEROCAD_BUILD");
 
 fn main() {
@@ -77,6 +82,20 @@ fn handle(stream: TcpStream) {
                 page.as_bytes(),
             );
         }
+        "/app.js" => respond(
+            &mut stream,
+            "200 OK",
+            "text/javascript; charset=utf-8",
+            &[],
+            APP_JS.as_bytes(),
+        ),
+        "/vendor/three.min.js" => respond(
+            &mut stream,
+            "200 OK",
+            "text/javascript; charset=utf-8",
+            &[],
+            THREE_JS.as_bytes(),
+        ),
         "/api/wheel.stl" => {
             let p = params_from_query(query);
             let use_csg = query.split('&').any(|kv| kv == "engine=csg");

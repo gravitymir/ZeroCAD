@@ -7,6 +7,12 @@
       "runtimeArgs": ["run"],
       "port": 9001,
       "autoPort": true
+    },
+    {
+      "name": "static",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "9002", "--directory", "web"],
+      "port": 9002
     }
   ]
 }

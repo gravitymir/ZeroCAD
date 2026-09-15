@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "ZeroCAD",
+  "version": "0.1.0",
+  "description": "Parametric CAD in the browser: sketch on faces, extrude, cut, fillet, export STL / 3MF / STEP.",
+  "action": {
+    "default_title": "Open ZeroCAD"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
