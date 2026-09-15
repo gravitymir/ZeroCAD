@@ -8746,10 +8746,10 @@ function startTitleScene(){
   function newWave(){
     for(const inv of G.invaders) field.remove(inv.mesh);
     G.invaders = [];
-    // сверху крупные цифры, снизу мелкие; среди них буквы-команды — с
-    // каждой волной на одну больше (L P, потом C, R, E); в демо — все
+    // сверху крупные цифры, снизу мелкие; среди них буквы-команды — все
+    // сразу (игра учит каждой клавише с первой волны)
     const ROW_DIGITS = [[8, 9], [6, 7], [4, 5], [2, 3], [1, 2]];
-    const letters = [...TOOL_KEYS, 'E-'].slice(0, G.mode === 'attract' ? 6 : Math.min(6, 2 + G.wave));
+    const letters = [...TOOL_KEYS, 'E-'];
     const drop = Math.min(G.wave, 4) * 4;
     ROW_DIGITS.forEach((pair, r) => {
       for(let c=0;c<11;c++){
@@ -8765,6 +8765,16 @@ function startTitleScene(){
         field.add(mesh); G.invaders.push(inv);
       }
     });
+    // каждой буквы — не меньше двух: случай не должен оставить волну без R или E
+    for(const L of letters){
+      let have = G.invaders.filter(i => i.k === L).length;
+      const digits = G.invaders.filter(i => !kinds[i.k].letter);
+      while(have < 2 && digits.length){
+        const i = digits.splice(Math.floor(Math.random() * digits.length), 1)[0];
+        i.k = L; i.mesh.geometry = kinds[L].geo; i.mesh.scale.setScalar(kinds[L].scale || DIGIT_SCALE);
+        have++;
+      }
+    }
     G.dir = 1; G.stepT = 0; G.demoTarget = null; G.edges = 0;
     clearShots(); for(const bm of bombs) bm.visible = false;
   }
