@@ -1212,7 +1212,8 @@ function linePickPoint(q){
     // магнит середины ребра/линии — во всех инструментах рисования
     const midP = chainPointAt(h.chain, h.chain.total/2);
     const scr = projToQuad(midP, q.cam, q.w, q.h, {x:0,y:0,z:0});
-    if(!h.chain.closed && Math.hypot(scr.x-q.mx, scr.y-q.my) < 8)
+    // радиус магнита 14 px: при 8 px на крупном плане середину было не поймать
+    if(!h.chain.closed && Math.hypot(scr.x-q.mx, scr.y-q.my) < 14)
       return {pos: midP, kind:'midpoint', chain: h.chain, s: h.chain.total/2};
     return {pos:chainPointAt(h.chain, snapMM(h.s)), kind:'on edge', chain: h.chain, s: snapMM(h.s)};
   }
@@ -1316,14 +1317,14 @@ function segmentOnSomeFace(A, B){
 function commitLinePoint(pos){
   if(!lineStart){ lineStart = pos.clone(); }
   else {
-    if(!segmentOnSomeFace(lineStart, pos)){
-      // линия ушла бы сквозь тело — не ставим, объясняем и ждём другой конец
-      warnTip('Line must lie on a face');
-      return;
-    }
+    // Линия не на грани — ставим «в воздухе», как в SketchUp: грани не режет,
+    // но служит ребром контура — по таким линиям F заливает новую грань
+    // (после удаления граней контур для заливки иначе было не собрать)
+    const onFace = segmentOnSomeFace(lineStart, pos);
+    if(lineStart.distanceTo(pos) < 0.05) return;
     pushUndo();
     addGuide(lineStart, pos);
-    splitMeshByChord(lineStart, pos); // врезаем хорду в сетку — как режет линия в SketchUp
+    if(onFace) splitMeshByChord(lineStart, pos); // врезаем хорду в сетку — как режет линия в SketchUp
     extractEdges();
     // запоминаем отрезок: пока после него ничего не делали, поле Length его правит
     lineLast = {A: lineStart.clone(), B: pos.clone(), snap: undoStack[undoStack.length - 1],
@@ -1423,11 +1424,11 @@ function resizeLastLine(len, newDir){
   const dir = newDir ? newDir.clone() : new THREE.Vector3().subVectors(B, A);
   if(dir.length() < 1e-9) return false;
   const B2 = A.clone().addScaledVector(dir.normalize(), len);
-  if(!segmentOnSomeFace(A, B2)){ warnTip('Line must lie on a face'); return false; }
+  if(A.distanceTo(B2) < 0.05) return false;
   undo(true);
   pushUndo();
   addGuide(A, B2);
-  splitMeshByChord(A, B2);
+  if(segmentOnSomeFace(A, B2)) splitMeshByChord(A, B2);
   extractEdges();
   lineLast = {A: A.clone(), B: B2, snap: undoStack[undoStack.length - 1], base: lineLast.base, n: lineLast.n};
   updateLineInfo();
@@ -1515,7 +1516,7 @@ function updateLinePreview(){
     {color: !onFace ? 0xd9534f : snap ? snap.color : 0x2ecc40})));
   dot.position.copy(B2); dot.renderOrder = 6;
   scene.add(dot);
-  const note = !onFace ? '<span style="color:#d9534f">end leaves the face</span>'
+  const note = !onFace ? '<span style="color:#d9534f">end leaves the face · the line won’t cut faces</span>'
     : snap ? 'end on <b>' + snap.what + '</b>' : 'preview · Enter to apply';
   linePrev = {line, dot, note};
   if(deg === 90 && lineLast.base){
@@ -3757,10 +3758,31 @@ function segCross2(a,b,c,d){
 // связная копланарная грань вокруг треугольника.
 // Заливка идёт по общим РЁБРАМ и не пересекает направляющие («Линия»),
 // лежащие в плоскости грани, — хорда режет грань на области, как в SketchUp.
-function facePatchAt(triIdx){
+function facePatchAt(triIdx, reseeded, plane){
   const pos = mesh.geometry.attributes.position.array;
-  const n0 = triNormalAt(triIdx);
-  const d0 = n0.x*pos[triIdx*9] + n0.y*pos[triIdx*9+1] + n0.z*pos[triIdx*9+2];
+  // клик пришёлся в осколок-иглу: его нормаль неточна, и плоскость грани от
+  // него «плывёт» — берём грань от самого крупного треугольника рядом
+  if(!reseeded){
+    const o = triIdx*9, P = k => new THREE.Vector3(pos[o+k*3], pos[o+k*3+1], pos[o+k*3+2]);
+    const a = P(0), b = P(1), c = P(2);
+    const Lmax = Math.max(a.distanceTo(b), b.distanceTo(c), c.distanceTo(a));
+    const alt = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a)).length() / Math.max(Lmax, 1e-9);
+    if(alt < 0.05){
+      const first = facePatchAt(triIdx, true);
+      let big = -1, bigA = 0;
+      for(const t of first.tris){
+        const q = t*9;
+        const ar = new THREE.Vector3(pos[q+3]-pos[q], pos[q+4]-pos[q+1], pos[q+5]-pos[q+2])
+          .cross(new THREE.Vector3(pos[q+6]-pos[q], pos[q+7]-pos[q+1], pos[q+8]-pos[q+2])).length();
+        if(ar > bigA){ bigA = ar; big = t; }
+      }
+      if(big < 0 || big === triIdx) return first;
+      const again = facePatchAt(big, true);
+      return again.set.has(triIdx) ? again : first;
+    }
+  }
+  const n0 = plane ? plane.n : triNormalAt(triIdx);
+  const d0 = plane ? plane.d : n0.x*pos[triIdx*9] + n0.y*pos[triIdx*9+1] + n0.z*pos[triIdx*9+2];
   // 2D-базис плоскости для тестов пересечения с хордами
   const u = (Math.abs(n0.z) < 0.9
     ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n0).normalize();
@@ -3816,8 +3838,27 @@ function facePatchAt(triIdx){
     const o=t*9;
     return to2((pos[o]+pos[o+3]+pos[o+6])/3, (pos[o+1]+pos[o+4]+pos[o+7])/3, (pos[o+2]+pos[o+5]+pos[o+8])/3);
   };
+  // осколок булевых/заливки (площадь ~0, все вершины в плоскости): нормаль у
+  // него случайная, но это часть грани — иначе он рвёт её на выбираемые куски
+  const sliverInPlane = t => {
+    const o = t*9;
+    for(let j=0;j<3;j++)
+      if(Math.abs(n0.x*pos[o+j*3]+n0.y*pos[o+j*3+1]+n0.z*pos[o+j*3+2] - d0) > 0.02) return false;
+    const ux=pos[o+3]-pos[o], uy=pos[o+4]-pos[o+1], uz=pos[o+5]-pos[o+2];
+    const vx=pos[o+6]-pos[o], vy=pos[o+7]-pos[o+1], vz=pos[o+8]-pos[o+2];
+    // длинная игла тоже осколок: мерим не площадь, а высоту к длинной стороне
+    const wx=pos[o+6]-pos[o+3], wy=pos[o+7]-pos[o+4], wz=pos[o+8]-pos[o+5];
+    const Lmax = Math.max(Math.hypot(ux,uy,uz), Math.hypot(vx,vy,vz), Math.hypot(wx,wy,wz));
+    return Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx) / Math.max(Lmax, 1e-9) < 0.05;
+  };
   const set = new Set([triIdx]);
   const queue = [triIdx];
+  const crossesCut = (A2, B2, ct, c2) => {
+    for(const cut of cuts)
+      if(cut.noExt ? midOnCut(A2, B2, cut) : segCross2(ct, c2, cut.a, cut.b)) return true;
+    return false;
+  };
+  const flood = () => {
   while(queue.length){
     const t = queue.pop();
     const ct = cent2(t);
@@ -3829,10 +3870,10 @@ function facePatchAt(triIdx){
       // ребро, у которого больше двух граней (грань, пришитая к краю другой:
       // залитый круг вокруг верхней грани куба), — видимое ребро и граница
       // области: квадрат и кольцо вокруг выбираются по отдельности
-      if(adj.length > 2 && adj.some(t2 => triNormalAt(t2).dot(n0) < 0.999)) continue;
+      if(adj.length > 2 && adj.some(t2 => triNormalAt(t2).dot(n0) < 0.999 && !sliverInPlane(t2))) continue;
       for(const t2 of adj){
         if(set.has(t2)) continue;
-        if(triNormalAt(t2).dot(n0) < 0.999) continue;
+        if(triNormalAt(t2).dot(n0) < 0.999 && !sliverInPlane(t2)) continue;
         const o3 = t2*9;
         if(Math.abs(n0.x*pos[o3]+n0.y*pos[o3+1]+n0.z*pos[o3+2] - d0) > 0.02) continue;
         // не переступаем через хорду. Контур текста (noExt) проверяем
@@ -3853,6 +3894,97 @@ function facePatchAt(triIdx){
         }
         set.add(t2); queue.push(t2);
       }
+    }
+  }
+  };
+  flood();
+  // Т-стыки: после булевых и заливки соседи в грани часто делят сторону не
+  // целиком (вершина посреди стороны соседа) — общего ребра нет, и ровная
+  // стенка выбиралась тремя кусками. Добираем треугольники плоскости, чья
+  // сторона лежит на той же прямой, что и сторона области, с перекрытием
+  let planeTris = null;
+  for(let pass = 0; pass < 40; pass++){
+    if(!planeTris){
+      planeTris = [];
+      for(let t=0;t<triCount;t++){
+        if(set.has(t)) continue;
+        const o = t*9;
+        if(Math.abs(n0.x*pos[o]+n0.y*pos[o+1]+n0.z*pos[o+2] - d0) > 0.02) continue;
+        if(Math.abs(n0.x*pos[o+3]+n0.y*pos[o+4]+n0.z*pos[o+5] - d0) > 0.02) continue;
+        if(Math.abs(n0.x*pos[o+6]+n0.y*pos[o+7]+n0.z*pos[o+8] - d0) > 0.02) continue;
+        if(triNormalAt(t).dot(n0) < 0.999 && !sliverInPlane(t)) continue;
+        const es = [];
+        for(let e=0;e<3;e++){
+          const a = to2(pos[o+e*3], pos[o+e*3+1], pos[o+e*3+2]);
+          const b = to2(pos[o+((e+1)%3)*3], pos[o+((e+1)%3)*3+1], pos[o+((e+1)%3)*3+2]);
+          es.push({a, b, x0: Math.min(a[0],b[0]), x1: Math.max(a[0],b[0]), y0: Math.min(a[1],b[1]), y1: Math.max(a[1],b[1])});
+        }
+        planeTris.push({t, es});
+      }
+      if(!planeTris.length || planeTris.length > 20000) break;
+    }
+    // открытые стороны области (у ребра нет второго треугольника из области)
+    const bnd = [];
+    for(const t of set){
+      const o = t*9;
+      for(let e=0;e<3;e++){
+        const o1=o+e*3, o2=o+((e+1)%3)*3;
+        const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+        const adj = eAdj.get(k1<k2 ? k1+'|'+k2 : k2+'|'+k1) || [];
+        if(adj.some(t2 => t2 !== t && set.has(t2))) continue;
+        const a = to2(pos[o1],pos[o1+1],pos[o1+2]), b = to2(pos[o2],pos[o2+1],pos[o2+2]);
+        const L = Math.hypot(b[0]-a[0], b[1]-a[1]);
+        if(L < 1e-6) continue;
+        bnd.push({t, a, b, L, ux:(b[0]-a[0])/L, uy:(b[1]-a[1])/L,
+          x0: Math.min(a[0],b[0])-0.003, x1: Math.max(a[0],b[0])+0.003, y0: Math.min(a[1],b[1])-0.003, y1: Math.max(a[1],b[1])+0.003});
+      }
+    }
+    let added = false;
+    for(const pt of planeTris){
+      if(set.has(pt.t)) continue;
+      let link = null;
+      for(const e of pt.es){
+        for(const s of bnd){
+          if(e.x1 < s.x0 || e.x0 > s.x1 || e.y1 < s.y0 || e.y0 > s.y1) continue;
+          const da = Math.abs((e.a[0]-s.a[0])*s.uy - (e.a[1]-s.a[1])*s.ux);
+          const db = Math.abs((e.b[0]-s.a[0])*s.uy - (e.b[1]-s.a[1])*s.ux);
+          if(da > 0.002 || db > 0.002) continue;
+          let tA = (e.a[0]-s.a[0])*s.ux + (e.a[1]-s.a[1])*s.uy, tB = (e.b[0]-s.a[0])*s.ux + (e.b[1]-s.a[1])*s.uy;
+          if(tA > tB){ const x = tA; tA = tB; tB = x; }
+          if(Math.min(tB, s.L) - Math.max(tA, 0) < 0.01) continue;
+          if(cuts.length && crossesCut(s.a, s.b, cent2(s.t), cent2(pt.t))) continue;
+          link = s; break;
+        }
+        if(link) break;
+      }
+      if(link){ set.add(pt.t); queue.push(pt.t); added = true; }
+    }
+    if(!added) break;
+    flood();
+  }
+  // плоскость по одному (мелкому) треугольнику неточна: на стенке 40 мм уже
+  // 0.1° наклона дают 0.07 мм и дальний край «не в плоскости». Уточняем
+  // плоскость по найденной области (нормаль и центр, взвешенные площадью)
+  // и собираем грань заново — один раз
+  if((!plane || plane.iter < 3) && set.size > 1){
+    const nn = new THREE.Vector3(), cc = new THREE.Vector3();
+    let aw = 0;
+    for(const t of set){
+      const o = t*9;
+      const cx = new THREE.Vector3(pos[o+3]-pos[o], pos[o+4]-pos[o+1], pos[o+5]-pos[o+2])
+        .cross(new THREE.Vector3(pos[o+6]-pos[o], pos[o+7]-pos[o+1], pos[o+8]-pos[o+2]));
+      const ar = cx.length();
+      if(ar < 1e-9) continue;
+      if(cx.dot(n0) < 0) cx.negate();
+      nn.add(cx);
+      cc.x += ar*(pos[o]+pos[o+3]+pos[o+6])/3; cc.y += ar*(pos[o+1]+pos[o+4]+pos[o+7])/3; cc.z += ar*(pos[o+2]+pos[o+5]+pos[o+8])/3;
+      aw += ar;
+    }
+    if(aw > 0 && nn.lengthSq() > 0){
+      nn.normalize(); cc.multiplyScalar(1/aw);
+      const dn = nn.dot(cc);
+      if(nn.dot(n0) < 0.9999999 || Math.abs(dn - d0) > 0.001)
+        return facePatchAt(triIdx, true, {n: nn, d: dn, iter: plane ? plane.iter + 1 : 1});
     }
   }
   const keys = new Set();
@@ -4213,6 +4345,186 @@ function selectPatchBoundary(){
   clearEdgeSel();
   for(const c of picked) toggleEdgeSel(c);
   showEdgePalette(picked[0]);
+}
+// B при выбранном ребре/линии — достроить выбор до замкнутого контура: самый
+// короткий плоский цикл рёбер и линий через это ребро (Select Loop в Blender,
+// Bounding Edges в SketchUp — от грани). Дальше F заливает, Shift+F выравнивает
+function selectContourFromEdge(){
+  if(edgeSel.length !== 1) return false;
+  const s = chains.find(c => edgeSelKey(c) === edgeSel[0].key);
+  if(!s || s.closed) return false;
+  const K = p => keyOf(p.x,p.y,p.z);
+  const ends = c => [K(c.pts[0]), K(c.pts[c.pts.length-1])];
+  const [ku, kv] = ends(s);
+  const A = s.pts[0], B = s.pts[s.pts.length-1];
+  const dir = new THREE.Vector3().subVectors(B, A);
+  if(dir.length() < 1e-6) return false;
+  dir.normalize();
+  // плоскости-кандидаты: сама кривая (дуга) или ребро + соседняя цепочка
+  const normals = [];
+  const addN = P => {
+    const n = new THREE.Vector3().subVectors(P, A).cross(dir);
+    if(n.length() < 0.05) return;
+    n.normalize();
+    if(!normals.some(m => Math.abs(m.dot(n)) > 0.999)) normals.push(n);
+  };
+  for(const p of s.pts) addN(p);
+  if(!normals.length)
+    for(const c of chains){
+      if(c === s || c.closed) continue;
+      const [a, b] = ends(c);
+      if(a === ku || a === kv || b === ku || b === kv) for(const p of c.pts) addN(p);
+    }
+  let best = null;
+  for(const n of normals){
+    const d0 = n.dot(A);
+    if(s.pts.some(p => Math.abs(n.dot(p) - d0) > 0.05)) continue;
+    const adj = new Map();
+    for(const c of chains){
+      if(c === s || c.closed || c.pts.some(p => Math.abs(n.dot(p) - d0) > 0.05)) continue;
+      const [a, b] = ends(c);
+      if(a === b) continue;
+      if(!adj.has(a)) adj.set(a, []);
+      if(!adj.has(b)) adj.set(b, []);
+      adj.get(a).push({to: b, c}); adj.get(b).push({to: a, c});
+    }
+    // Дейкстра от одного конца ребра к другому
+    const dist = new Map([[kv, 0]]), prev = new Map(), done = new Set();
+    while(true){
+      let cur = null, cd = Infinity;
+      for(const [k, dd] of dist) if(!done.has(k) && dd < cd){ cd = dd; cur = k; }
+      if(cur === null || cur === ku) break;
+      done.add(cur);
+      for(const e of adj.get(cur) || []){
+        const nd = cd + e.c.total;
+        if(nd < (dist.has(e.to) ? dist.get(e.to) : Infinity)){ dist.set(e.to, nd); prev.set(e.to, {from: cur, c: e.c}); }
+      }
+    }
+    if(!dist.has(ku)) continue;
+    const path = [];
+    for(let k = ku; k !== kv; k = prev.get(k).from) path.push(prev.get(k).c);
+    const cost = dist.get(ku);
+    if(!best || cost < best.cost) best = {cost, path};
+  }
+  if(!best){ warnTip('No closed flat contour through this edge'); return true; }
+  clearEdgeSel();
+  for(const c of [s, ...best.path]) toggleEdgeSel(c);
+  showEdgePalette(s);
+  return true;
+}
+// Shift+F — ровная грань по плоскому контуру: всё, что внутри контура отходит
+// от его плоскости (фасеты окружности, осколки, остатки граней), срезается или
+// добирается до плоскости, и остаётся одна грань. Закрытое тело — булевыми
+// (минус призма над плоскостью, плюс призма под ней), тело с дырками — стираем
+// треугольники внутри контура и заливаем
+function flatFillLoop(loop){
+  const n = new THREE.Vector3();
+  for(let i=0;i<loop.length;i++){ // нормаль Ньюэлла — по обходу контура
+    const p = loop[i], q = loop[(i+1)%loop.length];
+    n.x += (p.y-q.y)*(p.z+q.z); n.y += (p.z-q.z)*(p.x+q.x); n.z += (p.x-q.x)*(p.y+q.y);
+  }
+  if(n.length() < 1e-9) return false;
+  n.normalize();
+  const c = loop.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1/loop.length);
+  const d0 = n.dot(c);
+  if(loop.some(p => Math.abs(n.dot(p) - d0) > 0.05)){ warnTip('Shift+F needs a flat contour'); return true; }
+  const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize();
+  const v = n.clone().cross(u);
+  const poly = loop.map(p => [p.dot(u), p.dot(v)]);
+  const inPoly = (x, y) => {
+    let inside = false;
+    for(let i=0, j=poly.length-1; i<poly.length; j=i++){
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if((yi > y) !== (yj > y) && x < (xj-xi)*(y-yi)/(yj-yi) + xi) inside = !inside;
+    }
+    return inside;
+  };
+  let mnx=1e9, mxx=-1e9, mny=1e9, mxy=-1e9;
+  for(const [x, y] of poly){ mnx=Math.min(mnx,x); mxx=Math.max(mxx,x); mny=Math.min(mny,y); mxy=Math.max(mxy,y); }
+  // насколько грань может отходить от плоскости и всё ещё считаться «этой»
+  const tol = Math.min(5, Math.max(1, Math.hypot(mxx-mnx, mxy-mny) * 0.15));
+  const pos = mesh.geometry.attributes.position.array;
+  const inside = new Set(), avgN = new THREE.Vector3();
+  let dMin = 0, dMax = 0;
+  for(let t=0;t<pos.length/9;t++){
+    const o = t*9;
+    let far = false, cx = 0, cy = 0;
+    const ds = [];
+    for(let j=0;j<3;j++){
+      const P = new THREE.Vector3(pos[o+j*3], pos[o+j*3+1], pos[o+j*3+2]);
+      const dd = n.dot(P) - d0;
+      if(Math.abs(dd) > tol){ far = true; break; }
+      ds.push(dd); cx += P.dot(u)/3; cy += P.dot(v)/3;
+    }
+    if(far || !inPoly(cx, cy)) continue;
+    const tn = triNormalAt(t);
+    if(Math.abs(tn.dot(n)) < 0.5) continue; // стенки поперёк плоскости — не эта грань
+    inside.add(t); avgN.add(tn);
+    for(const dd of ds){ dMin = Math.min(dMin, dd); dMax = Math.max(dMax, dd); }
+  }
+  if(!inside.size) return fillLoop(loop); // внутри пусто — обычная заливка
+  if(dMax - dMin < 0.02 && !loopFillPieces(loop)?.air.length){ warnTip('This contour is already a flat face'); return true; }
+  const out = avgN.dot(n) >= 0 ? 1 : -1; // куда смотрят старые грани — наружу
+  const nOut = n.clone().multiplyScalar(out);
+  const loopOut = out > 0 ? loop : [...loop].reverse(); // обход против часовой вокруг nOut
+  const bulge = out > 0 ? dMax : -dMin, dent = out > 0 ? -dMin : dMax;
+  const snap = takeSnapshot();
+  const closed = boundaryLoops().length === 0;
+  try{
+    if(closed){
+      let body = [];
+      for(let i=0;i<pos.length;i+=9)
+        body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]),
+                   new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
+                   new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
+      if(bulge > 0.01) body = csgSubtract(body, buildPrismTris(loopOut, nOut, bulge + 1, 0));
+      if(dent > 0.01) body = csgUnion(body, buildPrismTris(loopOut, nOut, 0, dent + 1));
+      const q = x => Math.round(x*1000)/1000;
+      const arr = [];
+      for(const t of body){
+        const ar = new THREE.Vector3().subVectors(t[1],t[0]).cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
+        if(ar < 1e-6) continue;
+        for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
+      }
+      pushHistory(snap);
+      setMeshFromArray(new Float32Array(arr));
+      healAll();
+    } else {
+      pushHistory(snap);
+      const keep = [];
+      for(let t=0;t<pos.length/9;t++) if(!inside.has(t)) for(let k=0;k<9;k++) keep.push(pos[t*9+k]);
+      // точки контура — ровно в плоскость (вместе с этими же вершинами соседей):
+      // иначе треугольники заливки чуть не в одной плоскости и грань
+      // распадается на выбираемые по отдельности куски
+      const moved = new Map();
+      for(let i=0;i<loop.length;i++){
+        const dd = n.dot(loop[i]) - d0;
+        if(Math.abs(dd) < 1e-5) continue;
+        const P = loop[i].clone().addScaledVector(n, -dd);
+        moved.set(keyOf(loop[i].x, loop[i].y, loop[i].z), P);
+        loop[i] = P;
+      }
+      if(moved.size) for(let i=0;i<keep.length;i+=3){
+        const P = moved.get(keyOf(keep[i], keep[i+1], keep[i+2]));
+        if(P){ keep[i] = P.x; keep[i+1] = P.y; keep[i+2] = P.z; }
+      }
+      setMeshFromArray(new Float32Array(keep));
+      extractEdges();
+      const n0 = undoStack.length;
+      const f = loopFillPieces(loop);
+      if(!(f && f.covered && fillLoopAir(f))) fillLoop(loop);
+      undoStack.length = Math.min(undoStack.length, n0); // одна запись истории на всё
+      healAll(); // вершины соседей посреди сторон контура — сшить Т-стыки
+    }
+  }catch(err){
+    console.warn('flat fill failed', err);
+    applySnapshot(snap);
+    warnTip('Flat fill failed on this contour');
+    return true;
+  }
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  extractEdges();
+  return true;
 }
 // удаление выбранной грани (ластик/Del в SketchUp): дырка в оболочке — норма,
 // модель перестаёт быть замкнутой, пока дырку не закроют
@@ -4629,6 +4941,7 @@ function updateSelPreview(){
     const vr = view.getBoundingClientRect();
     chordHint.innerHTML =
       '<div>Closed contour · <span class="key">F</span> — fill face</div>' +
+      '<div><span class="key">Shift+F</span> — one flat face: replace what’s inside</div>' +
       '<div style="opacity:.55">Esc — deselect</div>';
     chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
     chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 150) + 'px';
@@ -5939,17 +6252,108 @@ function startEdgeMove(){
   raycaster.setFromCamera({x: lx/q.w*2-1, y: -(ly/q.h*2-1)}, q.cam);
   const grab0 = new THREE.Vector3();
   if(!raycaster.ray.intersectPlane(plane, grab0)) grab0.copy(mid);
-  const im = buildIndexMap(pts);
+  // вершины сетки посреди ребра (Т-стыки от линий, пересёкших его) едут
+  // вместе с ребром — иначе ребро переламывается и грани гнутся криво
+  // Сравнение по расстоянию, а не по ключу: точка линии на границе округления
+  // ключа (64.9785) не совпадала с вершиной сетки (64.9784) — ребро не двигалось
+  const idx = pts.map(() => []);
+  {
+    const posA = mesh.geometry.attributes.position.array;
+    const P = new THREE.Vector3(), base = pts.slice(), extra = new Map();
+    for(let i=0;i<posA.length;i+=3){
+      P.set(posA[i], posA[i+1], posA[i+2]);
+      let hit = -1;
+      for(let j=0;j<base.length;j++) if(base[j].distanceToSquared(P) < 0.002*0.002){ hit = j; break; }
+      if(hit >= 0){ idx[hit].push(i); continue; }
+      for(let j=0;j+1<base.length;j++){
+        const d = new THREE.Vector3().subVectors(base[j+1], base[j]), L2 = d.lengthSq();
+        if(L2 < 1e-12) continue;
+        const t = new THREE.Vector3().subVectors(P, base[j]).dot(d) / L2;
+        if(t <= 0 || t >= 1) continue;
+        if(base[j].clone().addScaledVector(d, t).distanceTo(P) < 0.002){
+          const k = keyOf(P.x, P.y, P.z);
+          if(!extra.has(k)){ extra.set(k, idx.length); pts.push(P.clone()); idx.push([]); }
+          idx[extra.get(k)].push(i);
+          break;
+        }
+      }
+    }
+  }
   edgeDrag = {
     pts0: pts.map(p=>p.clone()),
-    idx: pts.map(p=>im.get(keyOf(p.x,p.y,p.z))||[]),
+    idx,
     grab0, q0: {cam:q.cam, ox:q.ox, oy:q.oy, w:q.w, h:q.h},
     plane,
     snap: takeSnapshot(), snapPushed: false,
-    grabMode: true
+    grabMode: true,
+    normal: edgeFaceNormal(pts[0], pts.length > 1 ? pts[1] : pts[0]),
+    nLock: false, typed: ''
   };
   clearEdgeSel(); hideChordHint();
-  tipAt({clientX:lastMX, clientY:lastMY}, 'Move edge · click — apply · X/Y/Z or Shift — axis · Esc — cancel');
+  tipAt({clientX:lastMX, clientY:lastMY}, edgeMoveTip(new THREE.Vector3()));
+}
+// нормаль грани под ребром (среднее граней, в плоскости которых оно лежит):
+// «вдавить линию в грань» — сделать из неё V-канавку
+function edgeFaceNormal(A, B){
+  const pos = mesh.geometry.attributes.position.array;
+  const sum = new THREE.Vector3();
+  for(let t=0;t<pos.length/9;t++){
+    const o = t*9;
+    let has = false;
+    for(let j=0;j<3;j++)
+      if(Math.hypot(pos[o+j*3]-A.x, pos[o+j*3+1]-A.y, pos[o+j*3+2]-A.z) < 0.002){ has = true; break; }
+    if(!has) continue;
+    const n = triNormalAt(t);
+    const d0 = n.x*pos[o] + n.y*pos[o+1] + n.z*pos[o+2];
+    if(Math.abs(n.dot(B) - d0) > 0.02) continue; // ребро не в плоскости этого треугольника
+    if(sum.lengthSq() > 0 && sum.clone().normalize().dot(n) < -0.5) continue;
+    sum.add(n);
+  }
+  return sum.lengthSq() > 1e-9 ? sum.normalize() : null;
+}
+function edgeMoveTip(d){
+  const ed = edgeDrag;
+  const along = ed && ed.nLock ? '<br><b>along the face normal</b> ' + (ed.normal ? d.dot(ed.normal).toFixed(1) + ' mm' : '') : '';
+  return 'Move edge'
+    + (ed && ed.typed ? '<br>distance <b>' + ed.typed + '</b> mm · Enter — apply' : '')
+    + along
+    + '<br><span style="color:'+AXIS_CSS.x+';font-weight:600">X '+d.x.toFixed(1)+'</span>'
+    + '<br><span style="color:'+AXIS_CSS.y+';font-weight:600">Y '+d.y.toFixed(1)+'</span>'
+    + '<br><span style="color:'+AXIS_CSS.z+';font-weight:600">Z '+d.z.toFixed(1)+'</span>'
+    + (!hintsChk.checked ? '' :
+      '<br><span class="key">X/Y/Z</span> — axis · <span class="key">N</span> — face normal'
+      + '<br>type a distance + <span class="key">Enter</span> · click — apply · Esc — cancel');
+}
+function applyEdgeDelta(d, e){
+  if(!edgeDrag.snapPushed){
+    pushHistory(edgeDrag.snap);
+    edgeDrag.snapPushed = true;
+  }
+  edgeDrag.lastD = d.clone();
+  const posE = mesh.geometry.attributes.position.array;
+  for(let i=0;i<edgeDrag.pts0.length;i++){
+    const np = edgeDrag.pts0[i].clone().add(d);
+    for(const bi of edgeDrag.idx[i]){ posE[bi]=np.x; posE[bi+1]=np.y; posE[bi+2]=np.z; }
+  }
+  mesh.geometry.attributes.position.needsUpdate = true;
+  normalsThrottled();
+  tipAt(e || {clientX:lastMX, clientY:lastMY}, edgeMoveTip(d));
+  if(!modified){ modified=true; s_mod.textContent='yes'; }
+}
+// введённое число: сдвиг на столько вдоль нормали (N), оси (X/Y/Z) или
+// направления, куда уже тянули мышью (VCB SketchUp, ввод числа в G Blender)
+function applyEdgeTyped(){
+  const v = parseFloat(edgeDrag.typed.replace(',', '.'));
+  let dir = null;
+  if(edgeDrag.nLock && edgeDrag.normal) dir = edgeDrag.normal.clone();
+  else if(axisLock) dir = new THREE.Vector3(axisLock==='x'?1:0, axisLock==='y'?1:0, axisLock==='z'?1:0);
+  else if(edgeDrag.lastD && edgeDrag.lastD.lengthSq() > 1e-9) dir = edgeDrag.lastD.clone().normalize();
+  if(!dir){ tipAt({clientX:lastMX, clientY:lastMY}, edgeMoveTip(new THREE.Vector3()) + '<br><span style="color:#ff6b6b">pick a direction: drag, X/Y/Z or N</span>'); return; }
+  applyEdgeDelta(dir.multiplyScalar(isFinite(v) ? v : 0));
+}
+function finishEdgeMove(){
+  edgeDrag = null; setAxisLock(null);
+  tipHide(); normalsFlush(); extractEdges();
 }
 
 // палитра операций для выбранного ребра — как у грани и точки;
@@ -6096,12 +6500,14 @@ function showEdgePalette(ch){
     '<div><span class="key">G,V</span> — move by X/Y/Z</div>' +
     '<div><span class="key">G,Y</span> — point / divide</div>' +
     '<div><span class="key">Del</span> — erase edge / line</div>' +
+    (edgeSel.length === 1 && ch && !ch.closed ? '<div><span class="key">B</span> — select the closed contour through it</div>' : '') +
     (() => { // выбран замкнутый контур, который можно залить
       const lp = edgeSelLoop();
       if(!lp) return '';
       const f = loopFillPieces(lp);
-      if(f && f.covered && !f.air.length) return '';
-      return '<div><span class="key">F</span> — ' + (f && f.covered ? 'fill the empty part' : 'fill face') + '</div>';
+      const flat = '<div><span class="key">Shift+F</span> — one flat face: replace what’s inside</div>';
+      if(f && f.covered && !f.air.length) return flat;
+      return '<div><span class="key">F</span> — ' + (f && f.covered ? 'fill the empty part' : 'fill face') + '</div>' + flat;
     })() +
     (ch && !ch.isGuide ? '<div><span class="key">Ctrl+B</span> — chamfer / fillet</div>' : '') +
     (ch && ch.isGuide ? '<div><span class="key">Q</span> — rotate / copy</div>'
@@ -6140,6 +6546,9 @@ function showEdgeSelSummary(d){
     const f = loopFillPieces(lp);
     if(!(f && f.covered && !f.air.length))
       fillRow = '<div><span class="key">F</span> — ' + (f && f.covered ? 'fill the empty part' : 'fill face') + '</div>';
+    fillRow += '<div><span class="key">Shift+F</span> — one flat face: replace what’s inside</div>';
+  } else if(edgeSel.length === 1){
+    fillRow = '<div><span class="key">B</span> — select the closed contour through it</div>';
   }
   const vr = view.getBoundingClientRect();
   chordHint.innerHTML = CH_GRIP +
@@ -7610,10 +8019,42 @@ function placePlacingPoint(){
 }
 window.addEventListener('keydown', e=>{
   if(divCtx && e.key === 'Enter'){ e.preventDefault(); commitDivide(); return; }
+  if(edgeDrag && !e.ctrlKey && !e.altKey && !e.metaKey && document.activeElement.tagName!=='INPUT'){
+    if(e.code === 'KeyN' || e.key.toLowerCase() === 'n' || e.key.toLowerCase() === 'т'){
+      e.preventDefault();
+      if(!edgeDrag.normal){ warnTip('No face under this edge'); return; }
+      edgeDrag.nLock = !edgeDrag.nLock;
+      if(edgeDrag.nLock) setAxisLock(null);
+      if(edgeDrag.typed) applyEdgeTyped();
+      else tipAt({clientX:lastMX, clientY:lastMY}, edgeMoveTip(edgeDrag.lastD || new THREE.Vector3()));
+      return;
+    }
+    const ch = /^[0-9]$/.test(e.key) ? e.key
+      : (e.key === '-' || e.code === 'NumpadSubtract') ? '-'
+      : (e.key === '.' || e.key === ',' || e.code === 'NumpadDecimal' || e.code === 'Period' || e.code === 'Comma') ? '.' : null;
+    if(ch){
+      e.preventDefault();
+      if(ch === '-') edgeDrag.typed = edgeDrag.typed.startsWith('-') ? edgeDrag.typed.slice(1) : '-' + edgeDrag.typed;
+      else if(!(ch === '.' && edgeDrag.typed.includes('.'))) edgeDrag.typed += ch;
+      applyEdgeTyped();
+      return;
+    }
+    if(e.key === 'Backspace' && edgeDrag.typed){
+      e.preventDefault();
+      edgeDrag.typed = edgeDrag.typed.slice(0, -1);
+      applyEdgeTyped();
+      return;
+    }
+    if(e.key === 'Enter'){ e.preventDefault(); if(edgeDrag.typed) applyEdgeTyped(); finishEdgeMove(); return; }
+  }
   if((dragPt || edgeDrag) && !e.ctrlKey && !e.altKey && !e.metaKey){
     const ax = {KeyX:'x', KeyY:'y', KeyZ:'z'}[e.code]
              || {x:'x', y:'y', z:'z'}[e.key.toLowerCase()]; // как в Blender
-    if(ax){ e.preventDefault(); setAxisLock(axisLock===ax ? null : ax); return; }
+    if(ax){
+      e.preventDefault(); setAxisLock(axisLock===ax ? null : ax);
+      if(edgeDrag){ edgeDrag.nLock = false; if(edgeDrag.typed) applyEdgeTyped(); }
+      return;
+    }
   }
   // P — точка (Point): то же, что G,Y
   if((e.code==='KeyP' || e.key.toLowerCase()==='p') && !e.ctrlKey && !e.altKey && !e.metaKey
@@ -7772,6 +8213,12 @@ window.addEventListener('keydown', e=>{
      && !dragPt && !lineMode && !pointMode && !circleMode && !textMode && !activeTool
      && document.activeElement.tagName!=='INPUT'){
     const selLoop = edgeSelLoop();
+    if(e.shiftKey){ // Shift+F — одна ровная грань вместо всего, что внутри контура
+      e.preventDefault();
+      if(!selLoop){ warnTip('Shift+F: select one closed flat contour'); return; }
+      if(flatFillLoop(selLoop)){ clearEdgeSel(); hideChordHint(); }
+      return;
+    }
     const fill = selLoop ? loopFillPieces(selLoop) : null;
     if(fill && fill.covered && !fill.air.length){
       warnTip('This contour is already a face'); e.preventDefault(); return;
@@ -7801,6 +8248,12 @@ window.addEventListener('keydown', e=>{
      && ppPatch && !dragPt
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); selectPatchBoundary(); return;
+  }
+  // B при одном выбранном ребре/линии — замкнутый плоский контур через него
+  if((e.code==='KeyB' || e.key.toLowerCase()==='b') && !e.ctrlKey && !e.altKey && !e.metaKey
+     && !ppPatch && edgeSel.length === 1 && !dragPt && !edgeDrag
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); selectContourFromEdge(); return;
   }
   // Del — удалить выбранную грань (как ластик по грани в SketchUp)
   if((e.key==='Delete' || e.key==='Backspace') && ppPatch && !dragPt
@@ -7947,10 +8400,7 @@ canvas.addEventListener('pointerdown', e=>{
   if(chordG){ hideChordHint(); chordG = 0; }
   if(e.button===0 && gizmoClick(e)) return; // клик по ViewCube
   if(edgeDrag && edgeDrag.grabMode){ // перенос ребра: клик фиксирует
-    if(e.button === 0){
-      edgeDrag = null; setAxisLock(null);
-      tipHide(); normalsFlush(); extractEdges();
-    }
+    if(e.button === 0) finishEdgeMove();
     return;
   }
   // ЛКМ по самому лоскуту при открытом окне Extrude — тянуть мышью вдоль
@@ -8343,9 +8793,14 @@ canvas.addEventListener('pointermove', e=>{
     raycaster.setFromCamera({x:lx/q0.w*2-1, y:-(ly/q0.h*2-1)}, q0.cam);
     const hit = new THREE.Vector3();
     if(!raycaster.ray.intersectPlane(edgeDrag.plane, hit)) return;
-    const d = new THREE.Vector3(snapMM(hit.x-edgeDrag.grab0.x),
+    let d = new THREE.Vector3(snapMM(hit.x-edgeDrag.grab0.x),
       snapMM(hit.y-edgeDrag.grab0.y), snapMM(hit.z-edgeDrag.grab0.z));
-    if(axisLock){ // X/Y/Z — движение только вдоль выбранной оси (Blender)
+    if(edgeDrag.typed) return; // введено число — мышь больше не двигает
+    if(edgeDrag.nLock && edgeDrag.normal){
+      // N — вдоль нормали грани: мышь по экрану, ребро только по нормали
+      const s = snapMM(new THREE.Vector3().subVectors(hit, edgeDrag.grab0).dot(edgeDrag.normal));
+      d = edgeDrag.normal.clone().multiplyScalar(s);
+    } else if(axisLock){ // X/Y/Z — движение только вдоль выбранной оси (Blender)
       if(axisLock !== 'x') d.x = 0;
       if(axisLock !== 'y') d.y = 0;
       if(axisLock !== 'z') d.z = 0;
@@ -8357,24 +8812,7 @@ canvas.addEventListener('pointermove', e=>{
       if(ax !== 'y') d.y = 0;
       if(ax !== 'z') d.z = 0;
     }
-    if(!edgeDrag.snapPushed){
-      pushHistory(edgeDrag.snap);
-      edgeDrag.snapPushed = true;
-    }
-    const posE = mesh.geometry.attributes.position.array;
-    for(let i=0;i<edgeDrag.pts0.length;i++){
-      const np = edgeDrag.pts0[i].clone().add(d);
-      for(const bi of edgeDrag.idx[i]){ posE[bi]=np.x; posE[bi+1]=np.y; posE[bi+2]=np.z; }
-    }
-    mesh.geometry.attributes.position.needsUpdate = true;
-    normalsThrottled();
-    // дельты построчно в цветах осей; Shift вспыхивает белым, пока зажат
-    tipAt(e, 'edge Δ'
-      +'<br><span style="color:'+AXIS_CSS.x+';font-weight:600">X '+d.x.toFixed(1)+'</span>'
-      +'<br><span style="color:'+AXIS_CSS.y+';font-weight:600">Y '+d.y.toFixed(1)+'</span>'
-      +'<br><span style="color:'+AXIS_CSS.z+';font-weight:600">Z '+d.z.toFixed(1)+'</span>'
-      +'<br><span class="key">Shift</span> — stick to axis');
-    if(!modified){ modified=true; s_mod.textContent='yes'; }
+    applyEdgeDelta(d, e);
     return;
   }
   if(txPlaceDrag){ // 3D-текст: точка старта едет за курсором по грани
@@ -8864,7 +9302,7 @@ function loop(t){
   for(const m of ringMarkers) dot(m);
   for(const m of divDots) dot(m);
   for(const a of anchors) dot(a.marker);
-  for(const d of hintDots) dot(d, 0.0035);
+  for(const d of hintDots) dot(d, 0.005); // середина ребра, центры грани — заметнее
   // начало координат подсвечено, пока в руке рисующий инструмент
   originMarker.visible = !!(pointMode || lineMode || circleMode || activeTool === rectTool || (textMode && !txtLive));
   dot(originMarker, 0.004);
