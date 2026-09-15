@@ -2618,6 +2618,30 @@ function cylinderFor(items){
   }
   return best;
 }
+// Подсказка массива: ось через центр (синяя) и радиус от оси до выбранного
+// (жёлтый пунктир) — видно, вокруг чего и на каком радиусе пойдут копии
+function arrayAxisGuides(items, C, n){
+  const pts = [];
+  for(const sg of items.segs) pts.push(sg.A, sg.B);
+  for(const P of items.pts) pts.push(P);
+  if(!pts.length || !C || !n) return [];
+  const M = pts.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / pts.length);
+  const h = new THREE.Vector3().subVectors(M, C).dot(n);
+  const foot = C.clone().addScaledVector(n, h);
+  const R = foot.distanceTo(M);
+  const L = Math.max(10, R * 0.4);
+  const out = [];
+  const axis = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+      foot.clone().addScaledVector(n, -L), foot.clone().addScaledVector(n, L)]),
+    new THREE.LineBasicMaterial({color: 0x4fa3ff, depthTest: false}));
+  axis.renderOrder = 5; scene.add(axis); out.push(axis);
+  if(R > 0.05){
+    const rad = new THREE.Line(new THREE.BufferGeometry().setFromPoints([foot, M]),
+      new THREE.LineDashedMaterial({color: 0xffcc00, dashSize: 1.2, gapSize: 0.8, depthTest: false}));
+    rad.computeLineDistances(); rad.renderOrder = 5; scene.add(rad); out.push(rad);
+  }
+  return out;
+}
 // G,A — Круговой массив (PolarPattern во FreeCAD): выбранные линии/точка
 // размножаются вокруг центра. Угол 360 — копии ровно по кругу, меньше —
 // веером от исходника до крайней копии включительно
@@ -2669,14 +2693,31 @@ const arrTool = {
     for(let k=1;k<cnt;k++) out.push(k * step * Math.PI / 180);
     return out;
   },
-  preview(){
+  preview(center, n){
     killObjs(this.ghosts);
-    if(this.center) this.ghosts = rotGhosts(this.items, this.center, this.n, this.angles());
+    const C = center || this.center, N = n || this.n;
+    if(C){
+      this.ghosts = rotGhosts(this.items, C, N, this.angles());
+      this.ghosts.push(...arrayAxisGuides(this.items, C, N));
+    }
     this.ui();
+  },
+  // центр и ось по точке под курсором: центр или квадрант окружности — ось
+  // самой окружности (отверстие вала — ось шестерни), иначе нормаль грани.
+  // Раньше ось всегда была нормалью грани под курсором: щелчок по стенке
+  // давал горизонтальную ось, и копии разлетались в воздух — «зависит от камеры»
+  pickCenter(q){
+    const pt = linePickPoint(q);
+    if(pt && (pt.kind === 'center' || pt.kind === 'quadrant')){
+      const ring = snapRings.find(r => pt.kind === 'center' ? r.ctr.distanceTo(pt.pos) < 0.05
+        : Math.abs(r.ctr.distanceTo(pt.pos) - r.R) < 0.05 && Math.abs(new THREE.Vector3().subVectors(pt.pos, r.ctr).dot(r.n)) < 0.05);
+      if(ring) return {pos: pt.kind === 'center' ? pt.pos.clone() : ring.ctr.clone(), n: ring.n.clone(), kind: pt.kind};
+    }
+    return pickToolCenter(q, this.items);
   },
   down(e, q){
     if(e.button !== 0 || !q.inside) return;
-    const pk = pickToolCenter(q, this.items);
+    const pk = this.pickCenter(q);
     if(!pk) return;
     this.center = pk.pos; this.n = pk.n;
     this.cyl = null; // центр выбран руками — ось цилиндра больше не действует
@@ -2684,8 +2725,13 @@ const arrTool = {
     this.preview();
   },
   move(e, q){
-    if(!q.inside){ ghost.visible = false; tipHide(); return; }
+    if(!q.inside){ ghost.visible = false; tipHide(); if(!this.center) this.preview(); return; }
     showPickGhost(e, q, this.center ? 'Array · move center: ' : 'Array · center: ');
+    // центр ещё не поставлен — копии и ось видны сразу за курсором
+    if(!this.center){
+      const pk = this.pickCenter(q);
+      this.preview(pk && pk.pos, pk && pk.n);
+    }
   },
   key(e){
     if(e.key === 'Enter'){ this.commit(); e.preventDefault(); return true; }
@@ -6080,6 +6126,96 @@ function closeSliverHoles(){
   setMeshFromArray(out);
   return loops.length;
 }
+// Сварка только краёв трещин: вершины открытых рёбер (у ребра один
+// треугольник), стоящие ближе eps друг к другу, сводятся в одну. Общая сварка
+// 0.012 мм трогала и здоровые места (вырез 200–250° получал дыры)
+function weldOpenVertices(eps){
+  const pos = mesh.geometry.attributes.position.array, cnt = new Map(), ends = new Map();
+  for(let o=0;o<pos.length;o+=9){
+    const ux=pos[o+3]-pos[o], uy=pos[o+4]-pos[o+1], uz=pos[o+5]-pos[o+2];
+    const vx=pos[o+6]-pos[o], vy=pos[o+7]-pos[o+1], vz=pos[o+8]-pos[o+2];
+    if(Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx) < 1e-6) continue;
+    for(let e=0;e<3;e++){
+      const o1=o+e*3, o2=o+((e+1)%3)*3;
+      const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+      if(k1 === k2) continue;
+      const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+      cnt.set(ek, (cnt.get(ek)||0) + 1);
+      ends.set(k1, [pos[o1],pos[o1+1],pos[o1+2]]); ends.set(k2, [pos[o2],pos[o2+1],pos[o2+2]]);
+    }
+  }
+  const open = new Map(); // ключ -> позиция
+  for(const [ek, c] of cnt){ if(c !== 1) continue; for(const k of ek.split('|')) open.set(k, ends.get(k)); }
+  if(open.size < 2) return 0;
+  const grid = new Map(), target = new Map();
+  const cell = (x,y,z) => Math.floor(x/eps)+','+Math.floor(y/eps)+','+Math.floor(z/eps);
+  for(const [k, p] of open){
+    let hit = null;
+    const ci = Math.floor(p[0]/eps), cj = Math.floor(p[1]/eps), ck = Math.floor(p[2]/eps);
+    for(let a=-1;a<=1 && !hit;a++) for(let b=-1;b<=1 && !hit;b++) for(let c=-1;c<=1 && !hit;c++){
+      for(const r of grid.get((ci+a)+','+(cj+b)+','+(ck+c)) || [])
+        if(Math.abs(r[0]-p[0]) <= eps && Math.abs(r[1]-p[1]) <= eps && Math.abs(r[2]-p[2]) <= eps){ hit = r; break; }
+    }
+    if(hit){ target.set(k, hit); continue; }
+    const cc = cell(p[0], p[1], p[2]);
+    let arr = grid.get(cc); if(!arr){ arr = []; grid.set(cc, arr); }
+    arr.push(p);
+  }
+  if(!target.size) return 0;
+  for(let i=0;i<pos.length;i+=3){
+    const T = target.get(keyOf(pos[i], pos[i+1], pos[i+2]));
+    if(T){ pos[i] = T[0]; pos[i+1] = T[1]; pos[i+2] = T[2]; }
+  }
+  mesh.geometry.attributes.position.needsUpdate = true;
+  return target.size;
+}
+// рёбра с одним треугольником — по тем же ключам, по которым рисуются рёбра
+function openEdgeCount(){
+  const pos = mesh.geometry.attributes.position.array, cnt = new Map();
+  for(let o=0;o<pos.length;o+=9){
+    // вырожденный треугольник (площадь 0) — не грань, как в extractEdges
+    const ux=pos[o+3]-pos[o], uy=pos[o+4]-pos[o+1], uz=pos[o+5]-pos[o+2];
+    const vx=pos[o+6]-pos[o], vy=pos[o+7]-pos[o+1], vz=pos[o+8]-pos[o+2];
+    if(Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx) < 1e-6) continue;
+    for(let e=0;e<3;e++){
+    const o1=o+e*3, o2=o+((e+1)%3)*3;
+    const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+    if(k1 === k2) continue;
+    const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+    cnt.set(ek, (cnt.get(ek)||0) + 1);
+    }
+  }
+  let n = 0; for(const c of cnt.values()) if(c === 1) n++;
+  return n;
+}
+// Лоскут-игла, прилипший к ребру: треугольник нулевой высоты, чья длинная
+// сторона — ребро, у которого уже три треугольника, а две короткие — ничьи.
+// Его рёбра рисовались обрывками у выреза. Лишний треугольник выбрасываем
+function dropFlapSlivers(){
+  const pos = mesh.geometry.attributes.position.array, nT = pos.length/9;
+  const key = (o) => keyOf(pos[o], pos[o+1], pos[o+2]);
+  const ek = (a, b) => a < b ? a+'|'+b : b+'|'+a;
+  const cnt = new Map();
+  for(let t=0;t<nT;t++) for(let e=0;e<3;e++){
+    const k = ek(key(t*9+e*3), key(t*9+((e+1)%3)*3));
+    cnt.set(k, (cnt.get(k)||0) + 1);
+  }
+  const keep = [];
+  let dropped = 0;
+  for(let t=0;t<nT;t++){
+    const o = t*9;
+    const P = j => new THREE.Vector3(pos[o+j*3], pos[o+j*3+1], pos[o+j*3+2]);
+    let e0 = 0, Lm = -1;
+    for(let e=0;e<3;e++){ const L = P(e).distanceTo(P((e+1)%3)); if(L > Lm){ Lm = L; e0 = e; } }
+    const h = Lm > 1e-9 ? new THREE.Vector3().subVectors(P(1), P(0)).cross(new THREE.Vector3().subVectors(P(2), P(0))).length() / Lm : 0;
+    const kL = ek(key(o+e0*3), key(o+((e0+1)%3)*3));
+    const k1 = ek(key(o+((e0+1)%3)*3), key(o+((e0+2)%3)*3)), k2 = ek(key(o+((e0+2)%3)*3), key(o+e0*3));
+    if(h < 0.02 && cnt.get(kL) >= 3 && cnt.get(k1) === 1 && cnt.get(k2) === 1){ dropped++; continue; }
+    for(let j=0;j<9;j++) keep.push(pos[o+j]);
+  }
+  if(dropped) setMeshFromArray(new Float32Array(keep));
+  return dropped;
+}
 function healAll(){
   weldVertices(0.0015); // полтора кванта: сшивает только «расщеплённые» точки
   cleanupMesh();
@@ -6092,6 +6228,20 @@ function healAll(){
     cleanupMesh(); healTJunctions();
     if(mesh.geometry.attributes.position.array.length === len0) break;
   }
+  // Трещины вдоль рёбер: точки пересечения у соседних граней после булевых
+  // расходятся на сотые мм (65.59 и 65.60), обе стороны ребра остаются
+  // «граничными» — рёбра рисовались обрывками линий вокруг выреза. Если после
+  // сшивки такие остались — сварка крупнее (0.012 мм, на порядок мельче шага
+  // 0.1) и досшивка. Только при трещинах: сварка «на всякий случай» ломала
+  // здоровый вырез (у хорды 20–60° появлялись дыры)
+  if(openEdgeCount() > 0 && weldOpenVertices(0.012)){
+    for(let i=0;i<250;i++){
+      const len0 = mesh.geometry.attributes.position.array.length;
+      cleanupMesh(); healTJunctions();
+      if(mesh.geometry.attributes.position.array.length === len0) break;
+    }
+  }
+  if(dropFlapSlivers()) cleanupMesh();
   // соседние щели влияют друг на друга (закрыли одну — другая сменила
   // обход), поэтому несколько проходов до исчезновения
   for(let i=0;i<4 && closeSliverHoles();i++) cleanupMesh();
