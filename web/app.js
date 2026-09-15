@@ -1032,15 +1032,22 @@ window.addEventListener('blur', ()=>updateOrbitCursor(false)); // Alt+Tab с з�
 let lineMode=false, lineStart=null, lastLinePt=null, lineLenStr='', lineDirLock=null, chordG=0;
 let lineHostDir=null; // направление ребра, с которого стартовала линия
 let lineChain=true; // true — полилиния (G,M / L), false — одиночные отрезки (G,L)
+let lineLenLock=null;  // длина из окна Line: мышь задаёт только направление
+let lineLast=null;     // только что нарисованный отрезок: {A, B, snap} — правится полем Length
+const linePopup = document.getElementById('linePopup');
 let guides=[], rubber=null;
 const lnb = document.getElementById('lnb');
 function setLineMode(on){
   lineMode = on;
   lnb.hidden = !on;
-  lineStart = null; lastLinePt = null; lineLenStr = ''; lineDirLock = null;
+  lineStart = null; lastLinePt = null; lineLenStr = ''; lineDirLock = null; lineLenLock = null;
   killRubber();
-  if(on){ hideChordHint(); setHover(null); tipHide(); if(activeTool) setActiveTool(null); }
-  else { ghost.visible = false; vGhost.visible = false; tipHide(); }
+  if(on){ hideChordHint(); setHover(null); tipHide(); if(activeTool) setActiveTool(null); openLinePopup(); }
+  else {
+    ghost.visible = false; vGhost.visible = false; tipHide();
+    // одиночный отрезок только что нарисован — окно остаётся: длину можно поправить
+    if(!lineLastValid()) closeLinePopup(); else updateLineInfo();
+  }
   canvas.style.cursor = on ? 'crosshair' : ''; // после выключения других режимов
   updateToolTag();
 }
@@ -1278,6 +1285,9 @@ function commitLinePoint(pos){
     addGuide(lineStart, pos);
     splitMeshByChord(lineStart, pos); // врезаем хорду в сетку — как режет линия в SketchUp
     extractEdges();
+    // запоминаем отрезок: пока после него ничего не делали, поле Length его правит
+    lineLast = {A: lineStart.clone(), B: pos.clone(), snap: undoStack[undoStack.length - 1]};
+    lineLenLock = null;
     if(lineChain){
       lineStart = pos.clone(); // полилиния продолжает цепочку
     } else {
@@ -1287,7 +1297,82 @@ function commitLinePoint(pos){
     }
   }
   lineLenStr = '';
+  updateLineInfo();
 }
+// ---------- окно Line: точная длина (VCB SketchUp, панель Line в Sketcher) ----------
+function lineLastValid(){ // правка возможна, пока после отрезка ничего не делали
+  return !!(lineLast && undoStack.length && undoStack[undoStack.length - 1] === lineLast.snap);
+}
+function openLinePopup(){
+  const vr = view.getBoundingClientRect();
+  linePopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 350) + 'px';
+  linePopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 300) + 'px';
+  linePopup.hidden = false;
+  updateLineInfo();
+}
+function closeLinePopup(){ linePopup.hidden = true; releaseToolInput(); }
+function updateLineInfo(){
+  if(linePopup.hidden) return;
+  const editing = !lineStart && lineLastValid();
+  line_state.textContent = lineStart ? 'end' : editing ? 'placed · edit length' : 'start';
+  if(document.activeElement !== line_len){
+    line_len.value = lineLenLock ? lineLenLock
+      : lineLenStr ? lineLenStr
+      : lineStart && lastLinePt ? lineStart.distanceTo(lastLinePt).toFixed(1)
+      : editing ? lineLast.A.distanceTo(lineLast.B).toFixed(1) : '';
+  }
+  line_info.innerHTML = lineStart && lineLenLock
+    ? '<span style="color:#6aff3d">length fixed · the cursor sets the direction</span>'
+    : editing ? 'new length + Enter redraws the line from its start' : '&nbsp;';
+  line_hint.hidden = !hintsChk.checked;
+}
+// перерисовать последний отрезок новой длиной от его начала, по тому же направлению
+function resizeLastLine(len){
+  if(!lineLastValid()) return false;
+  const {A, B} = lineLast;
+  const dir = new THREE.Vector3().subVectors(B, A);
+  if(dir.length() < 1e-9) return false;
+  const B2 = A.clone().addScaledVector(dir.normalize(), len);
+  if(!segmentOnSomeFace(A, B2)){ warnTip('Line must lie on a face'); return false; }
+  undo(true);
+  pushUndo();
+  addGuide(A, B2);
+  splitMeshByChord(A, B2);
+  extractEdges();
+  lineLast = {A: A.clone(), B: B2, snap: undoStack[undoStack.length - 1]};
+  updateLineInfo();
+  return true;
+}
+function applyLineLen(final){
+  const v = snapMM(parseFloat(line_len.value));
+  if(lineStart){
+    lineLenLock = v > 0 ? v : null;
+    // Enter/OK: конец ставится по направлению курсора на заданной длине
+    if(final && lineLenLock && lastLinePt && lastLinePt.distanceTo(lineStart) > 0.05){
+      const dir = new THREE.Vector3().subVectors(lastLinePt, lineStart).normalize();
+      commitLinePoint(lineStart.clone().addScaledVector(dir, lineLenLock));
+      killRubber();
+    }
+    updateLineInfo();
+    return;
+  }
+  if(final && v > 0) resizeLastLine(v);
+}
+line_len.addEventListener('input', () => { if(lineStart) applyLineLen(false); });
+line_len.addEventListener('keydown', e => {
+  if(e.key === 'Enter'){ e.preventDefault(); applyLineLen(true); releaseToolInput(); }
+  if(e.key === 'Escape'){ e.preventDefault(); releaseToolInput(); }
+  e.stopPropagation(); // цифры поля не уходят в набор длины с клавиатуры
+});
+document.getElementById('line_ok').addEventListener('click', () => {
+  // OK — применить введённое и завершить инструмент (Finish у Draft во FreeCAD)
+  // (живую длину резинки OK не ставит — только введённую руками)
+  const v = snapMM(parseFloat(line_len.value));
+  if(lineStart){ if(lineLenLock) applyLineLen(true); }
+  else if(lineLastValid() && v > 0 && Math.abs(v - lineLast.A.distanceTo(lineLast.B)) > 1e-6) resizeLastLine(v);
+  if(lineMode) setLineMode(false);
+  closeLinePopup();
+});
 
 // ---------- «Точка» (G,Y — Create Point в Sketcher FreeCAD) ----------
 let pointMode = false;
@@ -1746,7 +1831,7 @@ const tapeTool = {
 // Ошибки и предупреждения. Если открыто окно или палитра, блок встаёт над
 // ним той же ширины (места сверху мало — под ним), иначе — у курсора.
 // Держится 2.8 с
-const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'offPopup', 'bevPopup', 'rotPopup',
+const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'offPopup', 'bevPopup', 'rotPopup',
   'arrPopup', 'txtPopup', 'divPopup', 'vpanel', 'popup'];
 function warnTip(msg){
   const box = document.getElementById('warnBox');
@@ -3081,6 +3166,7 @@ function makeGripDrag(win){
 makeGripDrag(txtPopup);
 makeGripDrag(circPopup);
 makeGripDrag(offPopup);
+makeGripDrag(linePopup);
 makeGripDrag(arrPopup);
 makeGripDrag(bevPopup);
 for(const inp of [bev_d, bev_s]){
@@ -7257,6 +7343,7 @@ window.addEventListener('keydown', e=>{
   if(lineMode && lineStart){ // набор длины отрезка с клавиатуры (Measurements SketchUp)
     if(/^[0-9]$/.test(e.key) || e.key==='.' || e.key===','){
       lineLenStr += (e.key===',' ? '.' : e.key);
+      updateLineInfo();
       e.preventDefault(); return;
     }
     if(e.key==='Backspace'){ lineLenStr = lineLenStr.slice(0,-1); e.preventDefault(); return; }
@@ -7433,8 +7520,10 @@ window.addEventListener('keydown', e=>{
       else setCircleMode(false);
     }
     if(lineMode){
-      if(lineStart){ lineStart=null; lastLinePt=null; lineLenStr=''; lineDirLock=null; killRubber(); }
+      if(lineStart){ lineStart=null; lastLinePt=null; lineLenStr=''; lineDirLock=null; lineLenLock=null; killRubber(); updateLineInfo(); }
       else setLineMode(false);
+    }
+    if(!lineMode && !linePopup.hidden){ closeLinePopup();
     }
     
     cancelText(); // 3D-текст: откат предпросмотра и закрытие окна
@@ -7693,6 +7782,8 @@ canvas.addEventListener('pointerdown', e=>{
             if(pp) pos = pp.p;
           }
         }
+        if(lineStart && lineLenLock && pos.distanceTo(lineStart) > 1e-6)
+          pos = lineStart.clone().addScaledVector(new THREE.Vector3().subVectors(pos, lineStart).normalize(), lineLenLock);
         const wasFirst = !lineStart;
         commitLinePoint(pos);
         // стартовали с ребра/линии — запоминаем его направление для
@@ -8216,7 +8307,12 @@ canvas.addEventListener('pointermove', e=>{
           }
         }
       }
+      if(lineStart && lineLenLock && pos.distanceTo(lineStart) > 1e-6){
+        pos = lineStart.clone().addScaledVector(new THREE.Vector3().subVectors(pos, lineStart).normalize(), lineLenLock);
+        note += ' · length ' + lineLenLock + ' mm';
+      }
       lastLinePt = pos.clone();
+      updateLineInfo();
       ghost.material.color.setHex(pt.kind==='vertex' ? C_VERT : C_EDGE);
       ghost.position.copy(pos); ghost.visible = true;
       showHintFor(pt);
@@ -8420,6 +8516,7 @@ function loop(t){
   originMarker.visible = !!(pointMode || lineMode || circleMode || activeTool === rectTool || (textMode && !txtLive));
   dot(originMarker, 0.004);
   for(const m of planeTargets) dot(m, 0.0035);
+  if(!lineMode && !linePopup.hidden && !lineLastValid()) closeLinePopup();
   // точки привязки (вершины, центры, квадранты) — у всех инструментов,
   // ставящих точки с магнитом
   syncSnapMarkers((pointMode || lineMode || activeTool === rectTool || activeTool === tapeTool) && !divCtx);
