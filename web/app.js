@@ -8665,9 +8665,12 @@ function startTitleScene(){
     // аккорды G,… как в Sketcher FreeCAD: G — корабль становится «G» и ждёт
     // вторую клавишу; стреляют только законченные аккорды
     G:   {name: 'Chord',       color: 0x9aa2b1, cd: 0, noFire: true,
-          tip: 'Chord — now press A (Polar array) or M (Polyline)'},
+          tip: 'Chord — now press A (Polar array), M (Polyline), T (3D Text), V (X/Y/Z) or Y (Point)'},
     GA:  {name: 'Polar array', color: 0x4da3ff, cd: 1.4, tip: 'G,A — Polar array: copies gather around the nose and fan out'},
-    GM:  {name: 'Polyline',    color: 0xf5c542, cd: 1.4, tip: 'G,M — Polyline: one chain jumps from target to target'}
+    GM:  {name: 'Polyline',    color: 0xf5c542, cd: 1.4, tip: 'G,M — Polyline: one chain jumps from target to target'},
+    GT:  {name: '3D Text',     color: 0xff8a3d, cd: 2.0, tip: 'G,T — 3D Text: the word is typed letter by letter and sweeps a wide strip'},
+    GV:  {name: 'X/Y/Z',       color: 0x6aff3d, cd: 1.6, tip: 'G,V — exact X/Y/Z: the crosshair flies straight to the target, shields or not'},
+    GY:  {name: 'Point',       color: 0xc9a4ff, cd: 0.7, tip: 'G,Y — Point with snaps, the same tool as P: it bends toward the nearest target'}
   };
   const TOOL_KEYS = ['L', 'P', 'C', 'R', 'E'];
   const kinds = {};
@@ -8687,7 +8690,8 @@ function startTitleScene(){
   }
   // двухбуквенные захватчики — аккорды GA и GM: берёт только свой аккорд
   const CHORD_SCALE = 1.15;
-  for(const ch of ['GA', 'GM'])
+  const CHORDS = ['GA', 'GM', 'GT', 'GV', 'GY'];
+  for(const ch of CHORDS)
     kinds[ch] = {geo: pixelGeometry(textCellsOf(ch), 11, 7, 3, WEAPONS[ch].color, 0xf2f4f7), pts: 80, letter: true,
                  scale: CHORD_SCALE, w: 11 * CHORD_SCALE, h: 7 * CHORD_SCALE};
 
@@ -8743,7 +8747,7 @@ function startTitleScene(){
   const SHIP_Y = -FH + 6, NOSE_Y = SHIP_Y + SHIP_HH + 1.5;
   const hudTools = document.getElementById('stTools'), hudTip = document.getElementById('stTip');
   const keyLabel = f => f.length === 2 && f[0] === 'G' ? 'G,' + f[1] : f;
-  hudTools.innerHTML = ['0', ...TOOL_KEYS, 'GA', 'GM'].map(f => '<span data-f="' + f + '"><b>' + keyLabel(f) + '</b>' + WEAPONS[f].name + '</span>').join('');
+  hudTools.innerHTML = ['0', ...TOOL_KEYS, ...CHORDS].map(f => '<span data-f="' + f + '"><b>' + keyLabel(f) + '</b>' + WEAPONS[f].name + '</span>').join('');
   const fx = []; // догорающие следы (ломаная полилинии)
   const shots = [];
   const cool = {};
@@ -8765,7 +8769,7 @@ function startTitleScene(){
     // сверху крупные цифры, снизу мелкие; среди них буквы-команды — все
     // сразу (игра учит каждой клавише с первой волны)
     const ROW_DIGITS = [[8, 9], [6, 7], [4, 5], [2, 3], [1, 2]];
-    const letters = [...TOOL_KEYS, 'E-', 'GA', 'GM'];
+    const letters = [...TOOL_KEYS, 'E-', ...CHORDS];
     const drop = Math.min(G.wave, 4) * 4;
     ROW_DIGITS.forEach((pair, r) => {
       for(let c=0;c<11;c++){
@@ -8781,11 +8785,13 @@ function startTitleScene(){
         field.add(mesh); G.invaders.push(inv);
       }
     });
-    // каждой буквы — не меньше двух: случай не должен оставить волну без R или E
+    // каждой буквы — не меньше двух, каждого аккорда — не меньше одного:
+    // случай не должен оставить волну без R, E или G,V
     for(const L of letters){
       let have = G.invaders.filter(i => i.k === L).length;
+      const need = CHORDS.includes(L) ? 1 : 2;
       const digits = G.invaders.filter(i => !kinds[i.k].letter);
-      while(have < 2 && digits.length){
+      while(have < need && digits.length){
         const i = digits.splice(Math.floor(Math.random() * digits.length), 1)[0];
         i.k = L; i.mesh.geometry = kinds[L].geo; i.mesh.scale.setScalar(kinds[L].scale || DIGIT_SCALE);
         have++;
@@ -8807,7 +8813,7 @@ function startTitleScene(){
       : 'SCORE ' + pad(G.score) + '    LIVES ' + '♥'.repeat(Math.max(0, G.lives)) + '    HI ' + pad(Math.max(hi, G.score));
     hudMsg.innerHTML = G.mode === 'attract' ? '<b>Space</b> — play · <b>Esc</b> — back to ZeroCAD'
       : G.mode === 'over' ? 'Game over · <b>Space</b> — again · <b>Esc</b> — back'
-      : '<b>L P C R E 0</b> — press: become the tool, release: fire · <b>G</b> then <b>A M</b> — chords · <b>Ctrl</b> + E — cut · <b>← →</b> — move · <b>Esc</b> — back';
+      : '<b>L P C R E 0</b> — press: become the tool, release: fire · <b>G</b> then <b>A M T V Y</b> — chords · <b>Ctrl</b> + E — cut · <b>← →</b> — move · <b>Esc</b> — back';
   }
   function paintTools(){ for(const el of hudTools.children) el.classList.toggle('on', el.dataset.f === shipForm); }
   function tip(html){ hudTip.innerHTML = html; hudTip.style.opacity = 1; tipT = 2.2; }
@@ -8903,11 +8909,41 @@ function startTitleScene(){
       const obj = new THREE.Group(), head = edgeBox(1.8, 1.8, 1.8, yellowMat);
       obj.add(head);
       add({x, y: NOSE_Y, vx: 0, vy: 150, hw: 1, hh: 1, jumps: 4, head, last: [x, NOSE_Y], obj});
+    } else if(f === 'GT'){
+      // 3D-текст: слово набирается буква за буквой у носа и летит широкой
+      // полосой — берёт всех своих, кого накрыло; чужая буква — щит
+      const obj = new THREE.Group(), S = 0.8, word = 'ZERO';
+      [...word].forEach((ch, k) => {
+        const m = new THREE.Mesh(pixelGeometry(textCellsOf(ch), 5, 7, 2, 0xf2f4f7, 0xff8a3d), lambert);
+        m.scale.setScalar(S); m.position.x = (k * 6 + 2.5 - (word.length * 6 - 1) / 2) * S; m.visible = false;
+        obj.add(m);
+      });
+      add({x, y: NOSE_Y + 5, vx: 0, vy: 75, build: 0.45, hw: (word.length * 6 - 1) * S / 2, hh: 7 * S / 2, wide: true, obj});
+    } else if(f === 'GV'){
+      // точные X/Y/Z: перекрестие в цветах осей летит прямо в цель — сначала
+      // в захватчика G,V, иначе в ближайшую цифру; щиты не мешают
+      const pool = G.invaders.filter(i => i.alive && i.k === 'GV');
+      const cand = pool.length ? pool : G.invaders.filter(i => i.alive && !kinds[i.k].letter);
+      let target = null, best = Infinity;
+      for(const i of cand){ const d = Math.hypot(i.x - x, i.y - NOSE_Y); if(d < best){ best = d; target = i; } }
+      if(!target){ cool[f] = 0; return false; }
+      const obj = new THREE.Group();
+      const axis = (w, h, d, color) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({color}));
+      obj.add(axis(9, 0.6, 0.6, 0xd9534f), axis(0.6, 9, 0.6, 0x4cbb5c), axis(0.6, 0.6, 9, 0x4d7dff));
+      add({x, y: NOSE_Y, vx: 0, vy: 0, build: 0.35, target, from: [x, NOSE_Y], hw: 0, hh: 0, obj});
+    } else if(f === 'GY'){
+      // точка с магнитом: летит вверх и подтягивается к ближайшей своей цели
+      const obj = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshLambertMaterial({color: 0xffcc00})));
+      obj.scale.setScalar(1.7);
+      add({x, y: NOSE_Y, vx: 0, vy: 120, hw: 1.5, hh: 1.5, magnet: true, obj});
     }
     return true;
   }
-  // цифру берёт любой выстрел, букву — только её инструмент
-  const eligible = (p, i) => !kinds[i.k].letter || i.k === p.tool;
+  // цифру берёт любой выстрел, букву — только её инструмент. G,Y в
+  // редакторе — та же точка, что P, поэтому они берут друг друга
+  const TOOL_ALIAS = {GY: 'P'};
+  const sameTool = (a, b) => (TOOL_ALIAS[a] || a) === (TOOL_ALIAS[b] || b);
+  const eligible = (p, i) => !kinds[i.k].letter || sameTool(i.k, p.tool);
   function killInvader(i){
     i.alive = false; field.remove(i.mesh);
     if(G.mode === 'play'){ G.score += kinds[i.k].pts; paintHud(); }
@@ -8915,7 +8951,7 @@ function startTitleScene(){
   function blocked(i, p){ // чужой выстрел отскочил: буква вздрагивает и подсказывает клавишу
     i.flashT = 0.35;
     if(i.k === 'E-') tip('<b>Ctrl+E</b>E− invader — become E and fire with Ctrl held (Extrude cut)');
-    else if(i.k === 'GA' || i.k === 'GM') tip('<b>' + keyLabel(i.k) + '</b>' + i.k + ' invader — press G, then ' + i.k[1] + ' (' + WEAPONS[i.k].name + ')');
+    else if(CHORDS.includes(i.k)) tip('<b>' + keyLabel(i.k) + '</b>' + i.k + ' invader — press G, then ' + i.k[1] + ' (' + WEAPONS[i.k].name + ')');
     else if(i.k === 'E' && p && p.tool === 'E-') tip('<b>E</b>E invader — release Ctrl: a plain Extrude adds');
     else tip('<b>' + i.k + '</b>' + i.k + ' invader — press ' + i.k + ' (' + WEAPONS[i.k].name + ') to take it');
   }
@@ -8923,6 +8959,17 @@ function startTitleScene(){
     for(let n = shots.length - 1; n >= 0; n--){
       const p = shots[n];
       p.age += dt;
+      if(p.target){
+        // G,V: перекрестие долетает за время построения и бьёт точно
+        const f = Math.min(1, p.age / p.build), t = p.target;
+        p.x = p.from[0] + (t.x - p.from[0]) * f; p.y = p.from[1] + (t.y - p.from[1]) * f;
+        p.obj.position.set(p.x, p.y, 0); p.obj.rotation.z += dt * 6;
+        if(f >= 1){
+          if(t.alive){ if(eligible(p, t)) killInvader(t); else blocked(t, p); }
+          field.remove(p.obj); shots.splice(n, 1);
+        }
+        continue;
+      }
       const building = p.age < p.build;
       if(building){
         // построение у носа корабля: круг дорисовывается дугой, рамка —
@@ -8941,6 +8988,8 @@ function startTitleScene(){
           p.obj.children.forEach((e, k) => { e.visible = f >= k / 4; });
         } else if(p.tool === 'E' || p.tool === 'E-'){
           p.obj.scale.z = 0.15 + f * 7.85;
+        } else if(p.tool === 'GT'){
+          p.obj.children.forEach((m, k) => { m.visible = f >= k / p.obj.children.length; });
         } else if(p.tool === 'GA'){
           // копия встаёт на дугу вокруг носа, когда до неё дошла очередь
           p.obj.visible = f >= p.order / 6;
@@ -8954,6 +9003,16 @@ function startTitleScene(){
         if(p.tool === 'R') p.obj.children.forEach(e => { e.visible = true; });
         if(p.tool === 'E' || p.tool === 'E-') p.obj.scale.z = 8;
         if(p.tool === 'GA') p.obj.visible = true;
+        if(p.tool === 'GT') p.obj.children.forEach(m => { m.visible = true; });
+        if(p.magnet){ // магнит привязки: подруливает к ближайшей своей цели выше
+          let tgt = null, best = 20;
+          for(const i of alive){
+            if(!i.alive || i.y < p.y || !eligible(p, i)) continue;
+            const d = Math.abs(i.x - p.x);
+            if(d < best){ best = d; tgt = i; }
+          }
+          if(tgt) p.vx = Math.max(-70, Math.min(70, p.vx + Math.sign(tgt.x - p.x) * 260 * dt));
+        }
         p.x += p.vx * dt; p.y += p.vy * dt;
       }
       if(p.head) p.head.position.set(p.x, p.y, 0); // группа полилинии стоит в нуле, едет голова
@@ -8979,6 +9038,11 @@ function startTitleScene(){
               if(!eligible(p, i)){ blocked(i, p); done = true; break; }
               killInvader(i); p.hits.add(i);
             }
+          } else if(p.wide){
+            // широкая полоса: своих под ней берёт, чужая буква останавливает
+            for(const i of good) killInvader(i);
+            if(bad.length){ blocked(bad[0], p); done = true; }
+            else for(const i of good) p.hits.add(i);
           } else if(p.jumps){
             // полилиния: попала в свою — ломаная дотягивается до неё и
             // поворачивает к ближайшей следующей своей цели; чужая — щит
@@ -9181,9 +9245,14 @@ function startTitleScene(){
       // вторая клавиша аккорда: G уже нажата (корабль «G», 4 с) — A и M
       // значат инструмент, а не движение влево
       const isA = e.code === 'KeyA' || lk === 'a' || lk === 'ф', isM = e.code === 'KeyM' || lk === 'm' || lk === 'ь';
-      const chordOpen = down ? shipForm === 'G' && G.t - (G.chordT || 0) < 4 : G.pending === 'GA' || G.pending === 'GM';
+      const isT = e.code === 'KeyT' || lk === 't' || lk === 'е', isV = e.code === 'KeyV' || lk === 'v' || lk === 'м';
+      const isY = e.code === 'KeyY' || lk === 'y' || lk === 'н';
+      const chordOpen = down ? shipForm === 'G' && G.t - (G.chordT || 0) < 4 : CHORDS.includes(G.pending);
       if(chordOpen && isA) form = 'GA';
       if(chordOpen && isM) form = 'GM';
+      if(chordOpen && isT) form = 'GT';
+      if(chordOpen && isV) form = 'GV';
+      if(chordOpen && isY) form = 'GY';
       const space = k === ' ' || e.code === 'Space';
       if(!down){
         if(left || isA) G.keys.left = false;
@@ -9202,7 +9271,7 @@ function startTitleScene(){
       if(left && form !== 'GA') G.keys.left = true;
       if(right) G.keys.right = true;
       if(form && !e.repeat){ setForm(form); G.pending = form; if(form === 'G') G.chordT = G.t; }
-      if(space) tip('<b>L P C R E 0</b>Fire with the tool keys: press — the ship becomes the tool, release — it fires · G, then A or M — chords');
+      if(space) tip('<b>L P C R E 0</b>Fire with the tool keys: press — the ship becomes the tool, release — it fires · G, then A M T V or Y — chords');
       return true;
     },
     get mode(){ return G.mode; },

@@ -264,13 +264,13 @@
   #stHud[hidden]{display:none}
   #stScore{position:absolute;top:14px;left:0;right:0;text-align:center;color:var(--accent)}
   /* низ HUD — одна колонка: подсказка, клавиши, управление (в узком окне не наезжают) */
-  #stBottom{position:absolute;bottom:7%;left:12px;right:12px;display:flex;flex-direction:column;align-items:center;gap:12px}
+  #stBottom{position:absolute;bottom:2.5%;left:12px;right:12px;display:flex;flex-direction:column;align-items:center;gap:8px}
   #stMsg{text-align:center;color:var(--muted);font-size:16px}
   #stMsg b{color:var(--accent2)}
   /* панель инструментов-оружия: те же клавиши, что в редакторе */
-  #stTools{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;
-    font-size:14px;letter-spacing:.06em}
-  #stTools span{padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(30,33,40,.75);color:var(--muted);
+  #stTools{display:flex;justify-content:center;gap:6px;flex-wrap:wrap;max-width:1100px;
+    font-size:12px;letter-spacing:.04em}
+  #stTools span{padding:3px 8px;border:1px solid var(--line);border-radius:8px;background:rgba(30,33,40,.75);color:var(--muted);
     transition:border-color .15s,color .15s}
   #stTools span b{color:var(--accent2);margin-right:6px}
   #stTools span.on{border-color:var(--accent);color:var(--text)}
