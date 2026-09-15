@@ -267,9 +267,9 @@
     <div id="divPopup" hidden>
       <div class="prow" id="dv_len" style="color:var(--text);font-weight:600"></div>
       <div class="prow" id="dv_info"></div>
-      <div class="prow" id="dv_cntrow" style="display:none"><span style="min-width:70px">Points</span><input id="dv_n" type="number" step="1" min="2" max="360" style="font-size:22px;padding:6px 10px;width:110px"></div>
+      <div class="prow" id="dv_cntrow" style="display:none"><span style="min-width:70px">Points</span><input id="dv_n" type="number" step="1" min="2" max="360" style="font-size:22px;padding:6px 10px;width:110px"><span id="dv_auto" style="color:#6aff3d">auto</span></div>
       <div class="prow" id="dv_sugg" style="flex-wrap:wrap"></div>
-      <div id="dv_hint" style="display:none;font-size:13px;color:var(--muted);max-width:320px;margin:4px 0">Points go evenly around the whole circle, starting from the one you placed. Pick a count or type it. Enter or OK — place them, Esc — keep only the first point.</div>
+      <div id="dv_hint" style="display:none;font-size:13px;color:var(--muted);max-width:320px;margin:4px 0">Points go evenly around the whole circle, starting from the one you placed. The buttons are counts that divide the circle's segments evenly — started from a vertex, every point lands on a vertex. Any other count cuts new vertices into the edges. Enter or OK — place them, Esc — keep only the first point.</div>
       <div class="prow" style="gap:10px;margin-top:8px">
         <button id="dv_ok" class="primary" style="flex:1">OK</button>
         <button id="dv_cancel" style="flex:1">Cancel</button>
@@ -884,6 +884,7 @@ const QP = 1000;                              // квантование коор
 
 let chains = [];     // {pts:[Vector3], cum:[мм], total, closed}
 let auxSnaps = [];   // центры дуг/окружностей (Snap Center, как во FreeCAD)
+let quadSnaps = [];  // квадранты окружностей {pos, axis, sign} (Quadrant в AutoCAD)
 let vertTris = new Map(); // ключ вершины -> [индексы треугольников] (для граней)
 let edgeLines = null;   // все рёбра (тонкие тёмные)
 let hiLine = null;      // подсвеченная цепочка
@@ -1090,6 +1091,7 @@ function extractEdges(){
       if(ci && !auxSnaps.some(c => c.distanceTo(ci.ctr) < 1e-3)) auxSnaps.push(ci.ctr.clone());
     }
   }
+  computeQuadSnaps();
   cachedPatch = null; // меш изменился — кэш грани недействителен
   scheduleAutosave();
   if(typeof vGhost !== 'undefined') vGhost.visible = false;
@@ -1571,6 +1573,16 @@ function linePickPoint(q){
   // грань можно взять где угодно, а точку — только тут
   const an = anchorAt(q);
   if(an) return {pos: an.pos.clone(), kind:'vertex'};
+  // квадранты окружностей: точка на оси, проходящей через центр. Выше
+  // вершин — квадрант обычно и есть вершина круга, но подпись точнее
+  {
+    const P = {x:0,y:0,z:0};
+    for(const qs of quadSnaps){
+      projToQuad(qs.pos, q.cam, q.w, q.h, P);
+      if(P.z < 1 && P.z > -1 && Math.hypot(P.x-q.mx, P.y-q.my) < 10 && !isOccluded(q, qs.pos))
+        return {pos: qs.pos.clone(), kind: 'quadrant', axis: qs.axis, sign: qs.sign};
+    }
+  }
   const c = pickCorner(q);
   if(c) return {pos:c.pos.clone(), kind:'vertex'};
   // начало координат — привязка, как вершина (SketchUp): от него можно
@@ -2819,7 +2831,7 @@ function circleBeyondFace(center, normal, R){
 }
 // привязка словами: сильные магниты — ярко-салатовым, как в тултипах
 function circSnapHtml(what, kind){
-  const strong = kind === 'vertex' || kind === 'midpoint' || kind === 'center' || kind === 'perpendicular' || kind === 'origin';
+  const strong = kind === 'vertex' || kind === 'midpoint' || kind === 'center' || kind === 'perpendicular' || kind === 'origin' || kind === 'quadrant';
   return '<span style="color:var(--muted)">' + what + ' →</span> '
     + (strong ? '<span style="color:#6aff3d;font-weight:700">' + kind + '</span>' : kind);
 }
@@ -2903,6 +2915,7 @@ function showPlaneTargets(n, P0, patch, skip){
     add(chainPointAt(ch, ch.total/2), 0x3fd9c9);
   }
   for(const c of auxSnaps) if(inPl(c)) add(c, 0x3fd9c9);
+  for(const qs of quadSnaps) if(inPl(qs.pos)) add(qs.pos, AXIS_CSS[qs.axis]);
   if(patch && patch.centers) for(const c of patch.centers) add(c, 0x3fd9c9);
   if(inPl(new THREE.Vector3())) add(new THREE.Vector3(), 0x6aff3d); // начало координат
   if(lp.length){
@@ -5779,7 +5792,7 @@ const vpanel = document.getElementById('vpanel'), vp_t = document.getElementById
 
 // «в центре» — салатовым: пойманную середину/центр видно с одного взгляда
 function kindLabel(kind){
-  return (kind === 'midpoint' || kind === 'center' || kind === 'origin')
+  return (kind === 'midpoint' || kind === 'center' || kind === 'origin' || kind === 'quadrant')
     ? '<span style="color:#6aff3d;font-weight:700">' + kind + '</span>'
     : kind;
 }
@@ -7046,6 +7059,57 @@ function divideCounts(L){
   }
   return counts.length ? counts : [1,2,3,4,9]; // редкая длина без ровных вариантов
 }
+// ---- квадранты окружностей (Quadrant в AutoCAD, Snap к оси) ----
+// Точка окружности, в которую ведёт луч из центра строго вдоль мировой оси:
+// отрезок «центр — квадрант» лежит на оси X, Y или Z. Берутся только оси,
+// лежащие в плоскости круга (у круга на XY — ±X и ±Y). Точка — на самой
+// нарисованной геометрии (ringPointAt), у круга с кратным 4 числом
+// сегментов это его вершина
+function computeQuadSnaps(){
+  quadSnaps = [];
+  const rings = [];
+  const same = r => rings.some(o => o.ctr.distanceTo(r.ctr) < 1e-3 && Math.abs(o.R - r.R) < 1e-3
+    && Math.abs(o.n.dot(r.n)) > 0.999);
+  for(const id of new Set(guides.filter(g => g.curve).map(g => g.curve))){
+    const r = ringFromCurve(id);
+    if(r && !same(r)) rings.push(r);
+  }
+  const ends = edgeChainEnds(), walked = new Set();
+  for(const ch of chains){
+    if(ch.isGuide || walked.has(ch)) continue;
+    if(ch.closed && ch.pts.length < 7) continue;
+    const r = ch.closed ? ringFromPts(ch.pts) : ringFromEdgeChains(ch, ends, walked);
+    if(ch.closed) walked.add(ch);
+    if(r && !same(r)) rings.push(r);
+  }
+  for(const r of rings){
+    for(const ax of ['x', 'y', 'z']){
+      const dir = new THREE.Vector3(...AXIS_DIRS[ax]);
+      if(Math.abs(dir.dot(r.n)) > 1e-3) continue; // ось не лежит в плоскости круга
+      const th = Math.atan2(dir.dot(r.v), dir.dot(r.u));
+      for(const sign of [1, -1]){
+        const P = ringPointAt(r, sign > 0 ? th : th + Math.PI);
+        if(!quadSnaps.some(q => q.pos.distanceTo(P) < 1e-3)) quadSnaps.push({pos: P, axis: ax, sign});
+      }
+    }
+  }
+}
+// маркеры квадрантов в цветах осей — видны, пока в руке инструмент Point
+let quadMarkers = [], quadMarkersFor = null;
+function syncQuadMarkers(on){
+  if(!on || quadMarkersFor !== quadSnaps){
+    for(const m of quadMarkers){ scene.remove(m); m.material.dispose(); }
+    quadMarkers = []; quadMarkersFor = null;
+  }
+  if(!on || quadMarkersFor === quadSnaps) return;
+  quadMarkersFor = quadSnaps;
+  for(const q of quadSnaps){
+    const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color: AXIS_CSS[q.axis]})));
+    m.position.copy(q.pos); m.renderOrder = 3;
+    scene.add(m); quadMarkers.push(m);
+  }
+}
+
 // ---- деление окружности (Divide в SketchUp, Circular Pattern в Fusion) ----
 // Окружность — это либо нарисованная кривая (сегменты-линии с общим curve id),
 // либо замкнутое круглое ребро тела. Вершины сортируются по углу вокруг
@@ -7135,18 +7199,26 @@ function ringAt(P){
 // самое прямое продолжение в плоскости круга: стенка уходит под 90°,
 // угол квадрата — тоже 90°, их отсекает порог 60°. Замкнулись — проверка
 // на окружность в ringFromPts
-function ringFromEdgeChains(c0){
-  const kOf = q => keyOf(q.x, q.y, q.z);
+function edgeChainEnds(){ // конец цепочки -> цепочки тела, которые там кончаются
   const ends = new Map();
   for(const c of chains){
     if(c.isGuide || c.closed) continue;
     for(const e of [c.pts[0], c.pts[c.pts.length-1]]){
-      const k = kOf(e);
+      const k = keyOf(e.x, e.y, e.z);
       if(!ends.has(k)) ends.set(k, []);
       ends.get(k).push(c);
     }
   }
-  const used = new Set([c0]), pts = c0.pts.slice(), startK = kOf(c0.pts[0]);
+  return ends;
+}
+// ends — готовая карта концов (обход всех цепочек не строит её заново),
+// walked — сюда складываются пройденные цепочки
+function ringFromEdgeChains(c0, ends, walked){
+  const kOf = q => keyOf(q.x, q.y, q.z);
+  ends = ends || edgeChainEnds();
+  const used = walked || new Set();
+  used.add(c0);
+  const pts = c0.pts.slice(), startK = kOf(c0.pts[0]);
   let tail = c0.pts[c0.pts.length-1], prev = c0.pts[c0.pts.length-2], n = null;
   for(let guard=0; guard<720 && kOf(tail) !== startK; guard++){
     const din = new THREE.Vector3().subVectors(tail, prev).normalize();
@@ -7187,11 +7259,28 @@ function ringPointAt(ring, th){
   if(t < 1e-4) t = 0; else if(t > 1 - 1e-4) t = 1; // у вершины — ровно в вершину
   return ring.ctr.clone().addScaledVector(ring.u, A[0] + t*ex).addScaledVector(ring.v, A[1] + t*ey);
 }
-const RING_COUNTS = [2, 3, 4, 5, 6, 8, 10, 12, 16, 24];
+// «ровные» количества — делители числа сегментов: шаг кратен сегменту, и
+// от вершины каждая точка попадает в вершину (сетка не режется). Нет
+// делителей (простое число сегментов) — обычный набор
+function ringCounts(segs){
+  const d = [];
+  for(let k=2;k<=Math.min(segs, 360);k++) if(segs % k === 0) d.push(k);
+  if(d.length >= 3) return d.slice(0, 12);
+  return [...new Set([...d, 2, 3, 4, 6, 8, 12])].sort((a, b) => a - b);
+}
+function ringAutoCount(segs){
+  const c = ringCounts(segs);
+  for(const k of [4, 6, 3, 8]) if(c.includes(k) && segs % k === 0) return k;
+  return c.includes(4) ? 4 : c[0]; // делителей нет (7 сегментов) — привычные 4
+}
 // точка поставлена на окружность — окно деления в режиме круга
 function openDivideRing(ring, P, seedUndo){
-  divCtx = {ring, th0: ringAngleOf(ring, P), seedUndo};
-  divN = 4;
+  // первая точка в вершине многоугольника? Только тогда делители дают вершины
+  let onVertex = false;
+  for(const [x, y] of ring.p2)
+    if(ring.ctr.clone().addScaledVector(ring.u, x).addScaledVector(ring.v, y).distanceTo(P) < 1e-3){ onVertex = true; break; }
+  divCtx = {ring, th0: ringAngleOf(ring, P), seedUndo, onVertex, auto: true};
+  divN = ringAutoCount(ring.segs);
   ghost.visible = false; hideHints(); setHover(null); tipHide();
   document.getElementById('dv_cntrow').style.display = '';
   document.getElementById('dv_hint').style.display = hintsChk.checked ? '' : 'none';
@@ -7222,16 +7311,19 @@ function renderDividePreview(){
     const r = divCtx.ring, N = divN, step = 360/N;
     document.getElementById('dv_len').textContent =
       'Circle R ' + r.R.toFixed(1) + ' mm · ' + r.segs + ' segments';
+    const even = r.segs % N === 0;
     dv_info.innerHTML = N + ' points · every ' + (+step.toFixed(2)) + '° · arc '
       + (2*Math.PI*r.R/N).toFixed(2) + ' mm'
-      + (r.segs % N === 0 ? ' · <span style="color:#6aff3d">on vertices</span>' : '');
+      + (even && divCtx.onVertex ? ' · <span style="color:#6aff3d">on vertices</span>'
+        : !even ? ' · <span style="color:#ffcc00">⚠ between vertices</span>' : '');
+    document.getElementById('dv_auto').style.display = divCtx.auto ? '' : 'none';
     for(let k=1;k<N;k++){
       const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_EDGE})));
       m.position.copy(ringPointAt(r, divCtx.th0 + k*Math.PI*2/N));
       scene.add(m); divDots.push(m);
     }
     if(document.activeElement !== dv_n) dv_n.value = N;
-    dv_sugg.innerHTML = RING_COUNTS
+    dv_sugg.innerHTML = ringCounts(r.segs)
       .map(k => '<button class="dvs'+(k===N?' sel':'')+'" data-n="'+k+'">'+k+'</button>').join('');
     return;
   }
@@ -7258,11 +7350,11 @@ function renderDividePreview(){
 }
 dv_sugg.addEventListener('click', ev=>{
   const n = ev.target.dataset && ev.target.dataset.n;
-  if(n){ divN = +n; releaseToolInput(); renderDividePreview(); }
+  if(n){ divN = +n; if(divCtx && divCtx.ring) divCtx.auto = false; releaseToolInput(); renderDividePreview(); }
 });
 dv_n.addEventListener('input', ()=>{
   const v = Math.round(+dv_n.value);
-  if(divCtx && divCtx.ring && v >= 2 && v <= 360){ divN = v; renderDividePreview(); }
+  if(divCtx && divCtx.ring && v >= 2 && v <= 360){ divN = v; divCtx.auto = false; renderDividePreview(); }
 });
 dv_n.addEventListener('keydown', e=>{
   if(e.key === 'Enter'){ e.preventDefault(); commitDivide(); }
@@ -8263,10 +8355,13 @@ canvas.addEventListener('pointermove', e=>{
     if(!q.inside){ ghost.visible=false; tipHide(); return; }
     const pt = linePickPoint(q) || pickGround(q); // пусто под курсором — земля XY
     if(pt){
-      ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' ? C_VERT : C_EDGE);
+      ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' || pt.kind==='quadrant' ? C_VERT : C_EDGE);
       ghost.position.copy(pt.pos); ghost.visible = true;
       showHintFor(pt);
       let msg = 'Point · ' + kindLabel(pt.kind);
+      if(pt.kind === 'quadrant') // на какой оси через центр круга
+        msg += ' <span style="color:' + AXIS_CSS[pt.axis] + ';font-weight:700">'
+          + (pt.sign > 0 ? '+' : '−') + pt.axis.toUpperCase() + '</span>';
       // координаты будущей точки — каждая ось своей строкой, в цвете оси
       // (X кр., Y зел., Z син.), тем же кеглем, что и заголовок
       for(const ax of ['x', 'y', 'z'])
@@ -8573,6 +8668,8 @@ function loop(t){
   originMarker.visible = !!(pointMode || lineMode || circleMode || activeTool === rectTool || (textMode && !txtLive));
   dot(originMarker, 0.004);
   for(const m of planeTargets) dot(m, 0.0035);
+  syncQuadMarkers(pointMode && !divCtx);
+  for(const m of quadMarkers) dot(m, 0.004);
   if(activeTool && activeTool.dots) for(const m of activeTool.dots) dot(m);
   if(txAnchor) dot(txAnchor, 0.0035);       // якорь текста (красный центр)
   if(txCenterDot) dot(txCenterDot, 0.0035); // центр грани (салатовый)
