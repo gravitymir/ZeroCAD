@@ -6527,7 +6527,9 @@ function edgeFoldInfo(){
       offs.push({o, P0: v.P, w});
     }
   }
-  ed.fold = offs.length ? {offs} : null;
+  // пустой список сдвигов тоже годится: у простой грани двигаются только
+  // вершины линии, а края граней (Lp, Ln) нужны вырезу клина
+  ed.fold = (Lp > 1e-6 || Ln > 1e-6) ? {offs, Lp, Ln, side} : null;
   return ed.fold;
 }
 // Концы линии на рёбрах соседних граней (стенка кармана → наружная стенка):
@@ -6563,12 +6565,67 @@ function edgeSlideInfo(){
       if(Math.abs(n.dot(N)) > 0.99 || Math.abs(n.dot(u)) < 0.05) continue; // своя грань / вдоль линии
       if(ar > bestAr){ bestAr = ar; best = n; }
     }
-    if(!best) return 0;
+    if(!best) return {k: 0, n: null};
     const k = -N.dot(best) / u.dot(best);
-    return Math.abs(k) <= 5 ? k : 0;
+    return Math.abs(k) <= 5 ? {k, n: best} : {k: 0, n: null};
   };
-  ed.slide = {A, u, L, N, kA: kAt(A), kB: kAt(B)};
+  const ra = kAt(A), rb = kAt(B);
+  ed.slide = {A, u, L, N, kA: ra.k, kB: rb.k, nA: ra.n, nB: rb.n};
   return ed.slide;
+}
+// точка внутри тела? чётность пересечений луча с треугольниками сетки
+function pointInsideMesh(P, pos){
+  const dir = new THREE.Vector3(0.5773, 0.5774, 0.5775).normalize();
+  const ray = new THREE.Ray(P, dir), a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), hit = new THREE.Vector3();
+  let n = 0;
+  for(let o=0;o<pos.length;o+=9){
+    a.fromArray(pos, o); b.fromArray(pos, o+3); c.fromArray(pos, o+6);
+    if(ray.intersectTriangle(a, b, c, false, hit)) n++;
+  }
+  return n % 2 === 1;
+}
+// Вдавить линию по N внутрь — это вырез клина, а не сгиб сетки: у конца линии
+// на соседней грани (наружная стенка обода) сгиб складывал её треугольники
+// внахлёст. Клин: сечение — треугольник (края граней по обе стороны линии в
+// плоскости грани и вершина на глубине) плюс запас наружу, вдоль линии — до
+// плоскостей соседних граней у концов; если за соседней гранью пусто, клин
+// выходит за неё на запас и режет соседа ровным V-вырезом
+function edgeMoveCutPrism(s){
+  const ed = edgeDrag, fold = ed.fold, sl = ed.slide;
+  if(!fold || !sl || s > -0.01) return null;
+  const {A, u, L, N} = sl, side = fold.side;
+  const m = Math.max(1, -s * 0.5);
+  // сечение (вдоль side, вдоль N), выпуклое, обход фиксируем по объёму ниже
+  const sec = [[fold.Lp, 0], [fold.Lp, m], [-fold.Ln, m], [-fold.Ln, 0], [0, s]];
+  const capT = (n, tEnd, a, b) => {
+    if(!n) return tEnd;
+    const un = u.dot(n);
+    if(Math.abs(un) < 1e-6) return tEnd;
+    // точка сечения на плоскости соседа, проходящей через конец линии
+    return tEnd - (a * side.dot(n) + b * N.dot(n)) / un;
+  };
+  const snapPos = ed.snap.pos;
+  const margin = (n, tEnd, sign) => {
+    if(!n) return 0;
+    // за соседом пусто? пробуем точку на середине глубины чуть за его плоскостью
+    const t = capT(n, tEnd, 0, s * 0.5) + sign * 0.3;
+    const Q = A.clone().addScaledVector(N, s * 0.5).addScaledVector(u, t);
+    return pointInsideMesh(Q, snapPos) ? 0 : Math.max(2, fold.Lp, fold.Ln, -s) * 1.5;
+  };
+  const mA = margin(sl.nA, 0, -1), mB = margin(sl.nB, L, +1);
+  const P = (a, b, t) => A.clone().addScaledVector(side, a).addScaledVector(N, b).addScaledVector(u, t);
+  const S = sec.map(([a, b]) => P(a, b, capT(sl.nA, 0, a, b) - mA));
+  const E = sec.map(([a, b]) => P(a, b, capT(sl.nB, L, a, b) + mB));
+  const tris = [];
+  for(let i=1;i+1<sec.length;i++){ tris.push([S[0], S[i+1], S[i]]); tris.push([E[0], E[i], E[i+1]]); }
+  for(let i=0;i<sec.length;i++){
+    const j = (i+1) % sec.length;
+    tris.push([S[i], S[j], E[j]]); tris.push([S[i], E[j], E[i]]);
+  }
+  let vol = 0;
+  for(const [p, q, r] of tris) vol += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
+  if(vol < 0) for(const t of tris){ const x = t[1]; t[1] = t[2]; t[2] = x; }
+  return tris;
 }
 function applyEdgeDelta(d, e){
   if(!edgeDrag.snapPushed){
@@ -6624,6 +6681,34 @@ function applyEdgeTyped(){
   applyEdgeDelta(dir.multiplyScalar(isFinite(v) ? v : 0));
 }
 function finishEdgeMove(){
+  // по N внутрь — честный вырез клина вместо сгиба (сгиб — только предпросмотр)
+  const ed = edgeDrag;
+  if(ed && ed.nLock && ed.lastD && ed.normal && ed.snapPushed){
+    const s = ed.lastD.dot(ed.normal);
+    edgeSlideInfo();
+    const prism = edgeMoveCutPrism(s);
+    if(prism){
+      const moved = mesh.geometry.attributes.position.array.slice();
+      try{
+        const sp = ed.snap.pos, body = [];
+        for(let i=0;i<sp.length;i+=9)
+          body.push([new THREE.Vector3(sp[i],sp[i+1],sp[i+2]), new THREE.Vector3(sp[i+3],sp[i+4],sp[i+5]),
+                     new THREE.Vector3(sp[i+6],sp[i+7],sp[i+8])]);
+        const res = csgSubtract(body, prism);
+        const q = x => Math.round(x*1000)/1000, arr = [];
+        for(const t of res){
+          const ar = new THREE.Vector3().subVectors(t[1],t[0]).cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
+          if(ar < 1e-6) continue;
+          for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
+        }
+        setMeshFromArray(new Float32Array(arr));
+        healAll();
+      }catch(err){
+        console.warn('edge cut failed', err);
+        setMeshFromArray(moved); // остаётся сгиб
+      }
+    }
+  }
   edgeDrag = null; setAxisLock(null); snapDot.visible = false;
   tipHide(); normalsFlush(); extractEdges();
 }
