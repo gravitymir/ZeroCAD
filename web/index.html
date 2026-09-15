@@ -267,7 +267,9 @@
     <div id="divPopup" hidden>
       <div class="prow" id="dv_len" style="color:var(--text);font-weight:600"></div>
       <div class="prow" id="dv_info"></div>
+      <div class="prow" id="dv_cntrow" style="display:none"><span style="min-width:70px">Points</span><input id="dv_n" type="number" step="1" min="2" max="360" style="font-size:22px;padding:6px 10px;width:110px"></div>
       <div class="prow" id="dv_sugg" style="flex-wrap:wrap"></div>
+      <div id="dv_hint" style="display:none;font-size:13px;color:var(--muted);max-width:320px;margin:4px 0">Points go evenly around the whole circle, starting from the one you placed. Pick a count or type it. Enter or OK — place them, Esc — keep only the first point.</div>
       <div class="prow" style="gap:10px;margin-top:8px">
         <button id="dv_ok" class="primary" style="flex:1">OK</button>
         <button id="dv_cancel" style="flex:1">Cancel</button>
@@ -7044,8 +7046,166 @@ function divideCounts(L){
   }
   return counts.length ? counts : [1,2,3,4,9]; // редкая длина без ровных вариантов
 }
+// ---- деление окружности (Divide в SketchUp, Circular Pattern в Fusion) ----
+// Окружность — это либо нарисованная кривая (сегменты-линии с общим curve id),
+// либо замкнутое круглое ребро тела. Вершины сортируются по углу вокруг
+// центра; точка под углом θ — пересечение луча из центра с многоугольником,
+// то есть лежит ровно на нарисованной геометрии
+function ringFromPts(list){
+  const pts = [], seen = new Set();
+  for(const q of list){ const k = keyOf(q.x, q.y, q.z); if(!seen.has(k)){ seen.add(k); pts.push(q.clone()); } }
+  if(pts.length < 6) return null;
+  // черновой центр — среднее вершин; у ребра тела есть лишние точки от
+  // Т-стыков на хордах, они сдвигают среднее (у R10 на 0.25 мм), поэтому
+  // точный центр — площадной центроид многоугольника
+  const ctr = new THREE.Vector3();
+  for(const q of pts) ctr.add(q);
+  ctr.multiplyScalar(1/pts.length);
+  const u = new THREE.Vector3().subVectors(pts[0], ctr);
+  if(u.length() < 0.05) return null;
+  u.normalize();
+  let n = null, best = 0;
+  for(const q of pts){
+    const c = new THREE.Vector3().subVectors(q, ctr).cross(u);
+    if(c.length() > best){ best = c.length(); n = c; }
+  }
+  if(!n || best < 1e-6) return null;
+  n.normalize().negate(); // (q − ctr) × u = −n: обход против часовой вокруг n
+  const v = new THREE.Vector3().crossVectors(n, u);
+  for(const q of pts) if(Math.abs(new THREE.Vector3().subVectors(q, ctr).dot(n)) > 0.01) return null; // не в плоскости
+  const TAU = Math.PI*2;
+  const sorted = () => pts.map(q => {
+    const w = new THREE.Vector3().subVectors(q, ctr);
+    const x = w.dot(u), y = w.dot(v);
+    return {x, y, a: ((Math.atan2(y, x) % TAU) + TAU) % TAU};
+  }).sort((i, j) => i.a - j.a);
+  let items = sorted();
+  let A = 0, cx = 0, cy = 0;
+  for(let i=0;i<items.length;i++){
+    const p = items[i], q = items[(i+1)%items.length], cr = p.x*q.y - q.x*p.y;
+    A += cr; cx += (p.x + q.x)*cr; cy += (p.y + q.y)*cr;
+  }
+  if(Math.abs(A) < 1e-9) return null;
+  ctr.addScaledVector(u, cx/(3*A)).addScaledVector(v, cy/(3*A));
+  items = sorted();
+  // дуга, а не полный круг, — большой разрыв по углу
+  let gap = 0;
+  for(let i=0;i<items.length;i++){
+    const a0 = items[i].a, a1 = i+1 < items.length ? items[i+1].a : items[0].a + TAU;
+    gap = Math.max(gap, a1 - a0);
+  }
+  if(gap > Math.PI/2.5) return null;
+  // окружность: вершины на радиусе R, точки на хордах — не глубже прогиба
+  // самой длинной хорды
+  const rs = items.map(i => Math.hypot(i.x, i.y)), R = Math.max(...rs);
+  if(R < 0.05 || Math.min(...rs) < R*Math.cos(gap/2) - 0.01) return null;
+  // настоящие углы многоугольника (без точек посреди хорд) — число сегментов
+  let segs = 0;
+  for(let i=0;i<items.length;i++){
+    const a = items[(i+items.length-1)%items.length], b = items[i], c = items[(i+1)%items.length];
+    const cr = (b.x-a.x)*(c.y-b.y) - (b.y-a.y)*(c.x-b.x);
+    if(Math.abs(cr) > 1e-3*Math.hypot(b.x-a.x, b.y-a.y)*Math.hypot(c.x-b.x, c.y-b.y)) segs++;
+  }
+  return {ctr, R, n, u, v, p2: items.map(i => [i.x, i.y]), ang: items.map(i => i.a), segs};
+}
+function ringFromCurve(id){
+  const list = [];
+  for(const g of guides) if(g.curve === id) list.push(g.a, g.b);
+  return ringFromPts(list);
+}
+// окружность, на которой лежит точка P (или null)
+function ringAt(P){
+  for(const g of guides){
+    if(!g.curve) continue;
+    const ab = new THREE.Vector3().subVectors(g.b, g.a), L2 = ab.lengthSq();
+    if(L2 < 1e-12) continue;
+    const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(P, g.a).dot(ab) / L2));
+    if(g.a.clone().addScaledVector(ab, t).distanceTo(P) < 2e-3){
+      const r = ringFromCurve(g.curve);
+      if(r) return r;
+    }
+  }
+  const loc = chainAtPoint(P); // ребро тела
+  if(!loc) return null;
+  if(loc.chain.closed) return ringFromPts(loc.chain.pts);
+  return ringFromEdgeChains(loc.chain);
+}
+// Круглое ребро тела (дно кармана, край отверстия) распадается на цепочки
+// по граням стенки. Идём от конца к концу по соседним цепочкам, выбирая
+// самое прямое продолжение в плоскости круга: стенка уходит под 90°,
+// угол квадрата — тоже 90°, их отсекает порог 60°. Замкнулись — проверка
+// на окружность в ringFromPts
+function ringFromEdgeChains(c0){
+  const kOf = q => keyOf(q.x, q.y, q.z);
+  const ends = new Map();
+  for(const c of chains){
+    if(c.isGuide || c.closed) continue;
+    for(const e of [c.pts[0], c.pts[c.pts.length-1]]){
+      const k = kOf(e);
+      if(!ends.has(k)) ends.set(k, []);
+      ends.get(k).push(c);
+    }
+  }
+  const used = new Set([c0]), pts = c0.pts.slice(), startK = kOf(c0.pts[0]);
+  let tail = c0.pts[c0.pts.length-1], prev = c0.pts[c0.pts.length-2], n = null;
+  for(let guard=0; guard<720 && kOf(tail) !== startK; guard++){
+    const din = new THREE.Vector3().subVectors(tail, prev).normalize();
+    let best = null, bestC = null, bestDot = 0.5; // поворот круче 60° — не окружность
+    for(const c of ends.get(kOf(tail)) || []){
+      if(used.has(c)) continue;
+      const seq = kOf(c.pts[0]) === kOf(tail) ? c.pts : c.pts.slice().reverse();
+      const dout = new THREE.Vector3().subVectors(seq[1], seq[0]).normalize();
+      if(n && Math.abs(dout.dot(n)) > 1e-3) continue;
+      const d = din.dot(dout);
+      if(d > bestDot){ bestDot = d; best = seq; bestC = c; }
+    }
+    if(!best) return null;
+    used.add(bestC);
+    for(let i=1;i<best.length;i++) pts.push(best[i]);
+    prev = best[best.length-2]; tail = best[best.length-1];
+    if(!n && pts.length >= 3){
+      const c = new THREE.Vector3().subVectors(pts[1], pts[0]).cross(new THREE.Vector3().subVectors(pts[2], pts[1]));
+      if(c.length() > 1e-9) n = c.normalize();
+    }
+  }
+  return kOf(tail) === startK ? ringFromPts(pts) : null;
+}
+function ringAngleOf(ring, P){
+  const w = new THREE.Vector3().subVectors(P, ring.ctr);
+  const TAU = Math.PI*2;
+  return ((Math.atan2(w.dot(ring.v), w.dot(ring.u)) % TAU) + TAU) % TAU;
+}
+function ringPointAt(ring, th){
+  const TAU = Math.PI*2, m = ring.p2.length;
+  th = ((th % TAU) + TAU) % TAU;
+  let i = m - 1; // ребро pts[i] → pts[i+1]; до первой вершины — замыкающее
+  for(let k=0;k<m;k++){ if(ring.ang[k] <= th) i = k; else break; }
+  const A = ring.p2[i], B = ring.p2[(i+1)%m];
+  const dx = Math.cos(th), dy = Math.sin(th), ex = B[0]-A[0], ey = B[1]-A[1];
+  const den = ex*dy - ey*dx;
+  let t = Math.abs(den) < 1e-12 ? 0 : (A[1]*dx - A[0]*dy) / den;
+  if(t < 1e-4) t = 0; else if(t > 1 - 1e-4) t = 1; // у вершины — ровно в вершину
+  return ring.ctr.clone().addScaledVector(ring.u, A[0] + t*ex).addScaledVector(ring.v, A[1] + t*ey);
+}
+const RING_COUNTS = [2, 3, 4, 5, 6, 8, 10, 12, 16, 24];
+// точка поставлена на окружность — окно деления в режиме круга
+function openDivideRing(ring, P, seedUndo){
+  divCtx = {ring, th0: ringAngleOf(ring, P), seedUndo};
+  divN = 4;
+  ghost.visible = false; hideHints(); setHover(null); tipHide();
+  document.getElementById('dv_cntrow').style.display = '';
+  document.getElementById('dv_hint').style.display = hintsChk.checked ? '' : 'none';
+  const vr = view.getBoundingClientRect();
+  divPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 360) + 'px';
+  divPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 260) + 'px';
+  divPopup.hidden = false;
+  renderDividePreview();
+  dv_n.focus(); dv_n.select();
+}
 function openDivide(ch){
   divCtx = {chain: ch};
+  document.getElementById('dv_cntrow').style.display = 'none';
+  document.getElementById('dv_hint').style.display = 'none';
   divN = divideCounts(ch.total)[0];
   // будущие точки показывает превью — призрак в центре только путает
   ghost.visible = false; hideHints(); setHover(null); tipHide();
@@ -7058,6 +7218,23 @@ function openDivide(ch){
 function renderDividePreview(){
   clearDivDots();
   if(!divCtx) return;
+  if(divCtx.ring){
+    const r = divCtx.ring, N = divN, step = 360/N;
+    document.getElementById('dv_len').textContent =
+      'Circle R ' + r.R.toFixed(1) + ' mm · ' + r.segs + ' segments';
+    dv_info.innerHTML = N + ' points · every ' + (+step.toFixed(2)) + '° · arc '
+      + (2*Math.PI*r.R/N).toFixed(2) + ' mm'
+      + (r.segs % N === 0 ? ' · <span style="color:#6aff3d">on vertices</span>' : '');
+    for(let k=1;k<N;k++){
+      const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_EDGE})));
+      m.position.copy(ringPointAt(r, divCtx.th0 + k*Math.PI*2/N));
+      scene.add(m); divDots.push(m);
+    }
+    if(document.activeElement !== dv_n) dv_n.value = N;
+    dv_sugg.innerHTML = RING_COUNTS
+      .map(k => '<button class="dvs'+(k===N?' sel':'')+'" data-n="'+k+'">'+k+'</button>').join('');
+    return;
+  }
   const ch = divCtx.chain, L = ch.total;
   // первая строка — что делим: длина ребра/линии, радиус и длина дуги/окружности
   const arc = fitArc(ch);
@@ -7081,10 +7258,34 @@ function renderDividePreview(){
 }
 dv_sugg.addEventListener('click', ev=>{
   const n = ev.target.dataset && ev.target.dataset.n;
-  if(n){ divN = +n; renderDividePreview(); }
+  if(n){ divN = +n; releaseToolInput(); renderDividePreview(); }
+});
+dv_n.addEventListener('input', ()=>{
+  const v = Math.round(+dv_n.value);
+  if(divCtx && divCtx.ring && v >= 2 && v <= 360){ divN = v; renderDividePreview(); }
+});
+dv_n.addEventListener('keydown', e=>{
+  if(e.key === 'Enter'){ e.preventDefault(); commitDivide(); }
+  if(e.key === 'Escape'){ e.preventDefault(); cancelDivide(); releaseToolInput(); }
+  e.stopPropagation(); // цифры не уходят в горячие клавиши
 });
 function commitDivide(){
   if(!divCtx) return;
+  if(divCtx.ring){
+    const {ring, th0, seedUndo} = divCtx, N = divN;
+    const targets = [];
+    for(let k=1;k<N;k++) targets.push(ringPointAt(ring, th0 + k*Math.PI*2/N));
+    cancelDivide();
+    if(!seedUndo) pushUndo(); // первая точка уже стояла — снимок нужен здесь
+    for(const P of targets){
+      if(anchors.some(a => a.pos.distanceTo(P) < 1e-3)) continue;
+      const loc = chainAtPoint(P); // круглое ребро тела делится, линия — нет
+      const Q = loc ? (splitEdgeAt(loc.chain, loc.s) || P) : P;
+      makeAnchor(Q);
+      extractEdges();
+    }
+    return;
+  }
   const ch0 = divCtx.chain, L = ch0.total, n = divN;
   const targets = [];
   for(let i=1;i<=n;i++) targets.push(chainPointAt(ch0, L*i/(n+1)));
@@ -7103,7 +7304,7 @@ document.getElementById('dv_cancel').addEventListener('click', cancelDivide);
 // окно можно перетаскивать за любое пустое место
 let dvDrag = null;
 divPopup.addEventListener('pointerdown', ev=>{
-  if(ev.target.tagName === 'BUTTON') return;
+  if(ev.target.tagName === 'BUTTON' || ev.target.tagName === 'INPUT') return;
   dvDrag = {x: ev.clientX, y: ev.clientY,
             left: parseFloat(divPopup.style.left)||0, top: parseFloat(divPopup.style.top)||0};
   try{ divPopup.setPointerCapture(ev.pointerId); }catch(_){}
@@ -7532,6 +7733,19 @@ canvas.addEventListener('pointerdown', e=>{
     if(e.button===0 && q.inside){
       const pt = linePickPoint(q) || pickGround(q);
       if(!pt) return;
+      // точка на окружности — ставим её и предлагаем разложить по кругу
+      const ring = pt.kind !== 'center' && pt.kind !== 'origin' && !pt.ground ? ringAt(pt.pos) : null;
+      if(ring){
+        let seedUndo = false;
+        if(!anchors.some(a => a.pos.distanceTo(pt.pos) < 1e-3)){
+          pushUndo(); seedUndo = true;
+          const loc = chainAtPoint(pt.pos);
+          makeAnchor(loc ? (splitEdgeAt(loc.chain, loc.s) || pt.pos) : pt.pos);
+          extractEdges();
+        }
+        openDivideRing(ring, pt.pos, seedUndo);
+        return;
+      }
       if(pt.kind === 'midpoint' && pt.chain){
         openDivide(pt.chain); // центр -> окошко деления с превью
         return;
