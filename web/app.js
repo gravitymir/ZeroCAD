@@ -8791,7 +8791,7 @@ function startTitleScene(){
       : 'SCORE ' + pad(G.score) + '    LIVES ' + '♥'.repeat(Math.max(0, G.lives)) + '    HI ' + pad(Math.max(hi, G.score));
     hudMsg.innerHTML = G.mode === 'attract' ? '<b>Space</b> — play · <b>Esc</b> — back to ZeroCAD'
       : G.mode === 'over' ? 'Game over · <b>Space</b> — again · <b>Esc</b> — back'
-      : '<b>L P C R E 0</b> — become a tool · <b>Space</b> — fire · <b>Ctrl</b> + E — cut · <b>← →</b> — move · <b>Esc</b> — back';
+      : '<b>L P C R E 0</b> — press: become the tool, release: fire · <b>Ctrl</b> + E — cut · <b>← →</b> — move · <b>Esc</b> — back';
   }
   function paintTools(){ for(const el of hudTools.children) el.classList.toggle('on', el.dataset.f === shipForm); }
   function tip(html){ hudTip.innerHTML = html; hudTip.style.opacity = 1; tipT = 2.2; }
@@ -9098,20 +9098,28 @@ function startTitleScene(){
       const left = k === 'ArrowLeft' || e.code === 'KeyA' || lk === 'a' || lk === 'ф',
             right = k === 'ArrowRight' || e.code === 'KeyD' || lk === 'd' || lk === 'в';
       if(e.key === 'Control') G.ctrl = down && G.mode === 'play';
-      if(!down){ if(left) G.keys.left = false; if(right) G.keys.right = false; return true; }
-      if(k === 'Escape'){ setMode('off'); return true; }
+      // по e.code — клавиши работают и в русской раскладке, как в редакторе;
+      // запасной разбор по e.key (code бывает пустым: экранные клавиатуры,
+      // автоматизация) — с русскими буквами на тех же клавишах
+      const form = {KeyL: 'L', KeyP: 'P', KeyC: 'C', KeyR: 'R', KeyE: 'E', Digit0: '0', Numpad0: '0'}[e.code]
+        || {l: 'L', 'д': 'L', p: 'P', 'з': 'P', c: 'C', 'с': 'C', r: 'R', 'к': 'R', e: 'E', 'у': 'E', '0': '0'}[lk];
       const space = k === ' ' || e.code === 'Space';
+      if(!down){
+        if(left) G.keys.left = false;
+        if(right) G.keys.right = false;
+        // стреляем клавишей инструмента, а не пробелом: нажал — корабль стал
+        // буквой, отпустил — выстрел этой буквой (Ctrl ещё зажат — вырез).
+        // Руки учатся тем же клавишам, что в редакторе
+        if(form && G.mode === 'play' && form === shipForm){ G.ctrl = e.ctrlKey; fire(); }
+        return true;
+      }
+      if(k === 'Escape'){ setMode('off'); return true; }
       if(G.mode === 'attract'){ if(space) setMode('play'); else setMode('off'); return true; }
       if(G.mode === 'over'){ if(space) setMode('play'); return true; }
       if(left) G.keys.left = true;
       if(right) G.keys.right = true;
-      // по e.code — клавиши работают и в русской раскладке, как в редакторе
-      // запасной разбор по e.key (code бывает пустым: экранные клавиатуры,
-      // автоматизация) — с русскими буквами на тех же клавишах
-      const form = {KeyL: 'L', KeyP: 'P', KeyC: 'C', KeyR: 'R', KeyE: 'E', Digit0: '0', Numpad0: '0'}[e.code]
-        || {l: 'L', 'д': 'L', p: 'P', 'з': 'P', c: 'C', 'с': 'C', r: 'R', 'к': 'R', e: 'E', 'у': 'E', '0': '0'}[(k || '').toLowerCase()];
-      if(form) setForm(form);
-      if(space){ G.ctrl = e.ctrlKey; fire(); } // зажатый Space — очередь с перезарядкой формы
+      if(form && !e.repeat) setForm(form);
+      if(space) tip('<b>L P C R E 0</b>Fire with the tool keys: press — the ship becomes the tool, release — it fires');
       return true;
     },
     get mode(){ return G.mode; },
