@@ -8637,11 +8637,12 @@ function startTitleScene(){
   scn.add(title);
 
   // ---- CAD INVADERS ----
-  // Игра — пособие: оружие — это инструменты редактора на тех же клавишах.
-  // L/Space — линия, P — три точки веером через 5°, C — корабль рисует
-  // круг и пускает его (замкнутый контур забирает всех внутри), R —
-  // прямоугольник, E — плоский профиль на глазах выдавливается в тело и
-  // пробивает колонну. Поле объёмное: наклон, сетка, толстые спрайты
+  // Игра — пособие по горячим клавишам. Корабль собран из клеток нашего
+  // шрифта: L P C R E превращают его в букву инструмента (клетки 5×7
+  // морфятся — лишние утапливаются, недостающие выдавливаются), 0 — обратно
+  // в ноль, Space — выстрел тем, чем корабль сейчас является. Захватчики —
+  // цифры и буквы-команды: цифру берёт любой выстрел, букву — только её
+  // инструмент; чужой выстрел отскакивает, и подсказка говорит, что нажать
   const FW = 96, FH = 64;                       // полуширина и полувысота поля, клетки
   const field = new THREE.Group(); field.visible = false; scn.add(field);
   const floorGrid = new THREE.GridHelper(240, 24, 0x3a4150, 0x262b35);
@@ -8649,19 +8650,74 @@ function startTitleScene(){
   const gameTitle = textGroup('CAD INVADERS', 2.2, 0x4da3ff);
   gameTitle.scale.setScalar(1.3); gameTitle.position.set(0, -24, 3);
   field.add(gameTitle);
-  // захватчики — цифры 1…9 нашим шрифтом (очки = цифра × 10), корабль —
-  // ноль: Zero из ZeroCAD. Все объёмные, и каждый качается по-своему
-  const DIGIT_SCALE = 1.6;
+  const DIGIT_SCALE = 1.6, CELL_W = 5 * DIGIT_SCALE, CELL_H = 7 * DIGIT_SCALE;
   const DIGIT_SIDE = [0, 0x6aff3d, 0x6aff3d, 0x4da3ff, 0x4da3ff, 0xff8a3d, 0xff8a3d, 0xd9534f, 0xd9534f, 0xf5c542];
+  // формы корабля = инструменты: буква, оружие, цвет, перезарядка, чему учит
+  const WEAPONS = {
+    '0': {name: 'Zero',      color: 0x4da3ff, cd: 0.35, tip: 'Zero — the basic shot: takes digits only'},
+    L:   {name: 'Line',      color: 0xff8a3d, cd: 0.3,  tip: 'Line — one edge, one target'},
+    P:   {name: 'Points',    color: 0xc9a4ff, cd: 0.55, tip: 'Points — three points fan out 5° apart'},
+    C:   {name: 'Circle',    color: 0x4da3ff, cd: 1.1,  tip: 'Circle — a closed curve takes everything inside'},
+    R:   {name: 'Rectangle', color: 0x6aff3d, cd: 0.9,  tip: 'Rectangle — a wide closed contour'},
+    E:   {name: 'Extrude',   color: 0xd9534f, cd: 2.0,  tip: 'Extrude — a flat profile grows into a solid and pierces the column · hold Ctrl — cut'},
+    // Ctrl — Cut, как в окне Extrude редактора: форма та же, E, снаряд — отрицательный
+    'E-':{name: 'Extrude cut', color: 0xd9534f, cd: 2.0, tip: 'Ctrl+E — Extrude cut: a negative solid takes E− invaders'}
+  };
+  const TOOL_KEYS = ['L', 'P', 'C', 'R', 'E'];
   const kinds = {};
-  for(let d=1; d<=9; d++){
-    kinds[d] = {geo: pixelGeometry(textCellsOf(String(d)), 5, 7, 3, 0xf2f4f7, DIGIT_SIDE[d]),
-                pts: d * 10, w: 5 * DIGIT_SCALE, h: 7 * DIGIT_SCALE};
+  for(let d=1; d<=9; d++)
+    kinds[d] = {geo: pixelGeometry(textCellsOf(String(d)), 5, 7, 3, 0xf2f4f7, DIGIT_SIDE[d]), pts: d * 10, letter: false};
+  // буквы-захватчики наоборот: крышка цвета инструмента, стенки белые
+  for(const L of TOOL_KEYS)
+    kinds[L] = {geo: pixelGeometry(textCellsOf(L), 5, 7, 3, WEAPONS[L].color, 0xf2f4f7), pts: 50, letter: true};
+  // E− — «отрицательная» E: пластина 7×9 с вырезанной насквозь буквой, как
+  // карман после Extrude с Ctrl. Берёт её только выдавливание с Ctrl
+  {
+    const cells = new Set(), e = textCellsOf('E');
+    for(let gx=0; gx<7; gx++) for(let gy=0; gy<9; gy++)
+      if(!e.has((gx - 1) + ',' + (gy - 1))) cells.add(gx + ',' + gy);
+    kinds['E-'] = {geo: pixelGeometry(cells, 7, 9, 3, 0x9aa2b1, 0xd9534f), pts: 70, letter: true,
+                  scale: DIGIT_SCALE * 5 / 7}; // пластина шире буквы — ужимаем до той же клетки
   }
-  const ship = new THREE.Mesh(pixelGeometry(textCellsOf('0'), 5, 7, 3, 0xf2f4f7, 0x4da3ff), lambert);
+
+  // корабль: 35 клеток одним InstancedMesh, у каждой своя «высота» 0…1
+  const SHIP_DEPTH = 3;
+  const cellGeo = new THREE.BoxGeometry(1, 1, 1);
+  {
+    const nrm = cellGeo.attributes.normal, cols = [], top = new THREE.Color(0xf2f4f7), side = new THREE.Color(0x4da3ff);
+    for(let i=0;i<nrm.count;i++){ const c = Math.abs(nrm.getZ(i)) > 0.9 ? top : side; cols.push(c.r, c.g, c.b); }
+    cellGeo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  }
+  // свой материал: общий с обычными мешами three r128 компилирует без
+  // инстансинга, и все 35 клеток рисовались одним кубом в центре
+  const ship = new THREE.InstancedMesh(cellGeo, lambert.clone(), 35);
+  ship.userData.cut = false; // форма E с зажатым Ctrl: клетки вдавлены внутрь
+  ship.frustumCulled = false;
   ship.scale.setScalar(DIGIT_SCALE);
-  const SHIP_HW = 5 * DIGIT_SCALE / 2, SHIP_HH = 7 * DIGIT_SCALE / 2;
+  const SHIP_HW = CELL_W / 2, SHIP_HH = CELL_H / 2;
   field.add(ship);
+  const cellK = new Float32Array(35);
+  let shipForm = '0', shipCells = textCellsOf('0');
+  const mtx = new THREE.Matrix4(), q0 = new THREE.Quaternion(), vP = new THREE.Vector3(), vS = new THREE.Vector3();
+  function layoutShip(dt){
+    const rate = dt / 0.15; // превращение за 0.15 с
+    // Ctrl в форме E — клетки уходят «в минус»: растут от передней
+    // плоскости назад, как карман при Extrude с Ctrl
+    const sign = shipForm === 'E' && G.ctrl ? -1 : 1;
+    for(let gy=0; gy<7; gy++) for(let gx=0; gx<5; gx++){
+      const n = gy * 5 + gx, want = shipCells.has(gx + ',' + gy) ? sign : 0;
+      cellK[n] += Math.max(-rate * 2, Math.min(rate * 2, want - cellK[n]));
+      const k = cellK[n], a = Math.abs(k);
+      const sxy = a < 0.002 ? 0.0001 : 0.35 + 0.65 * a, sz = Math.max(0.0001, a * SHIP_DEPTH);
+      // клетка растёт от задней плоскости вперёд — как выдавливание;
+      // отрицательная — от передней назад, как вырез
+      vP.set(gx + 0.5 - 2.5, gy + 0.5 - 3.5, k >= 0 ? sz / 2 - SHIP_DEPTH / 2 : SHIP_DEPTH / 2 - sz / 2); vS.set(sxy, sxy, sz);
+      ship.setMatrixAt(n, mtx.compose(vP, q0, vS));
+    }
+    ship.instanceMatrix.needsUpdate = true;
+  }
+  function snapShip(){ for(let n=0;n<35;n++) cellK[n] = shipCells.has((n % 5) + ',' + Math.floor(n / 5)) ? 1 : 0; layoutShip(0); }
+
   const bombGeo = new THREE.BoxGeometry(1.2, 4, 1.2);
   const bombs = [0, 1, 2].map(() => {
     const m = new THREE.Mesh(bombGeo, new THREE.MeshLambertMaterial({color: 0xf2f4f7}));
@@ -8669,19 +8725,13 @@ function startTitleScene(){
   });
   const orange = new THREE.MeshLambertMaterial({color: 0xff8a3d});
   const blue = new THREE.MeshLambertMaterial({color: 0x4da3ff});
+  const green = new THREE.MeshLambertMaterial({color: 0x6aff3d});
+  const red = new THREE.MeshLambertMaterial({color: 0xd9534f});
   const white = new THREE.MeshLambertMaterial({color: 0xf7f9fc});
   const darkEdge = new THREE.LineBasicMaterial({color: 0x23262c});
   const SHIP_Y = -FH + 6, NOSE_Y = SHIP_Y + SHIP_HH + 1.5;
-  // оружие-инструменты: клавиша, подпись, перезарядка, как учит
-  const WEAPONS = {
-    line:   {key: 'L', name: 'Line',      cd: 0.3,  tip: 'Line — the thinnest cut: one edge, one target'},
-    points: {key: 'P', name: 'Points',    cd: 0.55, tip: 'Points — three points fan out 5° apart'},
-    circle: {key: 'C', name: 'Circle',    cd: 1.1,  tip: 'Circle — a closed curve takes everything inside'},
-    rect:   {key: 'R', name: 'Rectangle', cd: 0.9,  tip: 'Rectangle — a wide closed contour'},
-    extrude:{key: 'E', name: 'Extrude',   cd: 2.0,  tip: 'Extrude — a flat profile grows into a solid and pierces the column'}
-  };
   const hudTools = document.getElementById('stTools'), hudTip = document.getElementById('stTip');
-  hudTools.innerHTML = Object.entries(WEAPONS).map(([id, w]) => '<span data-w="' + id + '"><b>' + (id === 'line' ? 'L/Space' : w.key) + '</b>' + w.name + '</span>').join('');
+  hudTools.innerHTML = ['0', ...TOOL_KEYS].map(f => '<span data-f="' + f + '"><b>' + f + '</b>' + WEAPONS[f].name + '</span>').join('');
   const shots = [];
   const cool = {};
   let tipT = 0;
@@ -8689,31 +8739,41 @@ function startTitleScene(){
   let hi = 0; try{ hi = +localStorage.getItem(HI_KEY) || 0; }catch(_){}
   const hud = document.getElementById('stHud'), hudScore = document.getElementById('stScore'), hudMsg = document.getElementById('stMsg');
   const G = {mode: 'off', invaders: [], dir: 1, stepT: 0, score: 0, lives: 3, wave: 0,
-             keys: {left: false, right: false}, shipX: 0, hitT: 0, lastAct: performance.now(), demoT: 0, t: 0};
+             keys: {left: false, right: false}, shipX: 0, hitT: 0, lastAct: performance.now(), t: 0,
+             demoTarget: null, ctrl: false};
+  snapShip(); // после G: раскладка клеток читает G.ctrl
   function clearShots(){ for(const p of shots) field.remove(p.obj); shots.length = 0; }
   function newWave(){
     for(const inv of G.invaders) field.remove(inv.mesh);
     G.invaders = [];
-    // сверху крупные цифры (больше очков), снизу мелкие
+    // сверху крупные цифры, снизу мелкие; среди них буквы-команды — с
+    // каждой волной на одну больше (L P, потом C, R, E); в демо — все
     const ROW_DIGITS = [[8, 9], [6, 7], [4, 5], [2, 3], [1, 2]];
+    const letters = [...TOOL_KEYS, 'E-'].slice(0, G.mode === 'attract' ? 6 : Math.min(6, 2 + G.wave));
     const drop = Math.min(G.wave, 4) * 4;
     ROW_DIGITS.forEach((pair, r) => {
       for(let c=0;c<11;c++){
-        const k = pair[Math.floor(Math.random() * pair.length)];
+        const k = Math.random() < 0.3 ? letters[Math.floor(Math.random() * letters.length)]
+          : pair[Math.floor(Math.random() * pair.length)];
         const mesh = new THREE.Mesh(kinds[k].geo, lambert);
-        mesh.scale.setScalar(DIGIT_SCALE);
-        // своя фаза, скорость и размах покачивания у каждой цифры
-        const inv = {k, x: -80 + c * 16, y: 48 - r * 13 - drop, alive: true, mesh,
+        mesh.scale.setScalar(kinds[k].scale || DIGIT_SCALE);
+        // своя фаза, скорость и размах покачивания у каждого
+        const inv = {k, x: -80 + c * 16, y: 48 - r * 13 - drop, alive: true, mesh, flashT: 0,
                      ph: Math.random() * Math.PI * 2, sp: 0.7 + Math.random() * 1.6,
                      ay: 0.25 + Math.random() * 0.45, ax: 0.1 + Math.random() * 0.3};
         mesh.position.set(inv.x, inv.y, 0);
         field.add(mesh); G.invaders.push(inv);
       }
     });
-    G.dir = 1; G.stepT = 0;
+    G.dir = 1; G.stepT = 0; G.demoTarget = null;
     clearShots(); for(const bm of bombs) bm.visible = false;
   }
-  function resetGame(){ G.score = 0; G.lives = 3; G.wave = 0; G.shipX = 0; G.hitT = 0; for(const id in cool) cool[id] = 0; newWave(); }
+  function resetGame(){
+    G.score = 0; G.lives = 3; G.wave = 0; G.shipX = 0; G.hitT = 0;
+    for(const id in cool) cool[id] = 0;
+    shipForm = '0'; shipCells = textCellsOf('0'); snapShip(); paintTools();
+    newWave();
+  }
   function saveHi(){ if(G.score > hi){ hi = G.score; try{ localStorage.setItem(HI_KEY, String(hi)); }catch(_){} } }
   function paintHud(){
     const pad = n => String(n).padStart(4, '0');
@@ -8721,13 +8781,15 @@ function startTitleScene(){
       : 'SCORE ' + pad(G.score) + '    LIVES ' + '♥'.repeat(Math.max(0, G.lives)) + '    HI ' + pad(Math.max(hi, G.score));
     hudMsg.innerHTML = G.mode === 'attract' ? '<b>Space</b> — play · <b>Esc</b> — back to ZeroCAD'
       : G.mode === 'over' ? 'Game over · <b>Space</b> — again · <b>Esc</b> — back'
-      : '<b>← →</b> move · tool keys fire · <b>Esc</b> — back';
+      : '<b>L P C R E 0</b> — become a tool · <b>Space</b> — fire · <b>Ctrl</b> + E — cut · <b>← →</b> — move · <b>Esc</b> — back';
   }
-  function showTip(id){
-    const w = WEAPONS[id];
-    hudTip.innerHTML = '<b>' + w.key + '</b>' + w.tip;
-    hudTip.style.opacity = 1; tipT = 1.8;
-    for(const el of hudTools.children) el.classList.toggle('on', el.dataset.w === id);
+  function paintTools(){ for(const el of hudTools.children) el.classList.toggle('on', el.dataset.f === shipForm); }
+  function tip(html){ hudTip.innerHTML = html; hudTip.style.opacity = 1; tipT = 2.2; }
+  function setForm(f){
+    if(!WEAPONS[f] || f === shipForm) return;
+    shipForm = f; shipCells = textCellsOf(f);
+    paintTools();
+    tip('<b>' + f + '</b>' + WEAPONS[f].tip);
   }
   function setMode(m){
     G.mode = m;
@@ -8740,12 +8802,12 @@ function startTitleScene(){
     if(m === 'attract') resetGame();
     if(m === 'play'){ resetGame(); gameTitle.visible = false; }
     if(m === 'off'){ G.lastAct = performance.now(); G.keys.left = G.keys.right = false; clearShots(); }
+    G.ctrl = false;
     hudTip.style.opacity = 0; tipT = 0;
-    for(const el of hudTools.children) el.classList.remove('on');
     downAt = null;
     paintHud();
   }
-  // ---- выстрелы: у каждого инструмента свой снаряд и своя «анимация построения»
+  // ---- выстрелы: у каждой формы свой снаряд и своя «анимация построения»
   function edgeBox(w, hgt, d, mat){ // объёмный брусок с тёмными рёбрами, как тело в редакторе
     const g = new THREE.Group();
     const geo = new THREE.BoxGeometry(w, hgt, d);
@@ -8753,39 +8815,57 @@ function startTitleScene(){
     g.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), darkEdge));
     return g;
   }
-  function fire(id){
-    if(!WEAPONS[id] || (cool[id] || 0) > 0) return false;
-    cool[id] = WEAPONS[id].cd;
-    showTip(id);
-    const x = G.shipX;
-    const add = p => { field.add(p.obj); shots.push(p); };
-    if(id === 'line'){
-      add({id, x, y: NOSE_Y, vx: 0, vy: 130, age: 0, build: 0, hw: 0.6, hh: 3, pierce: false, hits: new Set(),
-           obj: edgeBox(0.9, 6, 0.9, orange)});
-    } else if(id === 'points'){
+  const cutMat = new THREE.MeshLambertMaterial({color: 0x2b2f38});
+  const cutEdge = new THREE.LineBasicMaterial({color: 0xd9534f});
+  function cutBox(w, hgt, d){
+    const g = new THREE.Group(), geo = new THREE.BoxGeometry(w, hgt, d);
+    g.add(new THREE.Mesh(geo, cutMat));
+    g.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), cutEdge));
+    return g;
+  }
+  function fire(){
+    const f = shipForm;
+    if((cool[f] || 0) > 0) return false;
+    cool[f] = WEAPONS[f].cd;
+    const x = G.shipX, tool = f === 'E' && G.ctrl ? 'E-' : f;
+    const add = p => { p.tool = tool; p.hits = new Set(); p.age = 0; p.build = p.build || 0; field.add(p.obj); shots.push(p); };
+    if(f === '0'){
+      add({x, y: NOSE_Y, vx: 0, vy: 130, hw: 0.7, hh: 1.2, obj: edgeBox(1.4, 2.4, 1.4, white)});
+    } else if(f === 'L'){
+      add({x, y: NOSE_Y, vx: 0, vy: 130, hw: 0.6, hh: 3, obj: edgeBox(0.9, 6, 0.9, orange)});
+    } else if(f === 'P'){
       for(const deg of [-5, 0, 5]){
         const a = deg * Math.PI / 180, obj = addOutline(new THREE.Mesh(sphereGeo, white));
         obj.scale.setScalar(1.3);
-        add({id, x, y: NOSE_Y, vx: Math.sin(a) * 115, vy: Math.cos(a) * 115, age: 0, build: 0, hw: 1.3, hh: 1.3, pierce: false, hits: new Set(), obj});
+        add({x, y: NOSE_Y, vx: Math.sin(a) * 115, vy: Math.cos(a) * 115, hw: 1.3, hh: 1.3, obj});
       }
-    } else if(id === 'circle'){
-      const obj = new THREE.Group();
-      add({id, x, y: NOSE_Y + 7, vx: 0, vy: 80, age: 0, build: 0.3, r: 7, pierce: false, area: true, hits: new Set(), obj, arc: -1});
-    } else if(id === 'rect'){
+    } else if(f === 'C'){
+      add({x, y: NOSE_Y + 7, vx: 0, vy: 80, build: 0.3, r: 7, area: true, obj: new THREE.Group(), arc: -1});
+    } else if(f === 'R'){
       const obj = new THREE.Group(), W = 22, Hh = 8, t = 1;
       const sides = [[0, Hh/2, W, t], [W/2, 0, t, Hh], [0, -Hh/2, W, t], [-W/2, 0, t, Hh]];
-      for(const [sx, sy, sw, sh] of sides){ const e = edgeBox(sw, sh, t, blue); e.position.set(sx, sy, 0); e.visible = false; obj.add(e); }
-      add({id, x, y: NOSE_Y + 5, vx: 0, vy: 95, age: 0, build: 0.28, hw: W/2, hh: Hh/2, pierce: false, area: true, hits: new Set(), obj});
-    } else if(id === 'extrude'){
-      const obj = edgeBox(14, 6, 1, orange);
+      for(const [sx, sy, sw, sh] of sides){ const e = edgeBox(sw, sh, t, green); e.position.set(sx, sy, 0); e.visible = false; obj.add(e); }
+      add({x, y: NOSE_Y + 5, vx: 0, vy: 95, build: 0.28, hw: W/2, hh: Hh/2, area: true, obj});
+    } else if(f === 'E'){
+      // обычное — красное тело растёт вперёд; с Ctrl — тёмный «вырез»
+      // с красными рёбрами уходит назад, в плоскость поля
+      const obj = tool === 'E-' ? cutBox(14, 6, 1) : edgeBox(14, 6, 1, red);
       obj.scale.z = 0.15;
-      add({id, x, y: NOSE_Y + 4, vx: 0, vy: 70, age: 0, build: 0.4, hw: 7, hh: 3, pierce: true, hits: new Set(), obj});
+      add({x, y: NOSE_Y + 4, vx: 0, vy: 70, build: 0.4, hw: 7, hh: 3, pierce: true, obj});
     }
     return true;
   }
+  // цифру берёт любой выстрел, букву — только её инструмент
+  const eligible = (p, i) => !kinds[i.k].letter || i.k === p.tool;
   function killInvader(i){
     i.alive = false; field.remove(i.mesh);
     if(G.mode === 'play'){ G.score += kinds[i.k].pts; paintHud(); }
+  }
+  function blocked(i, p){ // чужой выстрел отскочил: буква вздрагивает и подсказывает клавишу
+    i.flashT = 0.35;
+    if(i.k === 'E-') tip('<b>Ctrl+E</b>E− invader — become E and fire with Ctrl held (Extrude cut)');
+    else if(i.k === 'E' && p && p.tool === 'E-') tip('<b>E</b>E invader — release Ctrl: a plain Extrude adds');
+    else tip('<b>' + i.k + '</b>' + i.k + ' invader — press ' + i.k + ' (' + WEAPONS[i.k].name + ') to take it');
   }
   function updateShots(dt, alive){
     for(let n = shots.length - 1; n >= 0; n--){
@@ -8797,7 +8877,7 @@ function startTitleScene(){
         // сторона за стороной, профиль вытягивается в тело
         const f = p.age / p.build;
         p.x = G.shipX;
-        if(p.id === 'circle'){
+        if(p.tool === 'C'){
           const arc = Math.max(0.05, f * Math.PI * 2);
           if(Math.abs(arc - p.arc) > 0.01){
             for(const c of p.obj.children) c.geometry.dispose();
@@ -8805,54 +8885,88 @@ function startTitleScene(){
             p.obj.add(new THREE.Mesh(new THREE.TorusGeometry(p.r, 0.7, 6, 40, arc), blue));
             p.arc = arc;
           }
-        } else if(p.id === 'rect'){
+        } else if(p.tool === 'R'){
           p.obj.children.forEach((e, k) => { e.visible = f >= k / 4; });
-        } else if(p.id === 'extrude'){
+        } else if(p.tool === 'E' || p.tool === 'E-'){
           p.obj.scale.z = 0.15 + f * 7.85;
         }
       } else {
-        if(p.id === 'circle' && p.arc < Math.PI * 2 - 0.01){
+        if(p.tool === 'C' && p.arc < Math.PI * 2 - 0.01){
           for(const c of p.obj.children) c.geometry.dispose();
           p.obj.clear(); p.obj.add(new THREE.Mesh(new THREE.TorusGeometry(p.r, 0.7, 6, 40, Math.PI * 2), blue)); p.arc = Math.PI * 2;
         }
-        if(p.id === 'rect') p.obj.children.forEach(e => { e.visible = true; });
-        if(p.id === 'extrude') p.obj.scale.z = 8;
+        if(p.tool === 'R') p.obj.children.forEach(e => { e.visible = true; });
+        if(p.tool === 'E' || p.tool === 'E-') p.obj.scale.z = 8;
         p.x += p.vx * dt; p.y += p.vy * dt;
       }
-      p.obj.position.set(p.x, p.y, p.id === 'extrude' ? 4 : 0);
-      if(p.id === 'circle') p.obj.rotation.z += dt * 2;
+      p.obj.position.set(p.x, p.y, p.tool === 'E' ? 4 : p.tool === 'E-' ? -4 : 0);
+      if(p.tool === 'C') p.obj.rotation.z += dt * 2;
       let done = p.y > FH + 8 || Math.abs(p.x) > FW + 10;
       if(!building && !done){
         const hitNow = [];
         for(const i of alive){
           if(!i.alive || p.hits.has(i)) continue;
-          const iw = kinds[i.k].w / 2, ih = kinds[i.k].h / 2;
+          const iw = CELL_W / 2, ih = CELL_H / 2;
           const hit = p.r
             ? Math.hypot(Math.max(Math.abs(p.x - i.x) - iw, 0), Math.max(Math.abs(p.y - i.y) - ih, 0)) <= p.r
             : Math.abs(p.x - i.x) <= iw + p.hw && Math.abs(p.y - i.y) <= ih + p.hh;
           if(hit) hitNow.push(i);
         }
         if(hitNow.length){
-          // линия и точки берут одного, контур — всех внутри, тело — насквозь
-          const take = p.area || p.pierce ? hitNow : [hitNow.sort((a, b) => a.y - b.y)[0]];
-          for(const i of take){ killInvader(i); p.hits.add(i); }
-          if(!p.pierce) done = true;
+          const good = hitNow.filter(i => eligible(p, i)), bad = hitNow.filter(i => !eligible(p, i));
+          if(p.pierce){
+            // тело идёт насквозь: своих берёт, о чужие буквы только чиркает
+            for(const i of good) killInvader(i);
+            for(const i of bad) blocked(i, p);
+            for(const i of hitNow) p.hits.add(i);
+          } else if(p.area){
+            // контур забирает всех своих внутри; одни чужие — отскок
+            if(good.length) for(const i of good) killInvader(i); else blocked(bad[0], p);
+            done = true;
+          } else {
+            const first = hitNow.sort((a, b) => a.y - b.y)[0];
+            if(eligible(p, first)) killInvader(first); else blocked(first, p);
+            done = true;
+          }
         }
       }
       if(done){ field.remove(p.obj); shots.splice(n, 1); }
     }
   }
+  // демо: корабль сам выбирает открытого снизу захватчика, превращается в
+  // нужную букву, подъезжает и стреляет — показывает, как играть
+  function demoPilot(dt, alive){
+    if(!G.demoTarget || !G.demoTarget.alive){
+      const lowest = new Map();
+      for(const i of alive) if(!lowest.has(i.x) || lowest.get(i.x).y > i.y) lowest.set(i.x, i);
+      const open = [...lowest.values()];
+      const letters = open.filter(i => kinds[i.k].letter);
+      const pool = letters.length ? letters : open;
+      G.demoTarget = pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
+      if(G.demoTarget){
+        const k = G.demoTarget.k;
+        setForm(k === 'E-' ? 'E' : kinds[k].letter ? k : '0');
+        G.ctrl = k === 'E-'; // демо «зажимает» Ctrl для выреза
+      }
+    }
+    const t = G.demoTarget;
+    if(!t) return;
+    const dx = t.x - G.shipX;
+    G.shipX += Math.sign(dx) * Math.min(Math.abs(dx), 70 * dt);
+    if(Math.abs(dx) < 2 && !shots.length) fire();
+  }
   function update(dt){
     const alive = G.invaders.filter(i => i.alive);
     const playing = G.mode === 'play';
     for(const id in cool) cool[id] = Math.max(0, cool[id] - dt);
+    if(tipT > 0){ tipT -= dt; if(tipT <= 0) hudTip.style.opacity = 0; }
     G.t += dt;
-    // покачивание в объёме: у каждой цифры свой ритм
+    // покачивание в объёме: у каждого свой ритм; отскок — вздрагивание
     for(const i of alive){
       i.mesh.rotation.y = Math.sin(G.t * i.sp + i.ph) * i.ay;
       i.mesh.rotation.x = Math.sin(G.t * i.sp * 0.7 + i.ph * 1.3) * i.ax;
+      if(i.flashT > 0){ i.flashT = Math.max(0, i.flashT - dt); i.mesh.scale.setScalar((kinds[i.k].scale || DIGIT_SCALE) * (1 + 0.35 * i.flashT / 0.35)); }
     }
-    if(tipT > 0){ tipT -= dt; if(tipT <= 0) hudTip.style.opacity = 0; }
     // марш: чем меньше захватчиков, тем чаще шаг
     G.stepT -= dt;
     if(G.stepT <= 0 && alive.length){
@@ -8870,18 +8984,20 @@ function startTitleScene(){
         for(const i of alive) if(!cols.has(i.x) || cols.get(i.x).y > i.y) cols.set(i.x, i);
         const shooters = [...cols.values()];
         const s = shooters[Math.floor(Math.random() * shooters.length)];
-        free.position.set(s.x, s.y - kinds[s.k].h / 2 - 1, 0); free.visible = true;
+        free.position.set(s.x, s.y - CELL_H / 2 - 1, 0); free.visible = true;
       }
-      if(playing && alive.some(i => i.y - kinds[i.k].h / 2 <= SHIP_Y + SHIP_HH)){ G.lives = 0; saveHi(); setMode('over'); return; }
+      if(playing && alive.some(i => i.y - CELL_H / 2 <= SHIP_Y + SHIP_HH)){ G.lives = 0; saveHi(); setMode('over'); return; }
     }
     if(!playing && (alive.some(i => i.y < -8) || !alive.length)) newWave(); // демо и «game over» идут по кругу
+    if(G.mode === 'attract') demoPilot(dt, alive);
     // корабль
     if(playing){
       G.shipX += ((G.keys.right ? 1 : 0) - (G.keys.left ? 1 : 0)) * 75 * dt;
     }
     G.shipX = Math.max(-FW + 8, Math.min(FW - 8, G.shipX));
     ship.position.set(G.shipX, SHIP_Y, 0);
-    // ноль тоже объёмный: качается и кренится в сторону движения
+    layoutShip(dt);
+    // корабль тоже объёмный: качается и кренится в сторону движения
     const lean = playing ? (G.keys.right ? 1 : 0) - (G.keys.left ? 1 : 0) : 0;
     ship.rotation.y = Math.sin(G.t * 1.4) * 0.35 + lean * 0.35;
     ship.rotation.x = Math.sin(G.t * 1.1) * 0.12;
@@ -8933,19 +9049,7 @@ function startTitleScene(){
       camZ = 1.12 * Math.max((FW + 8) / (tanH * cam.aspect), (FH + 10) / tanH);
       field.rotation.x = -0.42; field.rotation.y = Math.sin(s * 0.25) * 0.12;
       field.position.y = 4;
-      if(G.mode === 'attract'){
-        // демо: корабль гуляет сам и по очереди показывает инструменты
-        G.shipX = Math.sin(s * 0.9) * 50;
-        gameTitle.rotation.y = Math.sin(s * 0.8) * 0.2;
-        G.demoT -= dt;
-        if(G.demoT <= 0){
-          const order = ['line', 'points', 'circle', 'rect', 'extrude'];
-          G.demoIdx = ((G.demoIdx || 0) + 1) % order.length;
-          fire(order[G.demoIdx]);
-          G.demoT = 1.6;
-        }
-      }
-      if(G.mode === 'over') gameTitle.rotation.y = Math.sin(s * 0.8) * 0.2;
+      if(G.mode === 'attract' || G.mode === 'over') gameTitle.rotation.y = Math.sin(s * 0.8) * 0.2;
       update(dt);
     }
     cam.position.set(0, 0, camZ); cam.lookAt(0, 0, 0);
@@ -8974,24 +9078,25 @@ function startTitleScene(){
       if(G.mode === 'off') return false;
       const k = e.key;
       const left = k === 'ArrowLeft' || e.code === 'KeyA', right = k === 'ArrowRight' || e.code === 'KeyD';
+      if(e.key === 'Control') G.ctrl = down && G.mode === 'play';
       if(!down){ if(left) G.keys.left = false; if(right) G.keys.right = false; return true; }
       if(k === 'Escape'){ setMode('off'); return true; }
       if(G.mode === 'attract'){ if(k === ' ') setMode('play'); else setMode('off'); return true; }
       if(G.mode === 'over'){ if(k === ' ') setMode('play'); return true; }
       if(left) G.keys.left = true;
       if(right) G.keys.right = true;
-      if(!e.repeat){
-        // по e.code — клавиши работают и в русской раскладке, как в редакторе
-        const id = k === ' ' || e.code === 'KeyL' ? 'line' : {KeyP: 'points', KeyC: 'circle', KeyR: 'rect', KeyE: 'extrude'}[e.code];
-        if(id) fire(id);
-      }
+      // по e.code — клавиши работают и в русской раскладке, как в редакторе
+      const form = {KeyL: 'L', KeyP: 'P', KeyC: 'C', KeyR: 'R', KeyE: 'E', Digit0: '0', Numpad0: '0'}[e.code];
+      if(form) setForm(form);
+      if(k === ' '){ G.ctrl = e.ctrlKey; fire(); } // зажатый Space — очередь с перезарядкой формы
       return true;
     },
     get mode(){ return G.mode; },
     // n кадров по dtMs без requestAnimationFrame — для проверок и будущего
     // слоя команд (скрытая вкладка не крутит rAF)
     step(n, dtMs){ for(let i=0;i<n;i++) draw(last + (dtMs || 16)); },
-    setMode, G, fire, shots
+    setMode, G, fire, shots, setForm,
+    get form(){ return shipForm; }
   };
 }
 function openStartScreen(){
