@@ -9011,10 +9011,13 @@ function startTitleScene(){
     G.shipX = Math.max(-FW + 8, Math.min(FW - 8, G.shipX));
     ship.position.set(G.shipX, SHIP_Y, 0);
     layoutShip(dt);
-    // корабль тоже объёмный: качается и кренится в сторону движения
-    const lean = playing ? (G.keys.right ? 1 : 0) - (G.keys.left ? 1 : 0) : 0;
-    ship.rotation.y = Math.sin(G.t * 1.4) * 0.35 + lean * 0.35;
-    ship.rotation.x = Math.sin(G.t * 1.1) * 0.12;
+    // корабль стоит ровно и наклоняется только в движении — в сторону, куда
+    // едет (и под клавишами, и у демо-пилота); наклон плавно набирается и уходит
+    const vx = dt > 0 && G.prevShipX !== undefined ? (G.shipX - G.prevShipX) / dt : 0;
+    G.prevShipX = G.shipX;
+    const leanTo = Math.max(-1, Math.min(1, vx / 75));
+    G.lean = (G.lean || 0) + (leanTo - (G.lean || 0)) * Math.min(1, dt * 10);
+    ship.rotation.set(0, G.lean * 0.35, -G.lean * 0.12);
     if(G.hitT > 0){ G.hitT -= dt; ship.visible = Math.floor(G.hitT * 10) % 2 === 0; if(G.hitT <= 0) ship.visible = G.mode !== 'over'; }
     updateShots(dt, alive);
     // бомбы
