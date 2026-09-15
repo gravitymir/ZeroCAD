@@ -1969,6 +1969,8 @@ const rectTool = {
 };
 makeGripDrag(rectPopup);
 markModifierWords(rectPopup);
+markModifierWords(document.getElementById('linePopup')); // Alt+click — белеет только Alt
+markModifierWords(document.getElementById('emPopup'));   // Shift — белеет только Shift
 for(const inp of [rect_w, rect_h]){
   inp.addEventListener('input', ()=>{ if(activeTool === rectTool) rectTool.field(false); });
   inp.addEventListener('blur', ()=>{ const v = parseFloat(inp.value); if(v > 0) inp.value = snapMM(v); });

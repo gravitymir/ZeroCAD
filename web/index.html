@@ -137,10 +137,9 @@
   #exPopup .exline div{margin:3px 0}
   /* строка команды — как пункт палитры, всегда видна */
   #exPopup .excmd{font-size:22px;color:var(--muted)}
-  #linePopup .linecmd{color:var(--muted)}
-  body.altHeld #linePopup .linecmd{color:var(--text)} /* Alt зажат — строка команды загорается */
-  #emPopup .emcmd{color:var(--muted)}
-  body.shiftHeld #emPopup .emcmd{color:var(--text)} /* Shift зажат — «перпендикулярно грани» загорается */
+  /* строки-команды окон: при зажатом модификаторе белеет только его слово
+     (правило body.*Held .key .mod-*), сама строка остаётся приглушённой */
+  #linePopup .prow.linecmd,#emPopup .prow.emcmd{color:var(--muted);font-size:22px}
   #emPopup #em_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
   #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#rectPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
