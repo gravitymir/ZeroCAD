@@ -137,6 +137,8 @@
   #exPopup .exline div{margin:3px 0}
   /* строка команды — как пункт палитры, всегда видна */
   #exPopup .excmd{font-size:22px;color:var(--muted)}
+  #linePopup .linecmd{color:var(--muted)}
+  body.altHeld #linePopup .linecmd{color:var(--text)} /* Alt зажат — строка команды загорается */
   #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#rectPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
   /* поле ввода видно как поле и без фокуса: заметная рамка; наведение —
@@ -394,7 +396,8 @@
       <div class="prow"><span class="plab">Length</span><input id="line_len" type="number" step="0.1" min="0.1" placeholder="—"> mm</div>
       <div class="prow"><span class="plab" id="line_angl">Angle</span><input id="line_ang" type="number" step="1" min="0" max="180" placeholder="—"> °</div>
       <div class="pinfo" id="line_info">&nbsp;</div>
-      <div class="phint" id="line_hint">Click the start, then the end — it snaps to vertices, midpoints, axes and angles. Type the length or the angle to fix it: before the end, the cursor only picks the side; after placing, a new length or angle redraws the line from its start (Enter); while you type, a dashed preview shows the new end. The angle is measured to the edge the line starts from (or to the axis), 90° — red. OK — finish the tool, Cancel or Esc — exit without the unfinished line.</div>
+      <div class="prow linecmd" id="line_alt"><span class="key">Alt+click</span> — new start: break the line here</div>
+      <div class="phint" id="line_hint">Click the start, then the end — it snaps to vertices, midpoints, axes and angles. Type the length or the angle to fix it: before the end, the cursor only picks the side; after placing, a new length or angle redraws the line from its start (Enter); while you type, a dashed preview shows the new end. The angle is measured to the edge the line starts from (or to the axis), 90° — red. In a polyline, Alt+click puts a new start without a segment from the previous point. OK — finish the tool, Cancel or Esc — exit without the unfinished line.</div>
       <div class="prow" style="margin-top:8px;gap:10px"><button id="line_ok">OK</button><button id="line_cancel">Cancel</button></div>
     </div>
     <div id="rectPopup" hidden>

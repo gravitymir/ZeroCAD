@@ -1062,6 +1062,9 @@ function markModifierWords(root){
   }
 }
 window.addEventListener('keyup',   e=>{ if(e.key === 'Control') updateOrbitCursor(false); });
+// Alt в линии — модификатор клика; отпущенный одиночный Alt в Windows уводит
+// фокус в меню браузера, и следующий клик по сцене терялся
+window.addEventListener('keyup', e=>{ if(e.key === 'Alt' && lineMode) e.preventDefault(); });
 window.addEventListener('blur', ()=>updateOrbitCursor(false)); // Alt+Tab с зажатым Ctrl
 
 
@@ -1416,6 +1419,7 @@ function updateLineInfo(){
     ? '<span style="color:#6aff3d">' + locks + ' fixed · the cursor picks the side</span>'
     : editing ? 'new length or angle + Enter redraws the line' : '&nbsp;';
   line_hint.hidden = !hintsChk.checked;
+  line_alt.hidden = !(lineMode && lineChain); // Alt+клик — только у полилинии
 }
 // перерисовать последний отрезок новой длиной от его начала, по тому же направлению
 function resizeLastLine(len, newDir){
@@ -8838,6 +8842,13 @@ canvas.addEventListener('pointerdown', e=>{
     if(e.button===0 && q.inside){
       const pt = linePickPoint(q) || pickGround(q);
       if(pt){
+        // Alt+клик в полилинии — «перо поднято»: отрезок от прежней точки не
+        // рисуется, щелчок ставит новое начало (как Break/новый старт у
+        // полилинии), инструмент остаётся в руке
+        if(e.altKey && lineChain && lineStart){
+          lineStart = null; lastLinePt = null; lineLenStr = ''; lineLenLock = null; lineAngLock = null;
+          killRubber();
+        }
         let pos = pt.pos;
         if(lineStart && e.shiftKey) pos = shiftOrtho(lineStart, pos).p; // 90°, как в Draft
         else if(lineStart && (pt.kind==='on face' || pt.kind==='on edge' || pt.kind==='on ground')){
@@ -9423,6 +9434,10 @@ canvas.addEventListener('pointermove', e=>{
         }
         if(lineLenStr) msg += '<br>typed: '+lineLenStr+' mm (Enter)';
         lineSnapHtml = note + (distHtml ? '<br>' + distHtml : '');
+        if(e.altKey && lineChain){ // Alt зажат: клик начнёт новую линию — резинку прячем
+          killRubber();
+          lineSnapHtml = '<span style="color:#fff;font-weight:700">new start</span> · ' + kindLabel(pt.kind);
+        }
       } else {
         // начало линии: во что попал курсор (вершина, середина, центр,
         // квадрант с осью) — второй строкой окна, как у конца
