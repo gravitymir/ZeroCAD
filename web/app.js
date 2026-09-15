@@ -8925,10 +8925,12 @@ function startTitleScene(){
         if(hitNow.length){
           const good = hitNow.filter(i => eligible(p, i)), bad = hitNow.filter(i => !eligible(p, i));
           if(p.pierce){
-            // тело идёт насквозь: своих берёт, о чужие буквы только чиркает
-            for(const i of good) killInvader(i);
-            for(const i of bad) blocked(i, p);
-            for(const i of hitNow) p.hits.add(i);
+            // тело идёт насквозь по цифрам и своим буквам, но чужая буква —
+            // щит: на ней выдавливание разбивается (снизу вверх по колонне)
+            for(const i of hitNow.sort((a, b) => a.y - b.y)){
+              if(!eligible(p, i)){ blocked(i, p); done = true; break; }
+              killInvader(i); p.hits.add(i);
+            }
           } else if(p.area){
             // контур забирает всех своих внутри; одни чужие — отскок
             if(good.length) for(const i of good) killInvader(i); else blocked(bad[0], p);
