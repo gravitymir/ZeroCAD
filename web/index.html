@@ -8668,7 +8668,8 @@ function loop(t){
   originMarker.visible = !!(pointMode || lineMode || circleMode || activeTool === rectTool || (textMode && !txtLive));
   dot(originMarker, 0.004);
   for(const m of planeTargets) dot(m, 0.0035);
-  syncQuadMarkers(pointMode && !divCtx);
+  // квадранты окружностей — у всех инструментов, ставящих точки с привязкой
+  syncQuadMarkers((pointMode || lineMode || activeTool === rectTool || activeTool === tapeTool) && !divCtx);
   for(const m of quadMarkers) dot(m, 0.004);
   if(activeTool && activeTool.dots) for(const m of activeTool.dots) dot(m);
   if(txAnchor) dot(txAnchor, 0.0035);       // якорь текста (красный центр)
