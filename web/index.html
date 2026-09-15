@@ -221,9 +221,12 @@
   /* операция ничего не изменит — кнопка серая и не нажимается */
   #exPopup #ex_ok:disabled{background:#3a3f47;color:#8b93a1;border-color:#3a3f47;cursor:default}
   #exPopup #ex_note{font-size:15px;color:#ffb347;margin:8px 0 0;max-width:340px;line-height:1.4}
-  #divPopup{cursor:move;padding:14px 16px}
+  /* окно Divide узкое и высокое: данные по строкам, варианты — сеткой по 4 */
+  #divPopup{cursor:move;padding:14px 16px;width:300px;box-sizing:border-box}
   #divPopup .prow{font-size:19px}
-  #divPopup .dvs{padding:6px 16px;font-size:19px;flex:none;
+  #divPopup .dvlines{display:block;line-height:1.35}
+  #divPopup #dv_sugg{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0}
+  #divPopup .dvs{padding:6px 0;font-size:19px;width:100%;
     background:var(--panel2);color:var(--accent2);border:1px solid var(--line);
     border-radius:6px;cursor:pointer}
   #divPopup #dv_ok,#divPopup #dv_cancel{font-size:17px;padding:8px 12px}
@@ -265,11 +268,12 @@
     <div id="toolTag" hidden></div>
     <div id="chordHint" hidden></div>
     <div id="divPopup" hidden>
-      <div class="prow" id="dv_len" style="color:var(--text);font-weight:600"></div>
-      <div class="prow" id="dv_info"></div>
+      <div class="prow dvlines" id="dv_len" style="color:var(--text);font-weight:600"></div>
+      <div class="prow dvlines" id="dv_info"></div>
+      <div class="prow" id="dv_stat" style="font-weight:600"></div>
       <div class="prow" id="dv_cntrow" style="display:none"><span style="min-width:70px">Points</span><input id="dv_n" type="number" step="1" min="2" max="360" style="font-size:22px;padding:6px 10px;width:110px"><span id="dv_auto" style="color:#6aff3d">auto</span></div>
-      <div class="prow" id="dv_sugg" style="flex-wrap:wrap"></div>
-      <div id="dv_hint" style="display:none;font-size:13px;color:var(--muted);max-width:320px;margin:4px 0">Points go evenly around the whole circle, starting from the one you placed. The buttons are counts that divide the circle's segments evenly — started from a vertex, every point lands on a vertex. Any other count cuts new vertices into the edges. Enter or OK — place them, Esc — keep only the first point.</div>
+      <div id="dv_sugg"></div>
+      <div id="dv_hint" style="display:none;font-size:13px;color:var(--muted);margin:4px 0">Points go evenly around the whole circle, starting from the one you placed. The buttons are counts that divide the circle's segments evenly — started from a vertex, every point lands on a vertex. Any other count cuts new vertices into the edges. Enter or OK — place them, Esc — keep only the first point.</div>
       <div class="prow" style="gap:10px;margin-top:8px">
         <button id="dv_ok" class="primary" style="flex:1">OK</button>
         <button id="dv_cancel" style="flex:1">Cancel</button>
@@ -7325,18 +7329,23 @@ function openDivide(ch){
   divPopup.hidden = false;
   renderDividePreview();
 }
+// строка статуса окна Divide: [цвет, текст] или null — строки нет
+function setDivStat(st){
+  dv_stat.style.display = st ? '' : 'none';
+  dv_stat.style.color = st ? st[0] : '';
+  dv_stat.textContent = st ? st[1] : '';
+}
 function renderDividePreview(){
   clearDivDots();
   if(!divCtx) return;
   if(divCtx.ring){
     const r = divCtx.ring, N = divN, step = 360/N;
-    document.getElementById('dv_len').textContent =
-      'Circle R ' + r.R.toFixed(1) + ' mm · ' + r.segs + ' segments';
+    dv_len.innerHTML = '<div>Circle R ' + r.R.toFixed(1) + ' mm</div><div>' + r.segs + ' segments</div>';
     const even = r.segs % N === 0;
-    dv_info.innerHTML = N + ' points · every ' + (+step.toFixed(2)) + '° · arc '
-      + (2*Math.PI*r.R/N).toFixed(2) + ' mm'
-      + (even && divCtx.onVertex ? ' · <span style="color:#6aff3d">on vertices</span>'
-        : !even ? ' · <span style="color:#ffcc00">⚠ between vertices</span>' : '');
+    dv_info.innerHTML = '<div>' + N + ' points · every ' + (+step.toFixed(2)) + '°</div>'
+      + '<div>arc ' + (2*Math.PI*r.R/N).toFixed(2) + ' mm</div>';
+    setDivStat(even && divCtx.onVertex ? ['#6aff3d', 'on vertices']
+      : !even ? ['#ffcc00', '⚠ between vertices'] : null);
     document.getElementById('dv_auto').style.display = divCtx.auto ? '' : 'none';
     for(let k=1;k<N;k++){
       const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color:C_EDGE})));
@@ -7351,15 +7360,14 @@ function renderDividePreview(){
   const ch = divCtx.chain, L = ch.total;
   // первая строка — что делим: длина ребра/линии, радиус и длина дуги/окружности
   const arc = fitArc(ch);
-  document.getElementById('dv_len').textContent =
-    ch.closed && arc ? 'Circle R ' + arc.R.toFixed(1) + ' mm · length ' + L.toFixed(1) + ' mm'
-    : arc            ? 'Arc R '    + arc.R.toFixed(1) + ' mm · length ' + L.toFixed(1) + ' mm'
-    : (ch.isGuide ? 'Line' : 'Edge') + ' · length ' + L.toFixed(1) + ' mm';
+  dv_len.innerHTML = '<div>' + (ch.closed && arc ? 'Circle R ' + arc.R.toFixed(1) + ' mm'
+    : arc ? 'Arc R ' + arc.R.toFixed(1) + ' mm' : (ch.isGuide ? 'Line' : 'Edge'))
+    + '</div><div>length ' + L.toFixed(1) + ' mm</div>';
   const spacing = L/(divN+1);
   const aligned = Math.abs(spacing*10 - Math.round(spacing*10)) < 1e-6;
-  dv_info.innerHTML = divN + ' point' + (divN>1?'s':'') + ' · ' + (divN+1)
-    + ' parts · spacing ' + spacing.toFixed(2) + ' mm'
-    + (aligned ? '' : ' · <span style="color:#ffcc00">⚠ off 0.1 mm grid</span>');
+  dv_info.innerHTML = '<div>' + divN + ' point' + (divN>1?'s':'') + ' · ' + (divN+1) + ' parts</div>'
+    + '<div>spacing ' + spacing.toFixed(2) + ' mm</div>';
+  setDivStat(aligned ? null : ['#ffcc00', '⚠ off 0.1 mm grid']);
   for(let i=1;i<=divN;i++){
     const m = addOutline(new THREE.Mesh(sphereGeo,
       new THREE.MeshBasicMaterial({color:C_EDGE})));
