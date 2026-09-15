@@ -2832,14 +2832,9 @@ function openTextPopup(){
 }
 function closeTextPopup(){ txtPopup.hidden = true; releaseToolInput(); }
 // тело минус/плюс призмы прямоугольников шрифта; врезаем в кликнутую грань
-function placeTextAt(P, n){
-  const {str, h, d} = textParams;
-  const s = h/7; // клетка; шаг букв — 6 клеток (5 колонок + 1 просвет)
-  const u = Math.abs(n.z) > 0.9
-    ? new THREE.Vector3(1,0,0)
-    : new THREE.Vector3(0,0,1).cross(n).normalize();
-  const v = new THREE.Vector3().crossVectors(n, u).normalize(); // «вверх» по грани
-  // закрашенные клетки в глобальной сетке текста: gx вдоль строки, gy вверх
+// закрашенные клетки строки в глобальной сетке текста: gx вдоль строки,
+// gy вверх; шаг букв — 6 клеток (5 колонок + 1 просвет)
+function textCellsOf(str){
   const cells = new Set();
   let ci = 0;
   for(const chr of str){
@@ -2849,6 +2844,16 @@ function placeTextAt(P, n){
         if(g[r] & (1<<(4-c))) cells.add((ci*6+c)+','+(6-r));
     ci++;
   }
+  return cells;
+}
+function placeTextAt(P, n){
+  const {str, h, d} = textParams;
+  const s = h/7; // клетка
+  const u = Math.abs(n.z) > 0.9
+    ? new THREE.Vector3(1,0,0)
+    : new THREE.Vector3(0,0,1).cross(n).normalize();
+  const v = new THREE.Vector3().crossVectors(n, u).normalize(); // «вверх» по грани
+  const cells = textCellsOf(str);
   if(!cells.size) return;
   // контур букв — граничные рёбра клеток, слитые в длинные отрезки по
   // строкам/столбцам; врезается в грань линиями-хордами (noExt: сегменты
@@ -6085,6 +6090,30 @@ function buildCubeArray(size){
   for(const q of quads){ put(q[0]); put(q[1]); put(q[2]); put(q[0]); put(q[2]); put(q[3]); }
   return out;
 }
+// шар как у куба стоит в углу начала координат: центр (r, r, r), лежит на
+// рабочей плоскости. UV-сетка 32 × 16, у полюсов — треугольники без
+// вырожденных (иначе булевым и выбору граней достаются нулевые площади)
+function buildSphereArray(d){
+  const r = d / 2, SL = 32, ST = 16, out = [];
+  const P = (i, k) => {
+    const th = Math.PI * k / ST, ph = 2 * Math.PI * i / SL;
+    return [r + r * Math.sin(th) * Math.cos(ph), r + r * Math.sin(th) * Math.sin(ph), r + r * Math.cos(th)];
+  };
+  for(let k=0;k<ST;k++) for(let i=0;i<SL;i++){
+    const a = P(i, k), b = P(i+1, k), c = P(i+1, k+1), e = P(i, k+1);
+    if(k > 0) out.push(...a, ...e, ...b);        // (вниз, на восток) — нормаль наружу
+    if(k < ST - 1) out.push(...b, ...e, ...c);
+  }
+  return new Float32Array(out);
+}
+// пирамида: квадратное основание в углу начала координат, вершина над центром
+function buildPyramidArray(s){
+  const A = [0,0,0], B = [s,0,0], C = [s,s,0], D = [0,s,0], T = [s/2, s/2, s];
+  return new Float32Array([
+    ...A, ...C, ...B,  ...A, ...D, ...C,             // основание (−Z)
+    ...A, ...B, ...T,  ...B, ...C, ...T,  ...C, ...D, ...T,  ...D, ...A, ...T
+  ]);
+}
 // колесо-дозатор: контур (окружность с V-карманами) на угловой сетке 2°,
 // крышки кольцевыми поясами (мелкие ячейки — чистые врезки), стенки
 const WHEEL_STEPS = 180, WHEEL_CAP_RINGS = 4;
@@ -6184,7 +6213,11 @@ async function rebuild(){
     genUs = +res.headers.get('X-Gen-Us');
   } else {
     const t0 = performance.now();
-    arr = shape === 'cube' ? buildCubeArray(clampN(p.dia, 2, 400)) : buildWheelArray(cp);
+    const size = clampN(p.dia, 2, 400);
+    arr = shape === 'cube' ? buildCubeArray(size)
+      : shape === 'sphere' ? buildSphereArray(size)
+      : shape === 'pyramid' ? buildPyramidArray(size)
+      : buildWheelArray(cp);
     genUs = Math.round((performance.now() - t0) * 1000);
   }
   setMeshFromArray(arr);
@@ -6200,13 +6233,13 @@ async function rebuild(){
   updateOrthoFrusta();
   bedGrid.position.z = -0.05; // рабочая плоскость z=0, сетка и оси лежат на ней
   // орбита и орто-виды смотрят на центр модели (куб растёт из начала координат)
-  const isCube = document.querySelector('input[name=shape]:checked').value === 'cube';
-  if(isCube) camTarget.set(p.dia/2, p.dia/2, p.dia/2);
+  const isBlock = shape !== 'wheel'; // куб, шар, пирамида растут из начала координат
+  if(isBlock) camTarget.set(p.dia/2, p.dia/2, p.dia/2);
   else camTarget.set(0, 0, p.thk/2);
   updateOrthoPoses();
   projectHandle = null; projectName = 'untitled'; setProjectDirty(false);
-  s_apex.textContent = wheelApex(cp).toFixed(2)+' mm';
-  s_pitch.textContent = wheelPitch(cp).toFixed(2)+' mm';
+  s_apex.textContent = shape === 'wheel' ? wheelApex(cp).toFixed(2)+' mm' : '–';
+  s_pitch.textContent = shape === 'wheel' ? wheelPitch(cp).toFixed(2)+' mm' : '–';
   s_gen.textContent = genUs >= 1000 ? (genUs/1000).toFixed(1)+' ms' : genUs+' µs';
 }
 
@@ -8447,17 +8480,20 @@ if(!HAS_SERVER){ // расширение или файл: csgrs живёт то�
 // у каждой фигуры своя стартовая конфигурация: куб — заготовка 40 мм,
 // колесо — рабочая шестерёнка дозатора
 const SHAPE_PRESET = {
-  cube:  {dia:40},
-  wheel: {dia:140, thk:11, sh:5, n:4, dep:10, w:4}
+  cube:    {dia:40},
+  wheel:   {dia:140, thk:11, sh:5, n:4, dep:10, w:4},
+  sphere:  {dia:40},
+  pyramid: {dia:40}
 };
 function applyShapePreset(){
   const kind = document.querySelector('input[name=shape]:checked').value;
   for(const id in SHAPE_PRESET[kind]) document.getElementById(id).value = SHAPE_PRESET[kind][id];
 }
 function applyShapeUI(){
-  const cube = document.querySelector('input[name=shape]:checked').value === 'cube';
-  document.getElementById('wheelOnly').hidden = cube;
-  document.getElementById('dia_label').childNodes[0].nodeValue = cube ? 'Size ' : 'Diameter ';
+  const kind = document.querySelector('input[name=shape]:checked').value;
+  document.getElementById('wheelOnly').hidden = kind !== 'wheel';
+  document.getElementById('dia_label').childNodes[0].nodeValue =
+    kind === 'wheel' || kind === 'sphere' ? 'Diameter ' : 'Size ';
 }
 document.querySelectorAll('input[name=shape]').forEach(r=>r.addEventListener('change', ()=>{
   applyShapePreset(); applyShapeUI(); rebuild();
@@ -8550,6 +8586,108 @@ function updateVcArrows(){
   vcDown.style.visibility = pitch <= -1.5 + 1e-3 ? 'hidden' : '';
 }
 
+// ---------- стартовый экран (Welcome в SketchUp, заставка Blender) ----------
+// Название — объёмные буквы нашим же пиксельным шрифтом и тем же
+// построителем, что у инструмента 3D Text (buildTextSolid): крышки белые,
+// стенки оранжевые, контур букв тёмный, как рёбра модели. Карточки —
+// заготовки; «Continue» — последняя сессия из автосохранения
+const startScreen = document.getElementById('startScreen');
+let startGL = null;
+function startTitleScene(){
+  const cv = document.getElementById('startCanvas');
+  const renderer = new THREE.WebGLRenderer({canvas: cv, antialias: true, alpha: true});
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  const scn = new THREE.Scene();
+  const cam = new THREE.PerspectiveCamera(30, 3, 1, 1000);
+  const cells = textCellsOf('ZEROCAD');
+  const tris = buildTextSolid(new THREE.Vector3(), new THREE.Vector3(1,0,0), new THREE.Vector3(0,1,0),
+    new THREE.Vector3(0,0,1), cells, 1, 1.6, 0);
+  const pos = [], col = [];
+  const top = new THREE.Color(0xf2f4f7), side = new THREE.Color(0xff8a3d);
+  const W = 41, Hc = 7; // ширина строки в клетках: 7 букв × 6 − 1
+  for(const t of tris){
+    const nrm = new THREE.Vector3().subVectors(t[1], t[0]).cross(new THREE.Vector3().subVectors(t[2], t[0])).normalize();
+    const c = Math.abs(nrm.z) > 0.9 ? top : side;
+    for(const q of t){ pos.push(q.x - W/2, q.y - Hc/2, q.z - 0.8); col.push(c.r, c.g, c.b); }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.computeVertexNormals();
+  const group = new THREE.Group();
+  group.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({vertexColors: true, flatShading: true})));
+  group.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30),
+    new THREE.LineBasicMaterial({color: 0x23262c})));
+  scn.add(group);
+  scn.add(new THREE.AmbientLight(0xffffff, 0.62));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.55);
+  sun.position.set(-0.6, 0.9, 1.2); scn.add(sun);
+  cam.position.set(0, -6, 62); cam.lookAt(0, 0, 0);
+  const t0 = performance.now();
+  let raf = 0;
+  const frame = () => {
+    const w = cv.clientWidth, hh = cv.clientHeight;
+    if(cv.width !== Math.round(w * renderer.getPixelRatio()) || cv.height !== Math.round(hh * renderer.getPixelRatio())){
+      renderer.setSize(w, hh, false);
+      cam.aspect = w / Math.max(1, hh); cam.updateProjectionMatrix();
+      // строка целиком в кадре при любой ширине окна
+      const fitW = (W + 4) / 2 / Math.tan(cam.fov * Math.PI / 360) / cam.aspect;
+      cam.position.z = Math.max(fitW, 30); cam.lookAt(0, 0, 0);
+    }
+    const s = (performance.now() - t0) / 1000;
+    group.rotation.y = Math.sin(s * 0.6) * 0.32;   // лёгкое покачивание, видны стенки букв
+    group.rotation.x = -0.28 + Math.sin(s * 0.45) * 0.08;
+    renderer.render(scn, cam);
+    raf = requestAnimationFrame(frame);
+  };
+  return {
+    start(){ if(!raf) frame(); },
+    stop(){ cancelAnimationFrame(raf); raf = 0; }
+  };
+}
+function openStartScreen(){
+  let hasSession = false;
+  try{ hasSession = !!localStorage.getItem(AUTOSAVE_KEY); }catch(_){}
+  document.getElementById('st_continue').hidden = !hasSession;
+  document.getElementById('st_foot').textContent =
+    (window.ZC_BUILD && window.ZC_BUILD.indexOf('__') < 0 ? window.ZC_BUILD : 'dev')
+    + (HAS_SERVER ? '' : ' · no server needed');
+  startScreen.hidden = false;
+  try{
+    if(!startGL) startGL = startTitleScene();
+    startGL.start();
+  }catch(err){ console.warn('start title not rendered', err); } // без WebGL — просто карточки
+  const first = startScreen.querySelector(hasSession ? '#st_continue' : '.st-card');
+  if(first) first.focus();
+}
+function closeStartScreen(){
+  if(startScreen.hidden) return;
+  startScreen.hidden = true;
+  if(startGL) startGL.stop();
+}
+async function startWithShape(kind){
+  const radio = document.querySelector('input[name=shape][value="' + kind + '"]');
+  if(!radio) return;
+  radio.checked = true;
+  applyShapePreset(); applyShapeUI();
+  closeStartScreen();
+  await rebuild();
+}
+startScreen.querySelectorAll('.st-card').forEach(b =>
+  b.addEventListener('click', () => startWithShape(b.dataset.shape)));
+document.getElementById('st_continue').addEventListener('click', closeStartScreen);
+document.getElementById('st_open').addEventListener('click', () => { closeStartScreen(); openProject(); });
+document.getElementById('st_import').addEventListener('click', () => { closeStartScreen(); f_stl.value = ''; f_stl.click(); });
+document.getElementById('f_new').addEventListener('click', openStartScreen);
+// пока открыт стартовый экран, клавиши не доходят до сцены. Esc — продолжить
+// (последняя сессия или то, что уже на сцене); Ctrl+O/S ловятся раньше
+window.addEventListener('keydown', e => {
+  if(startScreen.hidden) return;
+  if(e.key === 'Escape'){ e.preventDefault(); closeStartScreen(); }
+  if(e.key === 'Tab' || e.key === 'Enter' || e.key === ' ') return; // фокус по карточкам
+  e.stopImmediatePropagation();
+}, true);
+
 resize();
 (async ()=>{
   let restored = false;
@@ -8563,5 +8701,6 @@ resize();
   }catch(err){ console.warn('autosave not restored', err); }
   if(!restored) await rebuild();
   autosaveArmed = true;
+  openStartScreen();
 })();
 requestAnimationFrame(loop);

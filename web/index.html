@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ZeroCAD · Peanut Wheel</title>
+<title>ZeroCAD</title>
 <style>
   :root{
     --bg:#15171c; --panel:#1e2128; --panel2:#262a33; --line:#333844;
@@ -245,9 +245,46 @@
     background:rgba(38,42,51,.75);color:var(--muted);border:1px solid var(--line);
     border-radius:5px;font-size:10px;line-height:1;cursor:pointer;flex:none}
   #vcnav button:hover{color:var(--accent2);border-color:var(--accent2)}
+  /* стартовый экран (Welcome в SketchUp, заставка Blender): объёмное
+     название нашим же шрифтом 3D-текста и выбор заготовки */
+  #startScreen{position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:10px;padding:24px;
+    background:radial-gradient(ellipse at 50% 35%, #232733 0%, var(--bg) 70%)}
+  #startScreen[hidden]{display:none}
+  #startCanvas{width:min(900px, 94vw);height:min(300px, 34vh);display:block}
+  #startScreen .st-sub{color:var(--muted);font-size:15px;letter-spacing:.04em;margin-top:-6px}
+  #startScreen .st-head{color:var(--accent2);font-size:12px;text-transform:uppercase;letter-spacing:.12em;margin-top:22px}
+  #startScreen .st-cards{display:grid;grid-template-columns:repeat(4, 150px);gap:16px}
+  #startScreen .st-card{display:flex;flex-direction:column;align-items:center;gap:10px;padding:18px 10px 14px;
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;color:var(--text);
+    font-size:17px;font-weight:600;cursor:pointer;transition:border-color .12s, transform .12s}
+  #startScreen .st-card:hover,#startScreen .st-card:focus-visible{border-color:var(--accent);transform:translateY(-2px);outline:none}
+  #startScreen .st-card svg{width:64px;height:64px;color:var(--accent)}
+  #startScreen .st-card small{font-size:12px;font-weight:400;color:var(--muted)}
+  #startScreen .st-links{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-top:14px}
+  #startScreen .st-links button{flex:none;padding:9px 16px;font-size:14px}
+  #startScreen .st-foot{position:absolute;bottom:12px;color:var(--muted);font-size:12px}
+  @media (max-width: 700px){ #startScreen .st-cards{grid-template-columns:repeat(2, 150px)} }
 </style>
 </head>
 <body>
+<div id="startScreen" hidden>
+  <canvas id="startCanvas"></canvas>
+  <div class="st-sub">Parametric CAD in the browser</div>
+  <div class="st-head">Start with</div>
+  <div class="st-cards">
+    <button class="st-card" data-shape="cube"><svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M32 6 56 19v26L32 58 8 45V19z"/><path d="M8 19l24 13 24-13M32 32v26"/></svg>Cube<small>40 mm block</small></button>
+    <button class="st-card" data-shape="wheel"><svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M28 6h8l1.5 7 6 2.5 6-4 5.7 5.7-4 6L53.5 29 60 30.5v8l-6.5 1.5-2.5 6 4 6-5.7 5.7-6-4-6 2.5L36 61h-8l-1.5-6.5-6-2.5-6 4-5.7-5.7 4-6L10.5 38.5 4 37v-8l6.5-1.5 2.5-6-4-6 5.7-5.7 6 4 6-2.5z" transform="translate(0 -1.5)"/><circle cx="32" cy="32" r="8"/></svg>Gear<small>dispenser wheel</small></button>
+    <button class="st-card" data-shape="sphere"><svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><circle cx="32" cy="32" r="25"/><ellipse cx="32" cy="32" rx="25" ry="9"/><ellipse cx="32" cy="32" rx="9" ry="25"/></svg>Sphere<small>Ø 40 mm</small></button>
+    <button class="st-card" data-shape="pyramid"><svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M32 6 58 44 38 56 6 46z"/><path d="M32 6 38 56"/></svg>Pyramid<small>40 mm base</small></button>
+  </div>
+  <div class="st-links">
+    <button id="st_continue" class="primary">Continue last session</button>
+    <button id="st_open">Open project…</button>
+    <button id="st_import">Import STL…</button>
+  </div>
+  <div class="st-foot" id="st_foot"></div>
+</div>
 <div id="app">
   <div id="view">
     <div id="grid">
@@ -382,15 +419,19 @@
     </div>
   </div>
   <div id="panel">
-    <h1>🦀 ZeroCAD · peanut wheel</h1>
-    <p class="sub">Geometry &amp; STL computed by the Rust server · browser only renders</p>
+    <h1>🦀 ZeroCAD</h1>
+    <p class="sub">Parametric CAD in the browser</p>
 
     <div class="sec">Shape</div>
-    <div class="row" style="display:flex;gap:14px">
+    <div class="row" style="display:flex;gap:6px 14px;flex-wrap:wrap">
       <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
         <input type="radio" name="shape" value="cube" checked> cube</label>
       <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
-        <input type="radio" name="shape" value="wheel"> wheel</label>
+        <input type="radio" name="shape" value="wheel"> gear</label>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="radio" name="shape" value="sphere"> sphere</label>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="radio" name="shape" value="pyramid"> pyramid</label>
     </div>
 
     <div class="sec">Dimensions</div>
@@ -439,6 +480,7 @@
     <div class="sec">File</div>
     <div class="stat">Project<b id="s_file">untitled</b></div>
     <div class="btns" style="margin-top:10px">
+      <button id="f_new" title="Start screen: pick a shape to start with">New…</button>
       <button id="f_open" title="Ctrl+O">Open…</button>
       <button id="f_save" class="primary" title="Ctrl+S · Ctrl+Shift+S — save as">Save</button>
       <button id="f_import" title="Import an STL file (or drop it onto the view)">Import…</button>
