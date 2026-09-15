@@ -4797,37 +4797,58 @@ function csgInvert(node){
 // A минус B; входы — массивы треугольников [V3,V3,V3]
 // объединение A∪B тем же BSP (порядок клипов — как union в csg.js);
 // нужно 3D-тексту: срастить призмы букв в одно тело без внутренних стенок
-function csgUnion(aTris, bTris){
-  const mk = ts => ts.map(t=>csgPoly([t[0].clone(),t[1].clone(),t[2].clone()]))
-                     .filter(Boolean);
-  const a = csgNode(mk(aTris)), b = csgNode(mk(bTris));
-  csgClipTo(a, b);
-  csgClipTo(b, a);
-  csgInvert(b);
-  csgClipTo(b, a);
-  csgInvert(b);
-  csgBuild(a, csgAllPolys(b, []));
-  const out = [];
-  for(const p of csgAllPolys(a, []))
+// Треугольники тела A разделяются по габариту B: те, что целиком вне его
+// (с запасом), заведомо снаружи B и идут в результат нетронутыми. Раньше
+// бесконечные плоскости B резали их по всей модели (хорда на ободе колеса
+// рассекала крышки насквозь), пересчитанные вершины уезжали на 0.002 мм от
+// соседей — и после второго выреза в сетке оставались десятки дыр.
+// Классифицирует B по-прежнему полное дерево A (его узлы те же, что у
+// обрезанного в csg.js: clipTo меняет полигоны, не плоскости), но осколки
+// этого дерева в результат не попадают
+function csgSplitByBox(aTris, bTris){
+  const box = new THREE.Box3();
+  for(const t of bTris) for(const v of t) box.expandByPoint(v);
+  box.expandByScalar(0.05);
+  const near = [], far = [];
+  const tb = new THREE.Box3();
+  for(const t of aTris){
+    tb.makeEmpty(); tb.expandByPoint(t[0]); tb.expandByPoint(t[1]); tb.expandByPoint(t[2]);
+    (tb.intersectsBox(box) ? near : far).push(t);
+  }
+  return {near, far};
+}
+const csgMk = ts => ts.map(t=>csgPoly([t[0].clone(),t[1].clone(),t[2].clone()])).filter(Boolean);
+function csgFan(polys, out){ // полигон -> веер треугольников
+  for(const p of polys)
     for(let i=2;i<p.v.length;i++) out.push([p.v[0], p.v[i-1], p.v[i]]);
   return out;
 }
+function csgUnion(aTris, bTris){
+  const {near, far} = csgSplitByBox(aTris, bTris);
+  const aAll = csgNode(csgMk(aTris)), aN = csgNode(csgMk(near)), b = csgNode(csgMk(bTris));
+  csgClipTo(aN, b);
+  csgClipTo(b, aAll);
+  csgInvert(b);
+  csgClipTo(b, aAll);
+  csgInvert(b);
+  const out = far.map(t => [t[0].clone(), t[1].clone(), t[2].clone()]);
+  csgFan(csgAllPolys(aN, []), out);
+  return csgFan(csgAllPolys(b, []), out);
+}
 function csgSubtract(aTris, bTris){
-  const mk = ts => ts.map(t=>csgPoly([t[0].clone(),t[1].clone(),t[2].clone()]))
-                     .filter(Boolean);
-  const a = csgNode(mk(aTris)), b = csgNode(mk(bTris));
-  csgInvert(a);
-  csgClipTo(a, b);
-  csgClipTo(b, a);
+  const {near, far} = csgSplitByBox(aTris, bTris);
+  const aAll = csgNode(csgMk(aTris)), aN = csgNode(csgMk(near)), b = csgNode(csgMk(bTris));
+  csgInvert(aAll); csgInvert(aN);
+  csgClipTo(aN, b);
+  csgClipTo(b, aAll);
   csgInvert(b);
-  csgClipTo(b, a);
+  csgClipTo(b, aAll);
   csgInvert(b);
-  csgBuild(a, csgAllPolys(b, []));
-  csgInvert(a);
-  const out = [];
-  for(const p of csgAllPolys(a, [])) // полигон -> веер треугольников
-    for(let i=2;i<p.v.length;i++) out.push([p.v[0], p.v[i-1], p.v[i]]);
-  return out;
+  csgInvert(aN); // A — обратно наружу; B — вывернуть: стенки выреза смотрят внутрь выреза
+  csgInvert(b);
+  const out = far.map(t => [t[0].clone(), t[1].clone(), t[2].clone()]);
+  csgFan(csgAllPolys(aN, []), out);
+  return csgFan(csgAllPolys(b, []), out);
 }
 
 // внешний контур лоскута по снимку (до предпросмотрных стенок):
@@ -6015,7 +6036,11 @@ function fitArc(chain){
     const i1 = chain.closed ? (pts.length/3)|0 : (pts.length/2)|0;
     const i2 = chain.closed ? (2*pts.length/3)|0 : pts.length-1;
     const c = circle3(pts[0], pts[i1], pts[i2]);
-    if(c){
+    // почти прямая цепочка (стенка по хорде, осколки после булевых) тоже
+    // укладывается в 0.05 мм — на дугу радиусом в сотни метров, и её центр
+    // висел в воздухе маркером привязки. Дуга — только если заметно
+    // поворачивает: радиус не больше десяти длин цепочки (дуга ≥ ~6°)
+    if(c && c.R <= chain.total * 10){
       res = c;
       for(const p of pts)
         if(Math.abs(p.distanceTo(c.center) - c.R) > 0.05){ res = null; break; }
