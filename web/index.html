@@ -139,6 +139,9 @@
   #exPopup .excmd{font-size:22px;color:var(--muted)}
   #linePopup .linecmd{color:var(--muted)}
   body.altHeld #linePopup .linecmd{color:var(--text)} /* Alt зажат — строка команды загорается */
+  #emPopup .emcmd{color:var(--muted)}
+  body.shiftHeld #emPopup .emcmd{color:var(--text)} /* Shift зажат — «перпендикулярно грани» загорается */
+  #emPopup #em_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
   #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#rectPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
   /* поле ввода видно как поле и без фокуса: заметная рамка; наведение —
@@ -195,18 +198,18 @@
   #circPopup .prow,#rectPopup .prow{font-size:19px;gap:10px}
   #circPopup input,#rectPopup input{font-size:22px;padding:6px 10px;width:110px}
   /* окно параллельного контура (O) — как окна круга и прямоугольника */
-  #offPopup,#linePopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
+  #offPopup,#linePopup,#emPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;
     border-radius:10px;padding:14px 16px;font-size:12px;width:330px;box-sizing:border-box}
-  #offPopup[hidden],#linePopup[hidden]{display:none}
-  #offPopup .prow,#linePopup .prow{display:flex;align-items:center;gap:10px;margin:4px 0;color:var(--muted);font-size:19px}
-  #offPopup input,#linePopup input{font-size:22px;padding:6px 10px;width:110px;background:var(--panel2);color:var(--text);
+  #offPopup[hidden],#linePopup[hidden],#emPopup[hidden]{display:none}
+  #offPopup .prow,#linePopup .prow,#emPopup .prow{display:flex;align-items:center;gap:10px;margin:4px 0;color:var(--muted);font-size:19px}
+  #offPopup input,#linePopup input,#emPopup input{font-size:22px;padding:6px 10px;width:110px;background:var(--panel2);color:var(--text);
     border:1px solid #6b7483;border-radius:6px;transition:border-color .1s,box-shadow .1s}
-  #offPopup input:hover,#linePopup input:hover{border-color:#aab3c2}
-  #offPopup input:focus,#linePopup input:focus{border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
-  #offPopup .plab,#linePopup .plab{display:inline-block;min-width:88px}
-  #offPopup .pinfo,#linePopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
-  #offPopup .phint,#linePopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
-  #offPopup button,#linePopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
+  #offPopup input:hover,#linePopup input:hover,#emPopup input:hover{border-color:#aab3c2}
+  #offPopup input:focus,#linePopup input:focus,#emPopup input:focus{border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
+  #offPopup .plab,#linePopup .plab,#emPopup .plab{display:inline-block;min-width:88px}
+  #offPopup .pinfo,#linePopup .pinfo,#emPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
+  #offPopup .phint,#linePopup .phint,#emPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
+  #offPopup button,#linePopup button,#emPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
   #linePopup #line_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
   #offPopup #off_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
@@ -388,6 +391,16 @@
       <div class="prow" id="arr_status" style="font-size:13px">click the array center</div>
       <div id="arr_hint" style="display:none;font-size:13px;color:var(--muted);margin:4px 0">The lines lie on a cylinder wall, so its axis is taken as the center. The buttons are counts that divide the cylinder's segments evenly — every copy stays on the wall. Any other step puts copies off the flat wall faces. Click elsewhere to pick another center.</div>
       <div class="prow" style="gap:10px;margin-top:8px"><button id="arr_ok">OK</button><button id="arr_cancel">Cancel</button></div>
+    </div>
+    <div id="emPopup" hidden>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Move edge</b><span id="em_state" style="font-size:14px">free</span></div>
+      <div class="pinfo" id="em_snap">&nbsp;</div>
+      <div class="prow"><span class="plab">From face</span><input id="em_dist" type="number" step="0.1" placeholder="—"> mm</div>
+      <div class="pinfo" id="em_xyz">&nbsp;</div>
+      <div class="prow emcmd"><span class="key">Shift</span> — perpendicular to the face</div>
+      <div class="phint" id="em_hint">Drag the edge with the mouse. Shift or N — only perpendicular to the face it lies on; X/Y/Z — along an axis. From face — how far the edge left its face: type a distance and press Enter (the sign follows the mouse, a minus goes into the body). Pushed into the body, the edge cuts a V groove. Click or OK — apply, Cancel or Esc — undo.</div>
+      <div class="prow" style="margin-top:8px;gap:10px"><button id="em_ok">OK</button><button id="em_cancel">Cancel</button></div>
     </div>
     <div id="linePopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>

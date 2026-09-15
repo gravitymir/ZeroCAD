@@ -2067,7 +2067,7 @@ const tapeTool = {
 // Ошибки и предупреждения. Если открыто окно или палитра, блок встаёт над
 // ним той же ширины (места сверху мало — под ним), иначе — у курсора.
 // Держится 2.8 с
-const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'offPopup', 'bevPopup', 'rotPopup',
+const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'rotPopup',
   'arrPopup', 'txtPopup', 'divPopup', 'vpanel', 'popup'];
 function warnTip(msg){
   const box = document.getElementById('warnBox');
@@ -6368,7 +6368,7 @@ function startEdgeMove(){
         edgeDrag.guideMoves.push({g, a0: g.a.clone(), b0: g.b.clone(), onA, onB, kA, kB});
     }
   }
-  tipAt({clientX:lastMX, clientY:lastMY}, edgeMoveTip(new THREE.Vector3()));
+  openEmPopup();
 }
 // нормаль грани под ребром (среднее граней, в плоскости которых оно лежит):
 // «вдавить линию в грань» — сделать из неё V-канавку
@@ -6408,20 +6408,61 @@ function edgeFaceNormal(A, B){
   }
   return sum.lengthSq() > 1e-9 ? sum.normalize() : null;
 }
-function edgeMoveTip(d){
-  const ed = edgeDrag;
-  const along = ed && ed.nLock ? '<br><b>along the face normal</b> ' + (ed.normal ? d.dot(ed.normal).toFixed(1) + ' mm' : '') : '';
-  return 'Move edge'
-    + (ed && ed.snapped && !ed.typed ? '<br><span style="color:#52c752;font-weight:700">on ' + ed.snapped.what + '</span>' : '')
-    + (ed && ed.typed ? '<br>distance <b>' + ed.typed + '</b> mm · Enter — apply' : '')
-    + along
-    + '<br><span style="color:'+AXIS_CSS.x+';font-weight:600">X '+d.x.toFixed(1)+'</span>'
-    + '<br><span style="color:'+AXIS_CSS.y+';font-weight:600">Y '+d.y.toFixed(1)+'</span>'
-    + '<br><span style="color:'+AXIS_CSS.z+';font-weight:600">Z '+d.z.toFixed(1)+'</span>'
-    + (!hintsChk.checked ? '' :
-      '<br><span class="key">X/Y/Z</span> — axis · <span class="key">N</span> — face normal'
-      + '<br>type a distance + <span class="key">Enter</span> · click — apply · Esc — cancel');
+// Окно Move edge (как окна Line/Offset): расстояние от грани, на которой
+// лежало ребро, — поле From face (ввод + Enter), сдвиг по осям, привязка.
+// Раньше это был тултип у курсора — число нельзя было ввести мышью
+const emPopup = document.getElementById('emPopup');
+function openEmPopup(){
+  tipHide();
+  const vr = view.getBoundingClientRect();
+  emPopup.style.left = Math.min(lastMX - vr.left + 28, vr.width - 360) + 'px';
+  emPopup.style.top  = Math.min(lastMY - vr.top + 16, vr.height - 330) + 'px';
+  emPopup.hidden = false;
+  em_dist.value = '';
+  updateEmPopup(new THREE.Vector3());
 }
+function closeEmPopup(){ emPopup.hidden = true; if(document.activeElement === em_dist) em_dist.blur(); }
+function updateEmPopup(d, err){
+  const ed = edgeDrag;
+  if(!ed || emPopup.hidden) return;
+  tipHide();
+  const N = ed.normal, s = N ? d.dot(N) : null;
+  em_state.textContent = ed.nLock ? 'perpendicular to the face' : axisLock ? 'along ' + axisLock.toUpperCase() : 'free';
+  if(document.activeElement !== em_dist) em_dist.value = s == null ? '' : (Math.abs(s) < 0.05 ? '0' : s.toFixed(1));
+  em_dist.disabled = !N;
+  em_xyz.innerHTML =
+    '<span style="color:'+AXIS_CSS.x+';font-weight:600">X '+d.x.toFixed(1)+'</span> · ' +
+    '<span style="color:'+AXIS_CSS.y+';font-weight:600">Y '+d.y.toFixed(1)+'</span> · ' +
+    '<span style="color:'+AXIS_CSS.z+';font-weight:600">Z '+d.z.toFixed(1)+'</span>';
+  em_snap.innerHTML = err ? '<span style="color:#ff6b6b">' + err + '</span>'
+    : ed.snapped && !ed.typed ? '<span style="color:#52c752;font-weight:700">on ' + ed.snapped.what + '</span>'
+    : ed.nLock && s != null && s < -0.01 ? 'into the body · <b>V groove</b> on apply'
+    : '&nbsp;';
+  em_hint.hidden = !hintsChk.checked;
+}
+// поле From face: число — сдвиг перпендикулярно грани; знак — как вела мышь,
+// явный минус — в тело
+em_dist.addEventListener('input', () => {
+  if(!edgeDrag || !edgeDrag.normal) return;
+  edgeDrag.nKey = true; edgeDrag.nLock = true; setAxisLock(null);
+  edgeDrag.typed = em_dist.value;
+  applyEdgeTyped();
+});
+em_dist.addEventListener('keydown', e => {
+  if(e.key === 'Enter'){ e.preventDefault(); if(edgeDrag){ if(edgeDrag.typed) applyEdgeTyped(); finishEdgeMove(); } }
+  else if(e.key === 'Escape'){ e.preventDefault(); em_dist.blur(); cancelEdgeMove(); }
+  e.stopPropagation(); // цифры поля не уходят в сцену
+});
+document.getElementById('em_ok').addEventListener('click', () => { if(edgeDrag){ if(edgeDrag.typed) applyEdgeTyped(); finishEdgeMove(); } });
+document.getElementById('em_cancel').addEventListener('click', () => cancelEdgeMove());
+function cancelEdgeMove(){
+  if(!edgeDrag) return;
+  const pushed = edgeDrag.snapPushed;
+  edgeDrag = null; setAxisLock(null); snapDot.visible = false;
+  closeEmPopup();
+  if(pushed) undo(true);
+}
+makeGripDrag(emPopup);
 // Магнит переноса ребра (инференс Move в SketchUp): конец или середина
 // ребра, пришедшие на экране ближе 14 px к точке привязки (поставленная
 // точка P, вершина, центр, квадрант), прилипают к ней. Ребро едет целиком —
@@ -6666,18 +6707,21 @@ function applyEdgeDelta(d, e){
   }
   mesh.geometry.attributes.position.needsUpdate = true;
   normalsThrottled();
-  tipAt(e || {clientX:lastMX, clientY:lastMY}, edgeMoveTip(d));
+  updateEmPopup(d);
   if(!modified){ modified=true; s_mod.textContent='yes'; }
 }
 // введённое число: сдвиг на столько вдоль нормали (N), оси (X/Y/Z) или
 // направления, куда уже тянули мышью (VCB SketchUp, ввод числа в G Blender)
 function applyEdgeTyped(){
-  const v = parseFloat(edgeDrag.typed.replace(',', '.'));
+  let v = parseFloat(edgeDrag.typed.replace(',', '.'));
+  // по нормали без явного минуса знак берём, куда вела мышь: потянул в тело
+  // и набрал 5.5 — это 5.5 в тело
+  if(edgeDrag.nLock && isFinite(v) && !edgeDrag.typed.includes('-') && edgeDrag.mouseSign < 0) v = -v;
   let dir = null;
   if(edgeDrag.nLock && edgeDrag.normal) dir = edgeDrag.normal.clone();
   else if(axisLock) dir = new THREE.Vector3(axisLock==='x'?1:0, axisLock==='y'?1:0, axisLock==='z'?1:0);
   else if(edgeDrag.lastD && edgeDrag.lastD.lengthSq() > 1e-9) dir = edgeDrag.lastD.clone().normalize();
-  if(!dir){ tipAt({clientX:lastMX, clientY:lastMY}, edgeMoveTip(new THREE.Vector3()) + '<br><span style="color:#ff6b6b">pick a direction: drag, X/Y/Z or N</span>'); return; }
+  if(!dir){ updateEmPopup(new THREE.Vector3(), 'pick a direction: drag, Shift, X/Y/Z or N'); return; }
   applyEdgeDelta(dir.multiplyScalar(isFinite(v) ? v : 0));
 }
 function finishEdgeMove(){
@@ -6709,7 +6753,7 @@ function finishEdgeMove(){
       }
     }
   }
-  edgeDrag = null; setAxisLock(null); snapDot.visible = false;
+  edgeDrag = null; setAxisLock(null); snapDot.visible = false; closeEmPopup();
   tipHide(); normalsFlush(); extractEdges();
 }
 
@@ -8380,10 +8424,10 @@ window.addEventListener('keydown', e=>{
     if(e.code === 'KeyN' || e.key.toLowerCase() === 'n' || e.key.toLowerCase() === 'т'){
       e.preventDefault();
       if(!edgeDrag.normal){ warnTip('No face under this edge'); return; }
-      edgeDrag.nLock = !edgeDrag.nLock;
+      edgeDrag.nKey = !edgeDrag.nKey; edgeDrag.nLock = edgeDrag.nKey;
       if(edgeDrag.nLock) setAxisLock(null);
       if(edgeDrag.typed) applyEdgeTyped();
-      else tipAt({clientX:lastMX, clientY:lastMY}, edgeMoveTip(edgeDrag.lastD || new THREE.Vector3()));
+      else updateEmPopup(edgeDrag.lastD || new THREE.Vector3());
       return;
     }
     const ch = /^[0-9]$/.test(e.key) ? e.key
@@ -8409,7 +8453,7 @@ window.addEventListener('keydown', e=>{
              || {x:'x', y:'y', z:'z'}[e.key.toLowerCase()]; // как в Blender
     if(ax){
       e.preventDefault(); setAxisLock(axisLock===ax ? null : ax);
-      if(edgeDrag){ edgeDrag.nLock = false; if(edgeDrag.typed) applyEdgeTyped(); }
+      if(edgeDrag){ edgeDrag.nKey = false; edgeDrag.nLock = false; if(edgeDrag.typed) applyEdgeTyped(); }
       return;
     }
   }
@@ -8666,7 +8710,7 @@ window.addEventListener('keydown', e=>{
   if(e.key==='Escape'){
     if(edgeDrag){ // отмена переноса ребра — вернуть как было
       const pushed = edgeDrag.snapPushed;
-      edgeDrag = null; setAxisLock(null); snapDot.visible = false;
+      edgeDrag = null; setAxisLock(null); snapDot.visible = false; closeEmPopup();
       if(pushed) undo(true);
     }
     closePopup(); deselect(); tipHide(); clearEdgeSel();
@@ -9160,16 +9204,24 @@ canvas.addEventListener('pointermove', e=>{
     let d = new THREE.Vector3(snapMM(hit.x-edgeDrag.grab0.x),
       snapMM(hit.y-edgeDrag.grab0.y), snapMM(hit.z-edgeDrag.grab0.z));
     if(edgeDrag.typed) return; // введено число — мышь больше не двигает
-    if(edgeDrag.nLock && edgeDrag.normal){
-      // N — вдоль нормали грани: мышь по экрану, ребро только по нормали
-      const s = snapMM(new THREE.Vector3().subVectors(hit, edgeDrag.grab0).dot(edgeDrag.normal));
-      d = edgeDrag.normal.clone().multiplyScalar(s);
+    // Shift — пока зажат, строго перпендикулярно грани (как N, но без фиксации)
+    edgeDrag.nLock = !!edgeDrag.normal && (edgeDrag.nKey || e.shiftKey);
+    if(edgeDrag.nLock){
+      // по нормали: ближайшая к лучу мыши точка на прямой нормали через ребро
+      // (проекция на плоскость экрана глохла, когда нормаль смотрит на камеру)
+      const N = edgeDrag.normal, O = edgeDrag.grab0, r = raycaster.ray;
+      const w0 = new THREE.Vector3().subVectors(O, r.origin);
+      const b = N.dot(r.direction), dd = N.dot(w0), ee = r.direction.dot(w0);
+      const den = 1 - b*b;
+      const s = den > 1e-6 ? snapMM((b*ee - dd) / den) : snapMM(new THREE.Vector3().subVectors(hit, O).dot(N));
+      d = N.clone().multiplyScalar(s);
+      if(s !== 0) edgeDrag.mouseSign = Math.sign(s);
     } else if(axisLock){ // X/Y/Z — движение только вдоль выбранной оси (Blender)
       if(axisLock !== 'x') d.x = 0;
       if(axisLock !== 'y') d.y = 0;
       if(axisLock !== 'z') d.z = 0;
     } else if(e.shiftKey){
-      // Shift — прилипание к доминирующей оси (SketchUp: куда ведёшь, туда и ось)
+      // Shift без грани под ребром — прилипание к доминирующей оси (SketchUp)
       const ax = Math.abs(d.x) >= Math.abs(d.y) && Math.abs(d.x) >= Math.abs(d.z) ? 'x'
                : Math.abs(d.y) >= Math.abs(d.z) ? 'y' : 'z';
       if(ax !== 'x') d.x = 0;
