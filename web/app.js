@@ -9077,18 +9077,24 @@ function startTitleScene(){
     key(e, down){
       if(G.mode === 'off') return false;
       const k = e.key;
-      const left = k === 'ArrowLeft' || e.code === 'KeyA', right = k === 'ArrowRight' || e.code === 'KeyD';
+      const lk = (k || '').toLowerCase();
+      const left = k === 'ArrowLeft' || e.code === 'KeyA' || lk === 'a' || lk === 'ф',
+            right = k === 'ArrowRight' || e.code === 'KeyD' || lk === 'd' || lk === 'в';
       if(e.key === 'Control') G.ctrl = down && G.mode === 'play';
       if(!down){ if(left) G.keys.left = false; if(right) G.keys.right = false; return true; }
       if(k === 'Escape'){ setMode('off'); return true; }
-      if(G.mode === 'attract'){ if(k === ' ') setMode('play'); else setMode('off'); return true; }
-      if(G.mode === 'over'){ if(k === ' ') setMode('play'); return true; }
+      const space = k === ' ' || e.code === 'Space';
+      if(G.mode === 'attract'){ if(space) setMode('play'); else setMode('off'); return true; }
+      if(G.mode === 'over'){ if(space) setMode('play'); return true; }
       if(left) G.keys.left = true;
       if(right) G.keys.right = true;
       // по e.code — клавиши работают и в русской раскладке, как в редакторе
-      const form = {KeyL: 'L', KeyP: 'P', KeyC: 'C', KeyR: 'R', KeyE: 'E', Digit0: '0', Numpad0: '0'}[e.code];
+      // запасной разбор по e.key (code бывает пустым: экранные клавиатуры,
+      // автоматизация) — с русскими буквами на тех же клавишах
+      const form = {KeyL: 'L', KeyP: 'P', KeyC: 'C', KeyR: 'R', KeyE: 'E', Digit0: '0', Numpad0: '0'}[e.code]
+        || {l: 'L', 'д': 'L', p: 'P', 'з': 'P', c: 'C', 'с': 'C', r: 'R', 'к': 'R', e: 'E', 'у': 'E', '0': '0'}[(k || '').toLowerCase()];
       if(form) setForm(form);
-      if(k === ' '){ G.ctrl = e.ctrlKey; fire(); } // зажатый Space — очередь с перезарядкой формы
+      if(space){ G.ctrl = e.ctrlKey; fire(); } // зажатый Space — очередь с перезарядкой формы
       return true;
     },
     get mode(){ return G.mode; },
@@ -9132,6 +9138,11 @@ startScreen.querySelectorAll('.st-card').forEach(b =>
 document.getElementById('st_continue').addEventListener('click', closeStartScreen);
 document.getElementById('st_open').addEventListener('click', () => { closeStartScreen(); openProject(); });
 document.getElementById('st_import').addEventListener('click', () => { closeStartScreen(); f_stl.value = ''; f_stl.click(); });
+// обучение через игру — сразу, без 30 секунд ожидания демо
+document.getElementById('st_learn').addEventListener('click', e => {
+  e.currentTarget.blur(); // Space в игре — выстрел, а не повторное нажатие кнопки
+  if(startGL) startGL.setMode('play');
+});
 document.getElementById('f_new').addEventListener('click', openStartScreen);
 // пока открыт стартовый экран, клавиши не доходят до сцены. Esc — продолжить
 // (последняя сессия или то, что уже на сцене); Ctrl+O/S ловятся раньше
