@@ -1473,6 +1473,15 @@ document.getElementById('line_ok').addEventListener('click', () => {
   if(lineMode) setLineMode(false);
   closeLinePopup();
 });
+// Cancel — выйти мышью, как Esc: начатая (незаконченная) линия пропадает,
+// поставленные отрезки остаются; введённое в поля не применяется
+document.getElementById('line_cancel').addEventListener('click', () => {
+  releaseToolInput();
+  killRubber(); tipHide(); ghost.visible = false;
+  lineLast = null; // окно правки не держим
+  if(lineMode) setLineMode(false);
+  closeLinePopup();
+});
 
 // Десятичная точка в числовых полях при русской раскладке: клавиша, где
 // в латинице «.», даёт «ю» (запятая — «б»), а <input type=number> такие
