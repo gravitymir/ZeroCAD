@@ -1080,7 +1080,7 @@ const lnb = document.getElementById('lnb');
 function setLineMode(on){
   lineMode = on;
   lnb.hidden = !on;
-  lineStart = null; lastLinePt = null; lineLenStr = ''; lineDirLock = null; lineLenLock = null; lineAngLock = null; lineStartN = null;
+  lineStart = null; lastLinePt = null; lineLenStr = ''; lineDirLock = null; lineLenLock = null; lineAngLock = null; lineStartN = null; lineSnapHtml = '';
   killRubber();
   if(on){ hideChordHint(); setHover(null); tipHide(); if(activeTool) setActiveTool(null); openLinePopup(); }
   else {
@@ -1409,7 +1409,7 @@ function updateLineInfo(){
   const shown = lineAngLock != null ? Math.round(lineAngLock) : deg;
   const css = shown != null ? ANGLE_CSS[shown] || '' : ''; // 90 — красный, 60/45/30 — свои цвета
   line_ang.style.color = css; line_angl.style.color = css; line_angl.style.fontWeight = css ? '700' : '';
-  line_snap.innerHTML = lineStart && lineSnapHtml ? lineSnapHtml
+  line_snap.innerHTML = lineMode && lineSnapHtml ? lineSnapHtml
     : !lineStart && linePrev ? linePrev.note : '&nbsp;';
   const locks = [lineLenLock ? 'length' : '', lineAngLock != null ? 'angle' : ''].filter(Boolean).join(' and ');
   line_info.innerHTML = lineStart && locks
@@ -6179,7 +6179,7 @@ const vpanel = document.getElementById('vpanel'), vp_t = document.getElementById
 
 // «в центре» — салатовым: пойманную середину/центр видно с одного взгляда
 function kindLabel(kind){
-  return (kind === 'midpoint' || kind === 'center' || kind === 'origin' || kind === 'quadrant')
+  return (kind === 'midpoint' || kind === 'center' || kind === 'origin' || kind === 'quadrant' || kind === 'vertex')
     ? '<span style="color:#6aff3d;font-weight:700">' + kind + '</span>'
     : kind;
 }
@@ -9340,11 +9340,21 @@ canvas.addEventListener('pointermove', e=>{
         }
         if(lineLenStr) msg += '<br>typed: '+lineLenStr+' mm (Enter)';
         lineSnapHtml = note + (distHtml ? '<br>' + distHtml : '');
+      } else {
+        // начало линии: во что попал курсор (вершина, середина, центр,
+        // квадрант с осью) — второй строкой окна, как у конца
+        let s = note;
+        if(pt.kind === 'quadrant')
+          s += ' <span style="color:' + AXIS_CSS[pt.axis] + ';font-weight:700">'
+            + (pt.sign > 0 ? '+' : '−') + pt.axis.toUpperCase() + '</span>';
+        if(pt.chain && pt.s !== undefined)
+          s += '<br>◀ ' + pt.s.toFixed(1) + ' mm · ' + (pt.chain.total - pt.s).toFixed(1) + ' mm ▶';
+        lineSnapHtml = s;
       }
       // окно Line открыто — привязка, длина и угол там; тултип у курсора прятался бы под окном
       updateLineInfo();
       if(linePopup.hidden) tipAt(e, msg); else tipHide();
-    } else { ghost.visible=false; killRubber(); tipHide(); }
+    } else { ghost.visible=false; killRubber(); tipHide(); lineSnapHtml = ''; updateLineInfo(); }
     return;
   }
   if(textMode){ // 3D-текст: без жёлтых подсветок, но ориентиры и магниты — как у круга
