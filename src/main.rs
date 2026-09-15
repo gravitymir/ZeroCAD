@@ -6,9 +6,13 @@
 //!   GET /app.js              -> редактор: ядро, команды, интерфейс
 //!   GET /vendor/three.min.js -> three.js r128 (локально: расширениям CDN нельзя)
 //!   GET /api/wheel.stl?...   -> бинарный STL с параметрами из query
+//!   POST /mcp                -> MCP для AI-агента (agent.rs); команды исполняет
+//!                               открытая вкладка: GET /agent/events (SSE),
+//!                               POST /agent/hello, POST /agent/result
 //!
 //! Параметры query: dia, thk, shaft, n, depth, mouth (дефолты — в geometry.rs).
 
+mod agent;
 mod csg;
 mod geometry;
 mod stl;
@@ -21,6 +25,11 @@ const INDEX_HTML: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
 const THREE_JS: &str = include_str!("../web/vendor/three.min.js");
 const BUILD: &str = env!("ZEROCAD_BUILD");
+static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+fn port() -> u16 {
+    *PORT.get().unwrap_or(&9000)
+}
 
 fn main() {
     // порт из переменной окружения PORT (например, для параллельного
@@ -29,12 +38,14 @@ fn main() {
         .ok()
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(9000);
+    let _ = PORT.set(port);
     let addr = format!("127.0.0.1:{port}");
     let listener = TcpListener::bind(&addr).unwrap_or_else(|e| {
         eprintln!("не удалось занять {addr}: {e}");
         std::process::exit(1);
     });
     println!("ZeroCAD {BUILD}: http://{addr}");
+    println!("MCP for AI agents: http://{addr}/mcp (keep the editor tab open)");
     for stream in listener.incoming().flatten() {
         std::thread::spawn(|| handle(stream));
     }
@@ -49,9 +60,13 @@ fn handle(stream: TcpStream) {
     // дочитываем заголовки; у POST запоминаем длину тела
     let mut line = String::new();
     let mut content_length = 0usize;
+    let mut origin: Option<String> = None;
     while reader.read_line(&mut line).is_ok() && line.trim() != "" {
-        if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+        let lower = line.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length:") {
             content_length = v.trim().parse().unwrap_or(0);
+        } else if lower.starts_with("origin:") {
+            origin = Some(line["origin:".len()..].trim().to_string());
         }
         line.clear();
     }
@@ -71,7 +86,27 @@ fn handle(stream: TcpStream) {
         None => (target, ""),
     };
 
+    // мост к агенту: только со страниц этого компьютера (DNS rebinding)
+    if (path == "/mcp" || path.starts_with("/agent/")) && !agent::origin_ok(origin.as_deref()) {
+        respond(&mut stream, "403 Forbidden", "text/plain; charset=utf-8", &[], b"forbidden origin");
+        return;
+    }
     match path {
+        "/agent/events" => agent::open_events(stream),
+        "/agent/hello" | "/agent/result" => {
+            let ok = if path == "/agent/hello" { agent::hello(&body) } else { agent::result(&body) };
+            let status = if ok { "204 No Content" } else { "400 Bad Request" };
+            respond(&mut stream, status, "text/plain; charset=utf-8", &[], b"");
+        }
+        "/mcp" => {
+            if request_line.starts_with("POST ") {
+                let (status, json) = agent::mcp(&body);
+                respond(&mut stream, status, "application/json", &[], json.as_bytes());
+            } else {
+                // SSE-поток сервер→агент не нужен: все ответы — в теле POST
+                respond(&mut stream, "405 Method Not Allowed", "text/plain; charset=utf-8", &["Allow: POST".to_string()], b"");
+            }
+        }
         "/" | "/index.html" => {
             let page = INDEX_HTML.replace("__BUILD__", BUILD);
             respond(

@@ -10815,6 +10815,209 @@ window.addEventListener('keyup', e => {
   if(!startScreen.hidden && startGL && startGL.key(e, false)){ e.preventDefault(); e.stopImmediatePropagation(); }
 }, true);
 
+// ---------- Команды без мыши и связь с агентом (MCP) ----------
+// Каждая команда — те же функции, что зовут инструменты мыши (одно
+// приложение, не два): линия — commitLinePoint, выдавливание — окно
+// Extrude и commitExtrude. Реестр описывает параметры JSON-схемой: тот же
+// список сервер отдаёт агенту в MCP tools/list. Грани адресуются
+// геометрически — точкой на грани (и нормалью), а не индексами треугольников:
+// индексы меняются после каждого реза
+const zcV3 = (a, name) => {
+  if(!Array.isArray(a) || a.length !== 3 || a.some(x => !Number.isFinite(+x)))
+    throw new Error(name + ' must be [x, y, z] in mm');
+  return new THREE.Vector3(+a[0], +a[1], +a[2]);
+};
+const zcVec = {type: 'array', items: {type: 'number'}, minItems: 3, maxItems: 3};
+function zcSummary(){
+  const pos = mesh.geometry.attributes.position.array;
+  const box = new THREE.Box3();
+  for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+  const r3 = v => [+v.x.toFixed(3), +v.y.toFixed(3), +v.z.toFixed(3)];
+  return {
+    shape: (document.querySelector('input[name=shape]:checked') || {}).value,
+    triangles: pos.length / 9,
+    volume_mm3: +meshVolumeOf(pos).toFixed(3),
+    bbox_min: r3(box.min), bbox_max: r3(box.max),
+    open_edges: openEdgeCount(),   // 0 — тело замкнуто
+    lines: guides.length,
+    undo_steps: undoStack.length
+  };
+}
+// грань под точкой: треугольник, содержащий точку (до 0.05 мм); с нормалью —
+// ещё и смотрящий в её сторону (точка на ребре принадлежит двум граням)
+function zcFaceAt(P, normal){
+  const pos = mesh.geometry.attributes.position.array;
+  const tri = new THREE.Triangle(), q = new THREE.Vector3();
+  let best = -1, bestD = 0.05;
+  for(let t=0;t<pos.length/9;t++){
+    const o = t*9;
+    tri.set(new THREE.Vector3(pos[o],pos[o+1],pos[o+2]), new THREE.Vector3(pos[o+3],pos[o+4],pos[o+5]),
+            new THREE.Vector3(pos[o+6],pos[o+7],pos[o+8]));
+    if(tri.getArea() < 1e-6) continue;
+    tri.closestPointToPoint(P, q);
+    const d = q.distanceTo(P);
+    if(d > bestD) continue;
+    if(normal && triNormalAt(t).dot(normal) < 0.99) continue;
+    best = t; bestD = d;
+  }
+  return best;
+}
+const ZC_COMMANDS = {
+  get_state: {
+    description: 'Current model: triangle count, volume (mm³), bounding box, open edges (0 = closed solid), drawn lines, undo steps.',
+    params: {}, run: () => zcSummary()
+  },
+  new_shape: {
+    description: 'Start a new model from a preset shape. Size is the cube side or the gear/sphere diameter in mm. Replaces the current model.',
+    params: {shape: {type: 'string', enum: ['cube', 'gear', 'sphere', 'pyramid']}, size: {type: 'number', description: 'mm'}},
+    required: ['shape'],
+    async run(a){
+      const kind = a.shape === 'gear' ? 'wheel' : a.shape;
+      if(!['cube', 'wheel', 'sphere', 'pyramid'].includes(kind)) throw new Error('unknown shape ' + a.shape);
+      const radio = document.querySelector('input[name=shape][value="' + kind + '"]');
+      radio.checked = true; applyShapePreset(); applyShapeUI();
+      if(a.size != null){
+        const dia = document.getElementById('dia');
+        dia.value = Math.max(+dia.min, Math.min(+dia.max, +a.size));
+      }
+      closeStartScreen();
+      await rebuild();
+      return zcSummary();
+    }
+  },
+  draw_line: {
+    description: 'Draw a line segment. If both ends lie on one face, it splits the face into regions (like the SketchUp pencil); otherwise it is a construction line in the air.',
+    params: {from: zcVec, to: zcVec}, required: ['from', 'to'],
+    run(a){
+      const A = zcV3(a.from, 'from'), B = zcV3(a.to, 'to');
+      const onFace = segmentOnSomeFace(A, B);
+      const chain = lineChain;
+      lineChain = false; setLineMode(true); lineStartN = null;
+      try{ commitLinePoint(A); commitLinePoint(B); }
+      finally{ if(lineMode) setLineMode(false); closeLinePopup(); lineChain = chain; }
+      return Object.assign({cuts_face: onFace}, zcSummary());
+    }
+  },
+  draw_circle: {
+    description: 'Draw a circle (a polygon of segments) in the plane given by center and normal; on a face it splits out a round region.',
+    params: {center: zcVec, normal: zcVec, radius: {type: 'number', description: 'mm'},
+             segments: {type: 'integer', description: '3–360, default by size'}},
+    required: ['center', 'normal', 'radius'],
+    run(a){
+      const R = +a.radius;
+      if(!(R >= 0.3)) throw new Error('radius must be at least 0.3 mm');
+      const n = zcV3(a.normal, 'normal');
+      if(n.length() < 1e-9) throw new Error('normal must not be zero');
+      circleCenter = zcV3(a.center, 'center'); circlePlane = n.normalize(); circleR = R;
+      circ_seg.value = a.segments ? Math.max(3, Math.min(360, Math.round(+a.segments))) : autoCircSegs(R);
+      commitCircle();
+      return zcSummary();
+    }
+  },
+  extrude_face: {
+    description: 'Push/pull the face region under a point by a distance along its normal: positive adds material, negative cuts into the body (like E in the editor). The region is bounded by drawn lines and edges.',
+    params: {point: Object.assign({description: 'a point on the face, mm'}, zcVec),
+             normal: Object.assign({description: 'optional face normal to choose between faces meeting at the point'}, zcVec),
+             distance: {type: 'number', description: 'mm, + out of the face, − into the body'},
+             operation: {type: 'string', enum: ['auto', 'join', 'cut'], description: 'auto: into the body cuts, outward joins'}},
+    required: ['point', 'distance'],
+    run(a){
+      const d = +a.distance;
+      if(!Number.isFinite(d) || Math.abs(d) < 0.05) throw new Error('distance must be a number of mm');
+      const t = zcFaceAt(zcV3(a.point, 'point'), a.normal ? zcV3(a.normal, 'normal').normalize() : null);
+      if(t < 0) throw new Error('no face at this point');
+      const v0 = meshVolumeOf(mesh.geometry.attributes.position.array);
+      clearEdgeSel(); deselect();
+      ppParts = null; ppPatch = facePatchCached(t);
+      const area = ppPatch.area;
+      openExtrude();
+      ex_val.value = snapMM(d);
+      exOpManual = a.operation === 'join' || a.operation === 'cut' ? a.operation : null;
+      applyExtrudeLive(snapMM(d));
+      commitExtrude();
+      if(exLive){ closeExtrude(); throw new Error('nothing to ' + (exOp() === 'cut' ? 'cut' : 'add') + ' here'); }
+      releaseToolInput();
+      return Object.assign({face_area_mm2: +area.toFixed(3),
+        volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
+    }
+  },
+  undo: {
+    description: 'Undo the last step (the same history as Ctrl+Z).',
+    params: {}, run(){ if(!undoStack.length) throw new Error('nothing to undo'); undo(); return zcSummary(); }
+  },
+  screenshot: {
+    description: 'Picture of the 3D view as the user sees it (JPEG).',
+    params: {}, image: true,
+    run(){
+      // одно 3D на весь холст: кадр цикла мог оставить окно-четвертинку квадро-вида
+      const w = view.clientWidth, h = view.clientHeight;
+      if(renderer.domElement.width !== Math.round(w * renderer.getPixelRatio())) renderer.setSize(w, h);
+      persp.aspect = w / Math.max(1, h); persp.updateProjectionMatrix();
+      // поза камеры — как в кадре цикла (во фоновой вкладке цикл стоит)
+      { const cp = Math.cos(pitch), sp = Math.sin(pitch);
+        persp.position.set(camTarget.x + camDist*cp*Math.cos(yaw), camTarget.y + camDist*cp*Math.sin(yaw), camTarget.z + camDist*sp);
+        persp.lookAt(camTarget); }
+      renderViewport(persp, 0, 0, w, h, VIEW_GRIDS.persp);
+      const src = renderer.domElement, k = Math.min(1, 900 / src.width);
+      const c = document.createElement('canvas');
+      c.width = Math.round(src.width * k); c.height = Math.round(src.height * k);
+      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+      return {image: c.toDataURL('image/jpeg', 0.85).split(',')[1], mime: 'image/jpeg'};
+    }
+  }
+};
+// описание для MCP tools/list — из того же реестра
+function zcToolList(){
+  return Object.entries(ZC_COMMANDS).map(([name, c]) => ({
+    name, description: c.description,
+    inputSchema: {type: 'object', properties: c.params, required: c.required || []}
+  }));
+}
+// выполнить команду: один вызов — один шаг агента; метка «AI is drawing»
+async function zcRun(name, args){
+  const c = ZC_COMMANDS[name];
+  if(!c) throw new Error('unknown command ' + name);
+  zcAgentBadge(name);
+  return await c.run(args || {});
+}
+window.zc = {run: zcRun, tools: zcToolList}; // и для консоли разработчика
+let zcBadgeT = 0;
+function zcAgentBadge(name){
+  let b = document.getElementById('zcAgent');
+  if(!b){
+    b = document.createElement('div'); b.id = 'zcAgent';
+    b.style.cssText = 'position:absolute;left:50%;top:10px;transform:translateX(-50%);z-index:9;padding:6px 14px;'
+      + 'border-radius:8px;background:#1f2a1f;border:1px solid #2ecc40;color:#b8f5b8;font:600 15px system-ui;pointer-events:none';
+    view.appendChild(b);
+  }
+  b.textContent = 'AI is drawing · ' + name;
+  b.hidden = false;
+  clearTimeout(zcBadgeT); zcBadgeT = setTimeout(() => { b.hidden = true; }, 2500);
+}
+// Agent link: страницу отдал наш сервер — слушаем его команды (SSE), ответ —
+// POST. Без сервера (расширение, файл) модуль молчит, редактор тот же
+if(HAS_SERVER && window.EventSource){
+  const es = new EventSource('/agent/events');
+  es.addEventListener('open', () => {
+    fetch('/agent/hello', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({build: window.ZC_BUILD, tools: zcToolList()})}).catch(() => {});
+  });
+  es.addEventListener('command', async ev => {
+    let msg;
+    try{ msg = JSON.parse(ev.data); }catch(_){ return; }
+    let out;
+    try{
+      const c = ZC_COMMANDS[msg.tool];
+      const result = await zcRun(msg.tool, msg.args);
+      out = {id: msg.id, ok: true, image: !!(c && c.image), result};
+    }catch(err){
+      out = {id: msg.id, ok: false, error: String(err && err.message || err)};
+    }
+    fetch('/agent/result', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(out)})
+      .catch(() => {});
+  });
+}
+
 resize();
 (async ()=>{
   let restored = false;
