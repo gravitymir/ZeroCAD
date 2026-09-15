@@ -4013,6 +4013,20 @@ function eraseGuideSegment(A, B){
   }
   return false;
 }
+// лежит ли на отрезке A–B (хотя бы частью) нарисованная линия
+function guideAlong(A, B){
+  for(const g of guides){
+    const d = new THREE.Vector3().subVectors(g.b, g.a), L = d.length();
+    if(L < 1e-6) continue;
+    const u = d.multiplyScalar(1 / L);
+    const vA = new THREE.Vector3().subVectors(A, g.a), vB = new THREE.Vector3().subVectors(B, g.a);
+    const tA = vA.dot(u), tB = vB.dot(u);
+    if(vA.addScaledVector(u, -tA).length() > 0.02 || vB.addScaledVector(u, -tB).length() > 0.02) continue;
+    if(Math.max(tA, tB) < 0.05 || Math.min(tA, tB) > L - 0.05) continue;
+    return true;
+  }
+  return false;
+}
 function deleteSelEdges(){
   if(!edgeSel.length) return;
   const warn = msg => warnTip(msg);
@@ -4023,8 +4037,16 @@ function deleteSelEdges(){
       const A = s.pts[i], B = s.pts[i+1];
       if(s.isGuide){ jobs.push({guide:true, A, B}); continue; }
       const ang = edgeDihedral(A, B);
-      if(ang === null){ warn('Border of a hole — nothing to merge'); return; }
+      // по ребру, которое стереть нельзя (край дыры, излом формы), может
+      // идти нарисованная линия — выбор цепляет ребро, и линия оставалась
+      // навсегда. Стираем линию (разметку), ребро сетки не трогаем
+      const hasGuide = guideAlong(A, B);
+      if(ang === null){
+        if(hasGuide){ jobs.push({guide:true, A, B}); continue; }
+        warn('Border of a hole — nothing to merge'); return;
+      }
       if(ang > DISSOLVE_DEG){
+        if(hasGuide){ jobs.push({guide:true, A, B}); continue; }
         warn('Edge holds the shape (∠ ' + ang.toFixed(1) + '°) — can’t erase');
         return;
       }
