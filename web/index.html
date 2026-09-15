@@ -885,6 +885,7 @@ const QP = 1000;                              // квантование коор
 let chains = [];     // {pts:[Vector3], cum:[мм], total, closed}
 let auxSnaps = [];   // центры дуг/окружностей (Snap Center, как во FreeCAD)
 let quadSnaps = [];  // квадранты окружностей {pos, axis, sign} (Quadrant в AutoCAD)
+let ringVertKeys = new Set(); // вершины многоугольников окружностей (без маркеров)
 let vertTris = new Map(); // ключ вершины -> [индексы треугольников] (для граней)
 let edgeLines = null;   // все рёбра (тонкие тёмные)
 let hiLine = null;      // подсвеченная цепочка
@@ -7082,7 +7083,12 @@ function computeQuadSnaps(){
     if(ch.closed) walked.add(ch);
     if(r && !same(r)) rings.push(r);
   }
+  ringVertKeys = new Set();
   for(const r of rings){
+    for(const [x, y] of r.p2){
+      const P = r.ctr.clone().addScaledVector(r.u, x).addScaledVector(r.v, y);
+      ringVertKeys.add(keyOf(P.x, P.y, P.z));
+    }
     for(const ax of ['x', 'y', 'z']){
       const dir = new THREE.Vector3(...AXIS_DIRS[ax]);
       if(Math.abs(dir.dot(r.n)) > 1e-3) continue; // ось не лежит в плоскости круга
@@ -7094,20 +7100,35 @@ function computeQuadSnaps(){
     }
   }
 }
-// маркеры квадрантов в цветах осей — видны, пока в руке инструмент Point
-let quadMarkers = [], quadMarkersFor = null;
-function syncQuadMarkers(on){
-  if(!on || quadMarkersFor !== quadSnaps){
-    for(const m of quadMarkers){ scene.remove(m); m.material.dispose(); }
-    quadMarkers = []; quadMarkersFor = null;
-  }
-  if(!on || quadMarkersFor === quadSnaps) return;
-  quadMarkersFor = quadSnaps;
-  for(const q of quadSnaps){
-    const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color: AXIS_CSS[q.axis]})));
-    m.position.copy(q.pos); m.renderOrder = 3;
-    scene.add(m); quadMarkers.push(m);
-  }
+// Маркеры точек привязки, пока в руке инструмент, ставящий точку (SketchUp
+// показывает точки вывода, FreeCAD — снап-маркеры): вершины модели и концы
+// линий — светлые, центры окружностей — бирюзовые, квадранты — в цветах
+// осей. Магнит к ним — в linePickPoint, маркеры только делают его видимым.
+// Вершины самих окружностей не рисуем (по 32 точки на круг — каша, у круга
+// ориентиры — центр и квадранты), но магнит к ним остаётся. Моделей с
+// тысячами вершин (гравировка текста) вершины тоже не засыпают
+const SNAP_MARK_MAX_VERTS = 600;
+let snapMarkers = [], snapMarkersFor = null;
+function syncSnapMarkers(on){
+  const stamp = on ? [quadSnaps, corners, auxSnaps] : null;
+  const same = snapMarkersFor && stamp && stamp.every((x, i) => x === snapMarkersFor[i]);
+  if(same) return;
+  for(const m of snapMarkers){ scene.remove(m); m.material.dispose(); }
+  snapMarkers = []; snapMarkersFor = stamp;
+  if(!on) return;
+  const seen = new Set();
+  const add = (P, color) => {
+    const k = keyOf(P.x, P.y, P.z);
+    if(seen.has(k)) return;
+    seen.add(k);
+    const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color})));
+    m.position.copy(P); m.renderOrder = 3;
+    scene.add(m); snapMarkers.push(m);
+  };
+  for(const q of quadSnaps) add(q.pos, AXIS_CSS[q.axis]); // квадрант важнее вершины на том же месте
+  for(const c of auxSnaps) add(c, 0x3fd9c9);
+  const verts = corners.filter(c => !ringVertKeys.has(c.key));
+  if(verts.length <= SNAP_MARK_MAX_VERTS) for(const c of verts) add(c.pos, 0xe8ecf2);
 }
 
 // ---- деление окружности (Divide в SketchUp, Circular Pattern в Fusion) ----
@@ -8668,9 +8689,10 @@ function loop(t){
   originMarker.visible = !!(pointMode || lineMode || circleMode || activeTool === rectTool || (textMode && !txtLive));
   dot(originMarker, 0.004);
   for(const m of planeTargets) dot(m, 0.0035);
-  // квадранты окружностей — у всех инструментов, ставящих точки с привязкой
-  syncQuadMarkers((pointMode || lineMode || activeTool === rectTool || activeTool === tapeTool) && !divCtx);
-  for(const m of quadMarkers) dot(m, 0.004);
+  // точки привязки (вершины, центры, квадранты) — у всех инструментов,
+  // ставящих точки с магнитом
+  syncSnapMarkers((pointMode || lineMode || activeTool === rectTool || activeTool === tapeTool) && !divCtx);
+  for(const m of snapMarkers) dot(m, 0.004);
   if(activeTool && activeTool.dots) for(const m of activeTool.dots) dot(m);
   if(txAnchor) dot(txAnchor, 0.0035);       // якорь текста (красный центр)
   if(txCenterDot) dot(txCenterDot, 0.0035); // центр грани (салатовый)
