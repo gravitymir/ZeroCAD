@@ -150,6 +150,14 @@
   /* окно окружности (G,C): число сегментов, перетаскивается за ⠿ */
   #circPopup,#rectPopup,#arrPopup,#bevPopup,#rotPopup{padding:14px 16px}
   #arrPopup .prow,#bevPopup .prow,#rotPopup .prow{font-size:19px;gap:10px}
+  /* круговой массив вокруг найденной оси цилиндра: узко, варианты сеткой по 4 */
+  #arrPopup{width:300px;box-sizing:border-box}
+  #arrPopup .dvlines{display:block;line-height:1.35}
+  #arrPopup #arr_sugg{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0}
+  #arrPopup .dvs{padding:6px 0;font-size:19px;width:100%;background:var(--panel2);color:var(--accent2);
+    border:1px solid var(--line);border-radius:6px;cursor:pointer}
+  #arrPopup .dvs:hover{border-color:var(--accent2)}
+  #arrPopup .dvs.sel{background:var(--accent2);color:#10131a;border-color:var(--accent2)}
   #arrPopup input,#bevPopup input,#rotPopup input{font-size:22px;padding:6px 10px;width:110px}
   #bevPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
@@ -302,9 +310,13 @@
     <div id="arrPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
       <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Polar array</b></div>
-      <div class="prow">Count <input id="arr_n" type="number" step="1" min="2" max="360" value="6"></div>
+      <div class="prow dvlines" id="arr_cyl" style="display:none;color:var(--text);font-weight:600"></div>
+      <div class="prow">Count <input id="arr_n" type="number" step="1" min="2" max="360" value="6"><span id="arr_auto" style="color:#6aff3d;display:none">auto</span></div>
       <div class="prow">Angle <input id="arr_a" type="number" step="1" min="1" max="360" value="360"> °</div>
+      <div class="prow" id="arr_stat" style="display:none;font-weight:600"></div>
+      <div id="arr_sugg" style="display:none"></div>
       <div class="prow" id="arr_status" style="font-size:13px">click the array center</div>
+      <div id="arr_hint" style="display:none;font-size:13px;color:var(--muted);margin:4px 0">The lines lie on a cylinder wall, so its axis is taken as the center. The buttons are counts that divide the cylinder's segments evenly — every copy stays on the wall. Any other step puts copies off the flat wall faces. Click elsewhere to pick another center.</div>
       <div class="prow" style="gap:10px;margin-top:8px"><button id="arr_ok">OK</button><button id="arr_cancel">Cancel</button></div>
     </div>
     <div id="rectPopup" hidden>
@@ -890,6 +902,7 @@ let chains = [];     // {pts:[Vector3], cum:[мм], total, closed}
 let auxSnaps = [];   // центры дуг/окружностей (Snap Center, как во FreeCAD)
 let quadSnaps = [];  // квадранты окружностей {pos, axis, sign} (Quadrant в AutoCAD)
 let ringVertKeys = new Set(); // вершины многоугольников окружностей (без маркеров)
+let snapRings = [];  // все окружности модели (нарисованные и рёбра тела)
 let vertTris = new Map(); // ключ вершины -> [индексы треугольников] (для граней)
 let edgeLines = null;   // все рёбра (тонкие тёмные)
 let hiLine = null;      // подсвеченная цепочка
@@ -2736,19 +2749,71 @@ const bevelTool = {
   }
 };
 
+// Выбранные линии лежат на стенке цилиндра? Каждая точка — на расстоянии
+// от оси между прогибом хорды и радиусом, и хоть одна вне плоскости круга
+// (иначе это линия на самом круге, её ось не очевидна). Из колец одной оси
+// берём самое густое. Как Circular Pattern во Fusion, который сам берёт ось
+// выбранной цилиндрической грани
+function cylinderFor(items){
+  const pts = [];
+  for(const sg of items.segs) pts.push(sg.A, sg.B);
+  for(const P of items.pts) pts.push(P);
+  if(!pts.length) return null;
+  let best = null;
+  for(const r of snapRings){
+    const sag = r.R * (1 - Math.cos(Math.PI / Math.max(3, r.segs))) + 0.01;
+    let ok = true, off = false;
+    for(const P of pts){
+      const w = new THREE.Vector3().subVectors(P, r.ctr), h = w.dot(r.n);
+      const d = w.addScaledVector(r.n, -h).length();
+      if(d > r.R + 0.01 || d < r.R - sag){ ok = false; break; }
+      if(Math.abs(h) > 0.01) off = true;
+    }
+    if(ok && off && (!best || r.segs > best.segs)) best = r;
+  }
+  return best;
+}
 // G,A — Круговой массив (PolarPattern во FreeCAD): выбранные линии/точка
 // размножаются вокруг центра. Угол 360 — копии ровно по кругу, меньше —
 // веером от исходника до крайней копии включительно
 const arrTool = {
   hud: 'POLAR ARRAY · click the center · count and angle in the window · Enter — OK · Esc',
-  items: null, center: null, n: null, ghosts: [],
+  items: null, center: null, n: null, ghosts: [], cyl: null, auto: false,
   on(){
     this.center = null;
     const vr = view.getBoundingClientRect();
     arrPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 340) + 'px';
-    arrPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 300) + 'px';
+    arrPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 420) + 'px';
     arr_status.textContent = 'click the array center';
     arrPopup.hidden = false;
+    // линии на стенке цилиндра: ось найдена сама, число копий — «ровное»
+    this.cyl = cylinderFor(this.items);
+    this.auto = !!this.cyl;
+    if(this.cyl){
+      this.center = this.cyl.ctr.clone(); this.n = this.cyl.n.clone();
+      arr_n.value = ringAutoCount(this.cyl.segs); arr_a.value = 360;
+      arr_status.textContent = 'cylinder axis · click to pick another center · Enter — OK';
+    }
+    this.preview();
+  },
+  // строки режима цилиндра: радиус и сегменты, статус шага, кнопки делителей
+  ui(){
+    const c = this.cyl;
+    for(const el of [arr_cyl, arr_sugg]) el.style.display = c ? '' : 'none';
+    arr_hint.style.display = c && hintsChk.checked ? '' : 'none';
+    arr_auto.style.display = c && this.auto ? '' : 'none';
+    if(!c){ arr_stat.style.display = 'none'; return; }
+    arr_cyl.innerHTML = '<div>Cylinder R ' + c.R.toFixed(1) + ' mm</div><div>' + c.segs + ' segments</div>';
+    const cnt = Math.max(2, Math.min(360, Math.round(+arr_n.value || 6)));
+    const total = Math.max(1, Math.min(360, +arr_a.value || 360));
+    const step = Math.abs(total - 360) < 1e-6 ? 360 / cnt : total / (cnt - 1);
+    const k = step / (360 / c.segs);
+    const onWall = Math.abs(k - Math.round(k)) < 1e-6;
+    arr_stat.style.display = '';
+    arr_stat.style.color = onWall ? '#6aff3d' : '#ffcc00';
+    arr_stat.textContent = onWall ? 'on the wall' : '⚠ off the wall faces';
+    arr_sugg.innerHTML = ringCounts(c.segs)
+      .map(v => '<button class="dvs' + (v === cnt && Math.abs(total - 360) < 1e-6 ? ' sel' : '') + '" data-n="' + v + '">' + v + '</button>').join('');
   },
   off(){ killObjs(this.ghosts); arrPopup.hidden = true; releaseToolInput(); ghost.visible = false; tipHide(); },
   angles(){
@@ -2762,12 +2827,14 @@ const arrTool = {
   preview(){
     killObjs(this.ghosts);
     if(this.center) this.ghosts = rotGhosts(this.items, this.center, this.n, this.angles());
+    this.ui();
   },
   down(e, q){
     if(e.button !== 0 || !q.inside) return;
     const pk = pickToolCenter(q, this.items);
     if(!pk) return;
     this.center = pk.pos; this.n = pk.n;
+    this.cyl = null; // центр выбран руками — ось цилиндра больше не действует
     arr_status.textContent = 'center set · click to move it · Enter — OK';
     this.preview();
   },
@@ -3498,7 +3565,7 @@ for(const inp of [bev_d, bev_s]){
 bev_ok.addEventListener('click', ()=>{ if(activeTool === bevelTool) bevelTool.commit(); });
 bev_cancel.addEventListener('click', ()=>setActiveTool(null));
 for(const inp of [arr_n, arr_a]){
-  inp.addEventListener('input', ()=>{ if(activeTool === arrTool) arrTool.preview(); });
+  inp.addEventListener('input', ()=>{ if(activeTool === arrTool){ arrTool.auto = false; arrTool.preview(); } });
   inp.addEventListener('keydown', e=>{
     if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === arrTool) arrTool.commit(); }
     if(e.key === 'Escape'){ e.preventDefault(); setActiveTool(null); }
@@ -3506,6 +3573,12 @@ for(const inp of [arr_n, arr_a]){
   });
 }
 arr_ok.addEventListener('click', ()=>{ if(activeTool === arrTool) arrTool.commit(); });
+arr_sugg.addEventListener('click', ev=>{
+  const v = ev.target.dataset && ev.target.dataset.n;
+  if(!v || activeTool !== arrTool) return;
+  arr_n.value = v; arr_a.value = 360; arrTool.auto = false;
+  releaseToolInput(); arrTool.preview();
+});
 arr_cancel.addEventListener('click', ()=>setActiveTool(null));
 // густота круга меняется вживую: предпросмотр перерисовывается сразу
 circ_seg.addEventListener('input', ()=>{
@@ -7088,6 +7161,7 @@ function computeQuadSnaps(){
     if(r && !same(r)) rings.push(r);
   }
   ringVertKeys = new Set();
+  snapRings = rings;
   for(const r of rings){
     for(const [x, y] of r.p2){
       const P = r.ctr.clone().addScaledVector(r.u, x).addScaledVector(r.v, y);
