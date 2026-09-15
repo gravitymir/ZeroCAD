@@ -8587,62 +8587,281 @@ function updateVcArrows(){
 }
 
 // ---------- стартовый экран (Welcome в SketchUp, заставка Blender) ----------
-// Название — объёмные буквы нашим же пиксельным шрифтом и тем же
-// построителем, что у инструмента 3D Text (buildTextSolid): крышки белые,
-// стенки оранжевые, контур букв тёмный, как рёбра модели. Карточки —
-// заготовки; «Continue» — последняя сессия из автосохранения
+// Вся страница — одна 3D-сцена: название ZEROCAD объёмными буквами нашим
+// пиксельным шрифтом и тем же построителем, что у 3D Text (buildTextSolid),
+// ставится над карточками и вписывается в окно с запасом на покачивание.
+// Если долго ничего не трогать — пасхалка CAD INVADERS (attract mode, как
+// у аркадных автоматов): захватчики маршируют, Space — играть, Esc — назад
 const startScreen = document.getElementById('startScreen');
 let startGL = null;
-function startTitleScene(){
-  const cv = document.getElementById('startCanvas');
-  const renderer = new THREE.WebGLRenderer({canvas: cv, antialias: true, alpha: true});
-  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
-  const scn = new THREE.Scene();
-  const cam = new THREE.PerspectiveCamera(30, 3, 1, 1000);
-  const cells = textCellsOf('ZEROCAD');
+const INVADER_IDLE_MS = 30000;
+// спрайты — строки клеток, как FONT57: '1' — закрашено, верхняя строка сверху
+const INV_SPRITES = {
+  squid: [['00011000','00111100','01111110','11011011','11111111','00100100','01011010','10100101'],
+          ['00011000','00111100','01111110','11011011','11111111','01011010','10000001','01000010']],
+  crab:  [['00100000100','00010001000','00111111100','01101110110','11111111111','10111111101','10100000101','00011011000'],
+          ['00100000100','10010001001','10111111101','11101110111','11111111111','01111111110','00100000100','01000000010']],
+  octo:  [['000011110000','011111111110','111111111111','111001100111','111111111111','000110011000','001101101100','110000000011'],
+          ['000011110000','011111111110','111111111111','111001100111','111111111111','001110011100','011001100110','001100001100']],
+  ship:  [['0000001000000','0000011100000','0000011100000','0111111111110','1111111111111','1111111111111','1111111111111','1111111111111']]
+};
+function spriteCells(rows){
+  const cells = new Set(), hgt = rows.length;
+  rows.forEach((row, r) => { for(let c=0;c<row.length;c++) if(row[c] === '1') cells.add(c + ',' + (hgt - 1 - r)); });
+  return {cells, w: rows[0].length, h: hgt};
+}
+// объёмный пиксельный меш по клеткам (центр в нуле): крышки светлые,
+// стенки цветные — как название
+function pixelGeometry(cells, w, hgt, depth, topHex, sideHex){
   const tris = buildTextSolid(new THREE.Vector3(), new THREE.Vector3(1,0,0), new THREE.Vector3(0,1,0),
-    new THREE.Vector3(0,0,1), cells, 1, 1.6, 0);
-  const pos = [], col = [];
-  const top = new THREE.Color(0xf2f4f7), side = new THREE.Color(0xff8a3d);
-  const W = 41, Hc = 7; // ширина строки в клетках: 7 букв × 6 − 1
+    new THREE.Vector3(0,0,1), cells, 1, depth, 0);
+  const pos = [], col = [], top = new THREE.Color(topHex), side = new THREE.Color(sideHex);
+  const A = new THREE.Vector3(), B = new THREE.Vector3();
   for(const t of tris){
-    const nrm = new THREE.Vector3().subVectors(t[1], t[0]).cross(new THREE.Vector3().subVectors(t[2], t[0])).normalize();
-    const c = Math.abs(nrm.z) > 0.9 ? top : side;
-    for(const q of t){ pos.push(q.x - W/2, q.y - Hc/2, q.z - 0.8); col.push(c.r, c.g, c.b); }
+    const nz = A.subVectors(t[1], t[0]).cross(B.subVectors(t[2], t[0])).normalize().z;
+    const c = Math.abs(nz) > 0.9 ? top : side;
+    for(const q of t){ pos.push(q.x - w/2, q.y - hgt/2, q.z - depth/2); col.push(c.r, c.g, c.b); }
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   geo.computeVertexNormals();
-  const group = new THREE.Group();
-  group.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({vertexColors: true, flatShading: true})));
-  group.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30),
-    new THREE.LineBasicMaterial({color: 0x23262c})));
-  scn.add(group);
+  return geo;
+}
+function startTitleScene(){
+  const cv = document.getElementById('startCanvas');
+  const renderer = new THREE.WebGLRenderer({canvas: cv, antialias: true, alpha: true});
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  const scn = new THREE.Scene();
+  const cam = new THREE.PerspectiveCamera(30, 1, 1, 2000);
   scn.add(new THREE.AmbientLight(0xffffff, 0.62));
   const sun = new THREE.DirectionalLight(0xffffff, 0.55);
   sun.position.set(-0.6, 0.9, 1.2); scn.add(sun);
-  cam.position.set(0, -6, 62); cam.lookAt(0, 0, 0);
-  const t0 = performance.now();
-  let raf = 0;
-  const frame = () => {
-    const w = cv.clientWidth, hh = cv.clientHeight;
-    if(cv.width !== Math.round(w * renderer.getPixelRatio()) || cv.height !== Math.round(hh * renderer.getPixelRatio())){
-      renderer.setSize(w, hh, false);
-      cam.aspect = w / Math.max(1, hh); cam.updateProjectionMatrix();
-      // строка целиком в кадре при любой ширине окна
-      const fitW = (W + 4) / 2 / Math.tan(cam.fov * Math.PI / 360) / cam.aspect;
-      cam.position.z = Math.max(fitW, 30); cam.lookAt(0, 0, 0);
-    }
-    const s = (performance.now() - t0) / 1000;
-    group.rotation.y = Math.sin(s * 0.6) * 0.32;   // лёгкое покачивание, видны стенки букв
-    group.rotation.x = -0.28 + Math.sin(s * 0.45) * 0.08;
-    renderer.render(scn, cam);
-    raf = requestAnimationFrame(frame);
+  const lambert = new THREE.MeshLambertMaterial({vertexColors: true, flatShading: true});
+  const edgeMat = new THREE.LineBasicMaterial({color: 0x23262c});
+  const textGroup = (str, depth, sideHex) => {
+    const cells = textCellsOf(str), w = [...str].length * 6 - 1;
+    const geo = pixelGeometry(cells, w, 7, depth, 0xf2f4f7, sideHex);
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(geo, lambert));
+    g.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), edgeMat));
+    g.userData.w = w;
+    return g;
   };
+  const title = textGroup('ZEROCAD', 1.6, 0xff8a3d);
+  scn.add(title);
+
+  // ---- CAD INVADERS ----
+  const FW = 96, FH = 64;                       // полуширина и полувысота поля, клетки
+  const field = new THREE.Group(); field.visible = false; scn.add(field);
+  const gameTitle = textGroup('CAD INVADERS', 1.4, 0x4da3ff);
+  gameTitle.scale.setScalar(1.3); gameTitle.position.set(0, -24, 2);
+  field.add(gameTitle);
+  const kinds = {
+    squid: {side: 0x4da3ff, pts: 30}, crab: {side: 0x6aff3d, pts: 20}, octo: {side: 0xff8a3d, pts: 10}
+  };
+  for(const k in kinds){
+    kinds[k].geos = INV_SPRITES[k].map(rows => { const s = spriteCells(rows); return pixelGeometry(s.cells, s.w, s.h, 2, 0xf2f4f7, kinds[k].side); });
+    kinds[k].w = INV_SPRITES[k][0][0].length;
+  }
+  const shipS = spriteCells(INV_SPRITES.ship[0]);
+  const ship = new THREE.Mesh(pixelGeometry(shipS.cells, shipS.w, shipS.h, 2, 0xf2f4f7, 0x6aff3d), lambert);
+  field.add(ship);
+  const shotGeo = new THREE.BoxGeometry(1, 4, 1);
+  const shot = new THREE.Mesh(shotGeo, new THREE.MeshLambertMaterial({color: 0xff8a3d}));
+  shot.visible = false; field.add(shot);
+  const bombs = [0, 1, 2].map(() => {
+    const m = new THREE.Mesh(shotGeo, new THREE.MeshLambertMaterial({color: 0xf2f4f7}));
+    m.visible = false; field.add(m); return m;
+  });
+  const HI_KEY = 'zc_invaders_hi';
+  let hi = 0; try{ hi = +localStorage.getItem(HI_KEY) || 0; }catch(_){}
+  const hud = document.getElementById('stHud'), hudScore = document.getElementById('stScore'), hudMsg = document.getElementById('stMsg');
+  const G = {mode: 'off', invaders: [], dir: 1, stepT: 0, frame: 0, score: 0, lives: 3, wave: 0,
+             keys: {left: false, right: false}, shipX: 0, hitT: 0, lastAct: performance.now(), demoT: 0};
+  function newWave(){
+    for(const inv of G.invaders) field.remove(inv.mesh);
+    G.invaders = [];
+    const rows = ['squid', 'crab', 'crab', 'octo', 'octo'];
+    const drop = Math.min(G.wave, 4) * 4;
+    rows.forEach((k, r) => {
+      for(let c=0;c<11;c++){
+        const mesh = new THREE.Mesh(kinds[k].geos[0], lambert);
+        const inv = {k, x: -80 + c * 16, y: 48 - r * 13 - drop, alive: true, mesh};
+        mesh.position.set(inv.x, inv.y, 0);
+        field.add(mesh); G.invaders.push(inv);
+      }
+    });
+    G.dir = 1; G.stepT = 0; G.frame = 0;
+    shot.visible = false; for(const bm of bombs) bm.visible = false;
+  }
+  function resetGame(){ G.score = 0; G.lives = 3; G.wave = 0; G.shipX = 0; G.hitT = 0; newWave(); }
+  function saveHi(){ if(G.score > hi){ hi = G.score; try{ localStorage.setItem(HI_KEY, String(hi)); }catch(_){} } }
+  function paintHud(){
+    const pad = n => String(n).padStart(4, '0');
+    hudScore.textContent = G.mode === 'attract' ? 'HI ' + pad(hi)
+      : 'SCORE ' + pad(G.score) + '    LIVES ' + '♥'.repeat(Math.max(0, G.lives)) + '    HI ' + pad(Math.max(hi, G.score));
+    hudMsg.innerHTML = G.mode === 'attract' ? '<b>Space</b> — play · <b>Esc</b> — back to ZeroCAD'
+      : G.mode === 'over' ? 'Game over · <b>Space</b> — again · <b>Esc</b> — back'
+      : '<b>← →</b> move · <b>Space</b> fire · <b>Esc</b> — back';
+  }
+  function setMode(m){
+    G.mode = m;
+    const inGame = m !== 'off';
+    startScreen.classList.toggle('game', inGame);
+    hud.hidden = !inGame;
+    field.visible = inGame; title.visible = !inGame;
+    gameTitle.visible = m === 'attract' || m === 'over';
+    ship.visible = m !== 'attract';
+    if(m === 'attract') resetGame();
+    if(m === 'play'){ resetGame(); gameTitle.visible = false; }
+    if(m === 'off'){ G.lastAct = performance.now(); G.keys.left = G.keys.right = false; }
+    downAt = null;
+    paintHud();
+  }
+  function fire(){
+    if(shot.visible) return; // одна пуля за раз, как в оригинале
+    shot.position.set(G.shipX, -FH + 10, 0); shot.visible = true;
+  }
+  function update(dt){
+    const alive = G.invaders.filter(i => i.alive);
+    const playing = G.mode === 'play';
+    // марш: чем меньше захватчиков, тем чаще шаг
+    G.stepT -= dt;
+    if(G.stepT <= 0 && alive.length){
+      G.stepT = 0.06 + 0.7 * alive.length / 55;
+      G.frame ^= 1;
+      const edge = alive.some(i => Math.abs(i.x + G.dir * 2) > FW - 8);
+      for(const i of alive){
+        if(edge) i.y -= 4; else i.x += G.dir * 2;
+        i.mesh.geometry = kinds[i.k].geos[G.frame];
+        i.mesh.position.set(i.x, i.y, 0);
+      }
+      if(edge) G.dir = -G.dir;
+      // бомба от нижнего захватчика случайной колонки
+      const free = bombs.find(bm => !bm.visible);
+      if(playing && free && Math.random() < 0.55){
+        const cols = new Map();
+        for(const i of alive) if(!cols.has(i.x) || cols.get(i.x).y > i.y) cols.set(i.x, i);
+        const shooters = [...cols.values()];
+        const s = shooters[Math.floor(Math.random() * shooters.length)];
+        free.position.set(s.x, s.y - 5, 0); free.visible = true;
+      }
+      if(playing && alive.some(i => i.y - 4 <= -FH + 12)){ G.lives = 0; saveHi(); setMode('over'); return; }
+    }
+    if(!playing && alive.some(i => i.y < -8)) newWave(); // демо и «game over» идут по кругу
+    // корабль
+    if(playing){
+      G.shipX += ((G.keys.right ? 1 : 0) - (G.keys.left ? 1 : 0)) * 75 * dt;
+    }
+    G.shipX = Math.max(-FW + 8, Math.min(FW - 8, G.shipX));
+    ship.position.set(G.shipX, -FH + 5, 0);
+    if(G.hitT > 0){ G.hitT -= dt; ship.visible = Math.floor(G.hitT * 10) % 2 === 0; if(G.hitT <= 0) ship.visible = G.mode !== 'attract'; }
+    // пуля
+    if(shot.visible){
+      shot.position.y += 120 * dt;
+      if(shot.position.y > FH) shot.visible = false;
+      for(const i of alive){
+        const w = kinds[i.k].w;
+        if(Math.abs(shot.position.x - i.x) <= w / 2 && Math.abs(shot.position.y - i.y) <= 5){
+          i.alive = false; field.remove(i.mesh); shot.visible = false;
+          G.score += kinds[i.k].pts; paintHud();
+          break;
+        }
+      }
+    }
+    // бомбы
+    for(const bm of bombs){
+      if(!bm.visible) continue;
+      bm.position.y -= 45 * dt;
+      if(bm.position.y < -FH - 4){ bm.visible = false; continue; }
+      if(playing && G.hitT <= 0 && Math.abs(bm.position.x - G.shipX) <= 6.5 && Math.abs(bm.position.y - (-FH + 5)) <= 4){
+        bm.visible = false; G.lives--; G.hitT = 1.2; paintHud();
+        if(G.lives <= 0){ saveHi(); setMode('over'); return; }
+      }
+    }
+    if(playing && !G.invaders.some(i => i.alive)){ G.wave++; newWave(); }
+  }
+  // вписать название над карточками и поле игры в окно
+  function layout(){
+    const w = cv.clientWidth, hh = Math.max(1, cv.clientHeight);
+    renderer.setSize(w, hh, false);
+    cam.aspect = w / hh; cam.updateProjectionMatrix();
+  }
+  const tanH = Math.tan(cam.fov * Math.PI / 360);
+  const t0 = performance.now();
+  let last = t0, raf = 0, sizeKey = '';
+  const draw = now => {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    const key = cv.clientWidth + 'x' + cv.clientHeight;
+    if(key !== sizeKey){ sizeKey = key; layout(); }
+    const s = (now - t0) / 1000;
+    let camZ;
+    if(G.mode === 'off'){
+      // над карточками: центр — середина пустого блока #stTitleSpace, запас
+      // ширины на покачивание (ближний край буквы растёт в перспективе)
+      const box = document.getElementById('stTitleSpace').getBoundingClientRect();
+      const vr = cv.getBoundingClientRect();
+      const fracH = Math.max(0.15, box.height / Math.max(1, vr.height));
+      const ndcY = 1 - 2 * ((box.top + box.height / 2) - vr.top) / Math.max(1, vr.height);
+      const zW = (title.userData.w / 2 + 2) / (tanH * cam.aspect * 0.76);
+      const zH = (7 / 2 + 2) / (tanH * fracH * 0.8);
+      camZ = Math.max(zW, zH, 20);
+      title.position.set(0, ndcY * camZ * tanH, 0);
+      title.rotation.y = Math.sin(s * 0.6) * 0.32;
+      title.rotation.x = -0.28 + Math.sin(s * 0.45) * 0.08;
+      if(now - G.lastAct > INVADER_IDLE_MS) setMode('attract');
+    } else {
+      camZ = Math.max((FW + 8) / (tanH * cam.aspect), (FH + 10) / tanH);
+      field.rotation.x = -0.18; field.position.y = 0;
+      if(G.mode === 'attract'){
+        // демо: корабль гуляет сам
+        G.shipX = Math.sin(s * 0.9) * 50;
+        gameTitle.rotation.y = Math.sin(s * 0.8) * 0.2;
+      }
+      if(G.mode === 'over') gameTitle.rotation.y = Math.sin(s * 0.8) * 0.2;
+      update(dt);
+    }
+    cam.position.set(0, 0, camZ); cam.lookAt(0, 0, 0);
+    renderer.render(scn, cam);
+  };
+  const frame = () => { draw(performance.now()); raf = requestAnimationFrame(frame); };
+  let downAt = null;
+  startScreen.addEventListener('pointermove', e => {
+    if(G.mode === 'off'){ G.lastAct = performance.now(); return; }
+    if(G.mode === 'attract'){ // сдвинули мышь — назад к карточкам
+      if(!downAt) downAt = {x: e.clientX, y: e.clientY};
+      else if(Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 8){ downAt = null; setMode('off'); }
+    }
+  });
+  startScreen.addEventListener('pointerdown', () => {
+    if(G.mode === 'off') G.lastAct = performance.now();
+    else if(G.mode === 'attract' || G.mode === 'over'){ downAt = null; setMode('off'); }
+  });
+  startScreen.addEventListener('wheel', () => { if(G.mode === 'off') G.lastAct = performance.now(); }, {passive: true});
   return {
-    start(){ if(!raf) frame(); },
-    stop(){ cancelAnimationFrame(raf); raf = 0; }
+    start(){ G.lastAct = performance.now(); last = performance.now(); if(!raf) frame(); },
+    stop(){ cancelAnimationFrame(raf); raf = 0; if(G.mode !== 'off') setMode('off'); },
+    poke(){ G.lastAct = performance.now(); },
+    // клавиши игры; true — съедено
+    key(e, down){
+      if(G.mode === 'off') return false;
+      const k = e.key;
+      const left = k === 'ArrowLeft' || e.code === 'KeyA', right = k === 'ArrowRight' || e.code === 'KeyD';
+      if(!down){ if(left) G.keys.left = false; if(right) G.keys.right = false; return true; }
+      if(k === 'Escape'){ setMode('off'); return true; }
+      if(G.mode === 'attract'){ if(k === ' ') setMode('play'); else setMode('off'); return true; }
+      if(G.mode === 'over'){ if(k === ' ') setMode('play'); return true; }
+      if(left) G.keys.left = true;
+      if(right) G.keys.right = true;
+      if(k === ' ' && !e.repeat) fire();
+      return true;
+    },
+    get mode(){ return G.mode; },
+    // n кадров по dtMs без requestAnimationFrame — для проверок и будущего
+    // слоя команд (скрытая вкладка не крутит rAF)
+    step(n, dtMs){ for(let i=0;i<n;i++) draw(last + (dtMs || 16)); },
+    setMode, G
   };
 }
 function openStartScreen(){
@@ -8683,9 +8902,15 @@ document.getElementById('f_new').addEventListener('click', openStartScreen);
 // (последняя сессия или то, что уже на сцене); Ctrl+O/S ловятся раньше
 window.addEventListener('keydown', e => {
   if(startScreen.hidden) return;
+  // идёт CAD INVADERS — клавиши игре (Space не нажимает карточку в фокусе)
+  if(startGL && startGL.key(e, true)){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+  if(startGL) startGL.poke();
   if(e.key === 'Escape'){ e.preventDefault(); closeStartScreen(); }
   if(e.key === 'Tab' || e.key === 'Enter' || e.key === ' ') return; // фокус по карточкам
   e.stopImmediatePropagation();
+}, true);
+window.addEventListener('keyup', e => {
+  if(!startScreen.hidden && startGL && startGL.key(e, false)){ e.preventDefault(); e.stopImmediatePropagation(); }
 }, true);
 
 resize();
