@@ -1351,7 +1351,7 @@ function openLinePopup(){
   linePopup.hidden = false;
   updateLineInfo();
 }
-function closeLinePopup(){ linePopup.hidden = true; releaseToolInput(); }
+function closeLinePopup(){ linePopup.hidden = true; releaseToolInput(); killLinePreview(); }
 // угол линии меряется к ребру, с которого она начата (как транспортир
 // SketchUp и живой угол у курсора), без ребра — к оси плоскости
 function lineAngleBase(){
@@ -1395,7 +1395,7 @@ function updateLineInfo(){
   if(linePopup.hidden) return;
   const editing = !lineStart && lineLastValid();
   line_state.textContent = lineStart ? 'end' : editing ? 'placed · edit' : 'start';
-  if(document.activeElement !== line_len){
+  if(document.activeElement !== line_len && !linePrev){ // идёт предпросмотр — введённое не трогаем
     line_len.value = lineLenLock ? lineLenLock
       : lineLenStr ? lineLenStr
       : lineStart && lastLinePt ? lineStart.distanceTo(lastLinePt).toFixed(1)
@@ -1404,11 +1404,12 @@ function updateLineInfo(){
   // угол: живой при рисовании, у последнего отрезка — после постановки
   const deg = lineStart && lastLinePt ? lineAngleDeg(lineStart, lastLinePt, lineAngleBase())
     : editing ? lineAngleDeg(lineLast.A, lineLast.B, lineLast.base) : null;
-  if(document.activeElement !== line_ang) line_ang.value = lineAngLock != null ? lineAngLock : (deg != null ? deg : '');
+  if(document.activeElement !== line_ang && !linePrev) line_ang.value = lineAngLock != null ? lineAngLock : (deg != null ? deg : '');
   const shown = lineAngLock != null ? Math.round(lineAngLock) : deg;
   const css = shown != null ? ANGLE_CSS[shown] || '' : ''; // 90 — красный, 60/45/30 — свои цвета
   line_ang.style.color = css; line_angl.style.color = css; line_angl.style.fontWeight = css ? '700' : '';
-  line_snap.innerHTML = lineStart && lineSnapHtml ? lineSnapHtml : '&nbsp;';
+  line_snap.innerHTML = lineStart && lineSnapHtml ? lineSnapHtml
+    : !lineStart && linePrev ? linePrev.note : '&nbsp;';
   const locks = [lineLenLock ? 'length' : '', lineAngLock != null ? 'angle' : ''].filter(Boolean).join(' and ');
   line_info.innerHTML = lineStart && locks
     ? '<span style="color:#6aff3d">' + locks + ' fixed · the cursor picks the side</span>'
@@ -1439,6 +1440,18 @@ function lineFieldLock(which){
   else { const a = parseFloat(line_ang.value); lineAngLock = isFinite(a) ? Math.max(0, Math.min(180, a)) : null; }
   updateLineInfo();
 }
+// куда уйдёт конец поставленного отрезка по введённым длине и углу
+function lineEditTarget(){
+  const {A, B} = lineLast, oldLen = A.distanceTo(B);
+  const L = snapMM(parseFloat(line_len.value)), deg = parseFloat(line_ang.value);
+  const len = L > 0 ? L : oldLen;
+  const oldDeg = lineAngleDeg(A, B, lineLast.base);
+  const oldDir = new THREE.Vector3().subVectors(B, A).normalize();
+  const dir = isFinite(deg) && oldDeg != null && Math.abs(deg - oldDeg) > 0.01
+    ? lineDirAtAngle(lineLast.base, lineLast.n, Math.max(0, Math.min(180, deg)), oldDir) : null;
+  return {len, dir, B2: A.clone().addScaledVector(dir || oldDir, len),
+          changed: !!dir || Math.abs(len - oldLen) > 1e-6};
+}
 function applyLineLen(final){
   if(lineStart){
     // Enter/OK: конец ставится с введёнными длиной/углом, курсор — сторона
@@ -1448,20 +1461,97 @@ function applyLineLen(final){
     return;
   }
   if(!final || !lineLastValid()) return;
-  const {A, B} = lineLast, oldLen = A.distanceTo(B);
-  const L = snapMM(parseFloat(line_len.value)), deg = parseFloat(line_ang.value);
-  const len = L > 0 ? L : oldLen;
-  const oldDeg = lineAngleDeg(A, B, lineLast.base);
-  const oldDir = new THREE.Vector3().subVectors(B, A).normalize();
-  const dir = isFinite(deg) && oldDeg != null && Math.abs(deg - oldDeg) > 0.01
-    ? lineDirAtAngle(lineLast.base, lineLast.n, Math.max(0, Math.min(180, deg)), oldDir) : null;
-  if(dir || Math.abs(len - oldLen) > 1e-6) resizeLastLine(len, dir);
+  const t = lineEditTarget();
+  if(t.changed) resizeLastLine(t.len, t.dir);
+  killLinePreview();
+  updateLineInfo();
+}
+// Живой предпросмотр правки (как резинка Move/Scale в SketchUp, пока вводишь
+// значение в VCB): поле меняется — пунктир от начала до нового конца, точка
+// на конце и маркеры привязки модели; конец на вершине, центре или квадранте
+// красится цветом этой точки. Сетка не режется, пока не нажат Enter или OK
+let linePrev = null; // {line, dot, note}
+function killLinePreview(){
+  if(!linePrev) return;
+  scene.remove(linePrev.line); linePrev.line.geometry.dispose(); linePrev.line.material.dispose();
+  scene.remove(linePrev.dot); linePrev.dot.material.dispose();
+  linePrev = null;
+  killAngleMark();
+}
+function pointOnMesh(P){ // точка лежит на каком-то треугольнике (с краем)
+  if(Math.abs(P.z) < 0.01) return true; // земля
+  const pos = mesh.geometry.attributes.position.array;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), tri = new THREE.Triangle();
+  const q = new THREE.Vector3();
+  for(let o=0;o<pos.length;o+=9){
+    a.fromArray(pos, o); b.fromArray(pos, o+3); c.fromArray(pos, o+6);
+    tri.set(a, b, c);
+    if(tri.closestPointToPoint(P, q).distanceTo(P) < 0.05) return true;
+  }
+  return false;
+}
+function lineEndSnapAt(P){ // совпадает ли точка с точкой привязки модели
+  const near = Q => Q.distanceTo(P) < 0.05;
+  for(const q of quadSnaps) if(near(q.pos)) return {color: AXIS_CSS[q.axis], what: 'quadrant ' + q.axis.toUpperCase()};
+  for(const c of auxSnaps) if(near(c)) return {color: 0x3fd9c9, what: 'center'};
+  for(const c of corners) if(near(c.pos)) return {color: 0xe8ecf2, what: 'vertex'};
+  return null;
+}
+function updateLinePreview(){
+  if(lineStart || !lineLastValid()){ killLinePreview(); return; }
+  const t = lineEditTarget();
+  if(!t.changed){ killLinePreview(); updateLineInfo(); return; }
+  killLinePreview();
+  const {A} = lineLast, B2 = t.B2;
+  const onFace = segmentOnSomeFace(A, B2) && pointOnMesh(B2);
+  const deg = lineAngleDeg(A, B2, lineLast.base);
+  const snap = onFace ? lineEndSnapAt(B2) : null;
+  const col = !onFace ? 0xd9534f : ANGLE_COLORS[deg] != null && deg !== 0 ? ANGLE_COLORS[deg] : 0x2ecc40;
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([A, B2]),
+    new THREE.LineDashedMaterial({color: col, dashSize: 1.4, gapSize: 1.0, depthTest: false}));
+  line.computeLineDistances(); line.renderOrder = 5;
+  scene.add(line);
+  const dot = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial(
+    {color: !onFace ? 0xd9534f : snap ? snap.color : 0x2ecc40})));
+  dot.position.copy(B2); dot.renderOrder = 6;
+  scene.add(dot);
+  const note = !onFace ? '<span style="color:#d9534f">end leaves the face</span>'
+    : snap ? 'end on <b>' + snap.what + '</b>' : 'preview · Enter to apply';
+  linePrev = {line, dot, note};
+  if(deg === 90 && lineLast.base){
+    const L = A.distanceTo(B2);
+    if(L > 0.3) showAngleMark(A, lineLast.base.clone().normalize(),
+      new THREE.Vector3().subVectors(B2, A).normalize(), L);
+  }
+  updateLineInfo();
+}
+// при рисовании введённая длина/угол сразу двигают резинку, не дожидаясь мыши
+let lineRawPt = null; // курсор до замков — от него берётся сторона
+function refreshLineRubber(){
+  if(!lineStart || !lineRawPt) return;
+  const lk = lineLockedEnd(lineRawPt);
+  const pos = lk ? lk.pos : lineRawPt.clone();
+  lastLinePt = pos.clone();
+  ghost.position.copy(pos);
+  killRubber();
+  const deg = lineAngleDeg(lineStart, pos, lineAngleBase());
+  const col = ANGLE_COLORS[deg] != null && deg !== 0 ? ANGLE_COLORS[deg] : 0x9aa2b1;
+  rubber = new THREE.Line(new THREE.BufferGeometry().setFromPoints([lineStart, pos]),
+    new THREE.LineBasicMaterial({color: col}));
+  scene.add(rubber);
+  updateLineInfo();
 }
 for(const [inp, which] of [[line_len, 'len'], [line_ang, 'ang']]){
-  inp.addEventListener('input', () => lineFieldLock(which));
+  inp.addEventListener('input', () => {
+    if(lineStart){ lineFieldLock(which); refreshLineRubber(); }
+    else updateLinePreview();
+  });
   inp.addEventListener('keydown', e => {
     if(e.key === 'Enter'){ e.preventDefault(); lineFieldLock(which); applyLineLen(true); releaseToolInput(); }
-    if(e.key === 'Escape'){ e.preventDefault(); releaseToolInput(); }
+    if(e.key === 'Escape'){ // Esc в поле: правка отменена, поля — снова по отрезку
+      e.preventDefault(); releaseToolInput();
+      if(!lineStart){ killLinePreview(); updateLineInfo(); }
+    }
     e.stopPropagation(); // цифры поля не уходят в набор длины с клавиатуры
   });
 }
@@ -4043,6 +4133,10 @@ function deleteSelEdges(){
       const hasGuide = guideAlong(A, B);
       if(ang === null){
         if(hasGuide){ jobs.push({guide:true, A, B}); continue; }
+        // край дыры: как Erase в SketchUp — стёртое ребро забирает грань,
+        // которую ограничивало (дыру потом закрывают одной гранью — F)
+        const t = trisOnEdge(keyOf(A.x,A.y,A.z), keyOf(B.x,B.y,B.z));
+        if(t.length === 1){ jobs.push({face: t[0].i / 9}); continue; }
         warn('Border of a hole — nothing to merge'); return;
       }
       if(ang > DISSOLVE_DEG){
@@ -4055,8 +4149,23 @@ function deleteSelEdges(){
   }
   pushUndo();
   let done = 0;
-  for(const j of jobs)
+  // грани — первыми: номера треугольников верны только до правки сетки
+  const faceTris = new Set();
+  for(const j of jobs) if(j.face != null) for(const t of facePatchAt(j.face).tris) faceTris.add(t);
+  if(faceTris.size){
+    const pos = mesh.geometry.attributes.position.array, keep = [];
+    for(let t=0;t<pos.length/9;t++){
+      if(faceTris.has(t)) continue;
+      for(let k=0;k<9;k++) keep.push(pos[t*9+k]);
+    }
+    setMeshFromArray(new Float32Array(keep));
+    ppPatch = null; hidePatch(); cachedPatch = null;
+    done++;
+  }
+  for(const j of jobs){
+    if(j.face != null) continue;
     done += (j.guide ? eraseGuideSegment(j.A, j.B) : dissolveMeshEdge(j.A, j.B)) ? 1 : 0;
+  }
   if(!done){ undo(true); warn('Nothing to erase'); return; }
   clearEdgeSel(); hideChordHint();
   if(!modified){ modified = true; s_mod.textContent = 'yes'; }
@@ -8550,6 +8659,7 @@ canvas.addEventListener('pointermove', e=>{
           }
         }
       }
+      lineRawPt = pos.clone();
       { const lk = lineLockedEnd(pos); if(lk){ pos = lk.pos; note += lk.note; } }
       lastLinePt = pos.clone();
       ghost.material.color.setHex(pt.kind==='vertex' ? C_VERT : C_EDGE);
@@ -8760,9 +8870,11 @@ function loop(t){
   dot(originMarker, 0.004);
   for(const m of planeTargets) dot(m, 0.0035);
   if(!lineMode && !linePopup.hidden && !lineLastValid()) closeLinePopup();
+  if(linePrev && (lineStart || !lineLastValid())) killLinePreview();
+  if(linePrev) dot(linePrev.dot);
   // точки привязки (вершины, центры, квадранты) — у всех инструментов,
-  // ставящих точки с магнитом
-  syncSnapMarkers((pointMode || lineMode || activeTool === rectTool || activeTool === tapeTool) && !divCtx);
+  // ставящих точки с магнитом (и пока правится длина поставленной линии)
+  syncSnapMarkers((pointMode || lineMode || activeTool === rectTool || activeTool === tapeTool || !!linePrev) && !divCtx);
   for(const m of snapMarkers) dot(m, 0.004);
   if(activeTool && activeTool.dots) for(const m of activeTool.dots) dot(m);
   if(txAnchor) dot(txAnchor, 0.0035);       // якорь текста (красный центр)
