@@ -6343,6 +6343,27 @@ function startEdgeMove(){
   };
   clearEdgeSel(); hideChordHint();
   edgeFoldInfo(); // по сетке до сдвига: позиции вершин грани — исходные
+  // линии, которые поедут с ребром (концы на нём или на сгибаемой грани)
+  {
+    const base = s.pts;
+    const onChain = P => {
+      for(let j=0;j+1<base.length;j++){
+        const dd = new THREE.Vector3().subVectors(base[j+1], base[j]), L2 = dd.lengthSq();
+        if(L2 < 1e-12) continue;
+        const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(P, base[j]).dot(dd) / L2));
+        if(base[j].clone().addScaledVector(dd, t).distanceTo(P) < 0.012) return true;
+      }
+      return false;
+    };
+    const fw = edgeDrag.foldW || new Map();
+    edgeDrag.guideMoves = [];
+    for(const g of guides){
+      const kA = keyOf(g.a.x,g.a.y,g.a.z), kB = keyOf(g.b.x,g.b.y,g.b.z);
+      const onA = onChain(g.a), onB = onChain(g.b);
+      if(onA || onB || fw.has(kA) || fw.has(kB))
+        edgeDrag.guideMoves.push({g, a0: g.a.clone(), b0: g.b.clone(), onA, onB, kA, kB});
+    }
+  }
   tipAt({clientX:lastMX, clientY:lastMY}, edgeMoveTip(new THREE.Vector3()));
 }
 // нормаль грани под ребром (среднее граней, в плоскости которых оно лежит):
@@ -6490,11 +6511,13 @@ function edgeFoldInfo(){
   let Lp = 0, Ln = 0;
   for(const v of verts.values()){ if(v.s > Lp) Lp = v.s; if(-v.s > Ln) Ln = -v.s; }
   const offs = [];
+  ed.foldW = new Map(); // ключ вершины -> вес сгиба (для концов линий на грани)
   for(const [k, v] of verts){
     const L = v.s >= 0 ? Lp : Ln;
     if(L < 1e-6) continue;
     const w = 1 - Math.abs(v.s) / L;
     if(w <= 1e-6) continue;
+    ed.foldW.set(k, w);
     for(const o of byKey.get(k) || []){
       if(moving.has(o)) continue;
       offs.push({o, P0: v.P, w});
@@ -6502,6 +6525,46 @@ function edgeFoldInfo(){
   }
   ed.fold = offs.length ? {offs} : null;
   return ed.fold;
+}
+// Концы линии на рёбрах соседних граней (стенка кармана → наружная стенка):
+// чистый сдвиг по нормали выводил конец из плоскости соседа — наружная грань
+// кривилась, и её контур потом не заливался одной гранью. Конец дополнительно
+// скользит вдоль самой линии ровно настолько, чтобы остаться в плоскости
+// соседа: e = s·(N + k·u), k = −(N·n)/(u·n). Сдвиг вдоль линии не выводит
+// половинки V из их плоскостей (обе их границы параллельны u), поэтому V
+// остаётся ровной, а соседние грани — плоскими
+function edgeSlideInfo(){
+  const ed = edgeDrag;
+  if(ed.slide !== undefined) return ed.slide;
+  ed.slide = null;
+  const N = ed.normal, A = ed.pts0[0], B = ed.baseEnd;
+  if(!N || !B) return null;
+  const L = A.distanceTo(B);
+  if(L < 1e-6) return null;
+  const u = new THREE.Vector3().subVectors(B, A).normalize();
+  const pos = ed.snap.pos;
+  const kAt = E => {
+    let best = null, bestAr = 0;
+    for(let t=0;t<pos.length/9;t++){
+      const o = t*9;
+      let has = false;
+      for(let j=0;j<3;j++)
+        if(Math.hypot(pos[o+j*3]-E.x, pos[o+j*3+1]-E.y, pos[o+j*3+2]-E.z) < 0.012){ has = true; break; }
+      if(!has) continue;
+      const w = new THREE.Vector3(pos[o+3]-pos[o], pos[o+4]-pos[o+1], pos[o+5]-pos[o+2])
+        .cross(new THREE.Vector3(pos[o+6]-pos[o], pos[o+7]-pos[o+1], pos[o+8]-pos[o+2]));
+      const ar = w.length();
+      if(ar < 1e-4) continue;
+      const n = w.multiplyScalar(1/ar);
+      if(Math.abs(n.dot(N)) > 0.99 || Math.abs(n.dot(u)) < 0.05) continue; // своя грань / вдоль линии
+      if(ar > bestAr){ bestAr = ar; best = n; }
+    }
+    if(!best) return 0;
+    const k = -N.dot(best) / u.dot(best);
+    return Math.abs(k) <= 5 ? k : 0;
+  };
+  ed.slide = {A, u, L, N, kA: kAt(A), kB: kAt(B)};
+  return ed.slide;
 }
 function applyEdgeDelta(d, e){
   if(!edgeDrag.snapPushed){
@@ -6512,12 +6575,32 @@ function applyEdgeDelta(d, e){
   const posE = mesh.geometry.attributes.position.array;
   // сгиб граней — только при движении по нормали (N); без N грани на место
   const fold = edgeDrag.nLock ? edgeFoldInfo() : (edgeDrag.fold || null);
+  const slide = edgeDrag.nLock ? edgeSlideInfo() : null;
+  // сдвиг точки: по нормали на глубину, плюс скольжение вдоль линии, чтобы
+  // конец остался в плоскости соседней грани (см. edgeSlideInfo)
+  const disp = (P, w) => {
+    if(!slide) return d.clone().multiplyScalar(w);
+    const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(P, slide.A).dot(slide.u) / slide.L));
+    const s = d.dot(slide.N), k = slide.kA + (slide.kB - slide.kA) * t;
+    return slide.N.clone().multiplyScalar(s * w).addScaledVector(slide.u, s * k * w);
+  };
   if(fold) for(const f of fold.offs){
-    const np = edgeDrag.nLock ? f.P0.clone().addScaledVector(d, f.w) : f.P0;
+    const np = edgeDrag.nLock ? f.P0.clone().add(disp(f.P0, f.w)) : f.P0;
     posE[f.o] = np.x; posE[f.o+1] = np.y; posE[f.o+2] = np.z;
   }
+  // нарисованные линии едут вместе с ребром: сама линия — целиком, линии,
+  // упёршиеся в неё, — своим концом, линии на сгибаемой грани — по весу сгиба.
+  // Раньше линия оставалась на старом месте и висела в воздухе красной
+  for(const r of edgeDrag.guideMoves){
+    const wOf = (on, k) => on ? 1 : (edgeDrag.nLock && edgeDrag.foldW && edgeDrag.foldW.get(k)) || 0;
+    const wa = wOf(r.onA, r.kA), wb = wOf(r.onB, r.kB);
+    r.g.a.copy(r.a0).add(disp(r.a0, wa));
+    r.g.b.copy(r.b0).add(disp(r.b0, wb));
+    r.g.line.geometry.dispose();
+    r.g.line.geometry = new THREE.BufferGeometry().setFromPoints([r.g.a, r.g.b]);
+  }
   for(let i=0;i<edgeDrag.pts0.length;i++){
-    const np = edgeDrag.pts0[i].clone().add(d);
+    const np = edgeDrag.pts0[i].clone().add(disp(edgeDrag.pts0[i], 1));
     for(const bi of edgeDrag.idx[i]){ posE[bi]=np.x; posE[bi+1]=np.y; posE[bi+2]=np.z; }
   }
   mesh.geometry.attributes.position.needsUpdate = true;
