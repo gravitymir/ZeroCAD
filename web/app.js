@@ -8765,7 +8765,7 @@ function startTitleScene(){
         field.add(mesh); G.invaders.push(inv);
       }
     });
-    G.dir = 1; G.stepT = 0; G.demoTarget = null;
+    G.dir = 1; G.stepT = 0; G.demoTarget = null; G.edges = 0;
     clearShots(); for(const bm of bombs) bm.visible = false;
   }
   function resetGame(){
@@ -8967,19 +8967,23 @@ function startTitleScene(){
       i.mesh.rotation.x = Math.sin(G.t * i.sp * 0.7 + i.ph * 1.3) * i.ax;
       if(i.flashT > 0){ i.flashT = Math.max(0, i.flashT - dt); i.mesh.scale.setScalar((kinds[i.k].scale || DIGIT_SCALE) * (1 + 0.35 * i.flashT / 0.35)); }
     }
-    // марш: чем меньше захватчиков, тем чаще шаг
+    // марш: чем меньше захватчиков, тем чаще шаг. Игра учебная — темп
+    // спокойный, и вниз строй опускается только после полного прохода
+    // туда-обратно (каждый второй разворот), чтобы успеть сменить форму
     G.stepT -= dt;
     if(G.stepT <= 0 && alive.length){
-      G.stepT = 0.06 + 0.7 * alive.length / 55;
+      G.stepT = 0.12 + 0.9 * alive.length / 55;
       const edge = alive.some(i => Math.abs(i.x + G.dir * 2) > FW - 8);
+      const down = edge && (++G.edges % 2 === 0);
       for(const i of alive){
-        if(edge) i.y -= 4; else i.x += G.dir * 2;
+        if(down) i.y -= 4; else if(!edge) i.x += G.dir * 2;
         i.mesh.position.set(i.x, i.y, 0);
       }
       if(edge) G.dir = -G.dir;
-      // бомба от нижнего захватчика случайной колонки
+      // бомба от нижнего захватчика случайной колонки — редко и не больше
+      // двух в воздухе
       const free = bombs.find(bm => !bm.visible);
-      if(playing && free && Math.random() < 0.55){
+      if(playing && free && bombs.filter(bm => bm.visible).length < 2 && Math.random() < 0.2){
         const cols = new Map();
         for(const i of alive) if(!cols.has(i.x) || cols.get(i.x).y > i.y) cols.set(i.x, i);
         const shooters = [...cols.values()];
@@ -9006,7 +9010,7 @@ function startTitleScene(){
     // бомбы
     for(const bm of bombs){
       if(!bm.visible) continue;
-      bm.position.y -= 45 * dt;
+      bm.position.y -= 32 * dt; // медленные бомбы — есть время увернуться
       if(bm.position.y < -FH - 4){ bm.visible = false; continue; }
       if(playing && G.hitT <= 0 && Math.abs(bm.position.x - G.shipX) <= SHIP_HW + 0.6 && Math.abs(bm.position.y - SHIP_Y) <= SHIP_HH + 2){
         bm.visible = false; G.lives--; G.hitT = 1.2; paintHud();
