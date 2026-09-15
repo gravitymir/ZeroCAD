@@ -1070,6 +1070,9 @@ let lineMode=false, lineStart=null, lastLinePt=null, lineLenStr='', lineDirLock=
 let lineHostDir=null; // направление ребра, с которого стартовала линия
 let lineChain=true; // true — полилиния (G,M / L), false — одиночные отрезки (G,L)
 let lineLenLock=null;  // длина из окна Line: мышь задаёт только направление
+let lineAngLock=null;  // угол из окна Line (к ребру-хозяину или оси): мышь выбирает сторону
+let lineStartN=null;   // нормаль плоскости, в которой начата линия
+let lineSnapHtml='';   // привязка конца — показывается в окне, а не у курсора
 let lineLast=null;     // только что нарисованный отрезок: {A, B, snap} — правится полем Length
 const linePopup = document.getElementById('linePopup');
 let guides=[], rubber=null;
@@ -1077,7 +1080,7 @@ const lnb = document.getElementById('lnb');
 function setLineMode(on){
   lineMode = on;
   lnb.hidden = !on;
-  lineStart = null; lastLinePt = null; lineLenStr = ''; lineDirLock = null; lineLenLock = null;
+  lineStart = null; lastLinePt = null; lineLenStr = ''; lineDirLock = null; lineLenLock = null; lineAngLock = null; lineStartN = null;
   killRubber();
   if(on){ hideChordHint(); setHover(null); tipHide(); if(activeTool) setActiveTool(null); openLinePopup(); }
   else {
@@ -1323,8 +1326,9 @@ function commitLinePoint(pos){
     splitMeshByChord(lineStart, pos); // врезаем хорду в сетку — как режет линия в SketchUp
     extractEdges();
     // запоминаем отрезок: пока после него ничего не делали, поле Length его правит
-    lineLast = {A: lineStart.clone(), B: pos.clone(), snap: undoStack[undoStack.length - 1]};
-    lineLenLock = null;
+    lineLast = {A: lineStart.clone(), B: pos.clone(), snap: undoStack[undoStack.length - 1],
+                base: lineAngleBase(), n: (lineStartN || GROUND_N).clone()};
+    lineLenLock = null; lineAngLock = null;
     if(lineChain){
       lineStart = pos.clone(); // полилиния продолжает цепочку
     } else {
@@ -1348,26 +1352,74 @@ function openLinePopup(){
   updateLineInfo();
 }
 function closeLinePopup(){ linePopup.hidden = true; releaseToolInput(); }
+// угол линии меряется к ребру, с которого она начата (как транспортир
+// SketchUp и живой угол у курсора), без ребра — к оси плоскости
+function lineAngleBase(){
+  return lineHostDir ? lineHostDir.clone() : textBasis(lineStartN || GROUND_N).u;
+}
+function lineAngleDeg(A, B, base){
+  const d = new THREE.Vector3().subVectors(B, A), len = d.length();
+  if(len < 0.1 || !base) return null;
+  return Math.round(Math.acos(Math.min(1, Math.abs(d.dot(base)) / (len * base.length()))) * 180 / Math.PI);
+}
+// направление под углом deg к base в плоскости n — из четырёх вариантов
+// (±deg от ребра и от обратного ребра) тот, что ближе к подсказке hint
+function lineDirAtAngle(base, n, deg, hint){
+  const nn = n.clone().normalize(), b = base.clone().addScaledVector(nn, -base.dot(nn));
+  if(b.length() < 1e-6) return null;
+  b.normalize();
+  const side = new THREE.Vector3().crossVectors(nn, b), th = deg * Math.PI / 180;
+  let best = null, bd = -Infinity;
+  for(const bb of [b, b.clone().negate()]) for(const s of [1, -1]){
+    const d = bb.clone().multiplyScalar(Math.cos(th)).addScaledVector(side, s * Math.sin(th)).normalize();
+    const dt = d.dot(hint);
+    if(dt > bd){ bd = dt; best = d; }
+  }
+  return best;
+}
+// конец линии с учётом введённых длины и угла; курсор — только подсказка
+function lineLockedEnd(cur){
+  if(!lineStart || (!lineLenLock && lineAngLock == null)) return null;
+  const v = new THREE.Vector3().subVectors(cur, lineStart);
+  if(v.length() < 1e-6) return null;
+  let dir = v.clone().normalize(), note = '';
+  if(lineAngLock != null){
+    const d = lineDirAtAngle(lineAngleBase(), lineStartN || GROUND_N, lineAngLock, v);
+    if(d){ dir = d; note += ' · angle ' + lineAngLock + '°'; }
+  }
+  const len = lineLenLock || Math.max(0.1, snapMM(Math.abs(v.dot(dir))));
+  if(lineLenLock) note += ' · length ' + lineLenLock + ' mm';
+  return {pos: lineStart.clone().addScaledVector(dir, len), note};
+}
 function updateLineInfo(){
   if(linePopup.hidden) return;
   const editing = !lineStart && lineLastValid();
-  line_state.textContent = lineStart ? 'end' : editing ? 'placed · edit length' : 'start';
+  line_state.textContent = lineStart ? 'end' : editing ? 'placed · edit' : 'start';
   if(document.activeElement !== line_len){
     line_len.value = lineLenLock ? lineLenLock
       : lineLenStr ? lineLenStr
       : lineStart && lastLinePt ? lineStart.distanceTo(lastLinePt).toFixed(1)
       : editing ? lineLast.A.distanceTo(lineLast.B).toFixed(1) : '';
   }
-  line_info.innerHTML = lineStart && lineLenLock
-    ? '<span style="color:#6aff3d">length fixed · the cursor sets the direction</span>'
-    : editing ? 'new length + Enter redraws the line from its start' : '&nbsp;';
+  // угол: живой при рисовании, у последнего отрезка — после постановки
+  const deg = lineStart && lastLinePt ? lineAngleDeg(lineStart, lastLinePt, lineAngleBase())
+    : editing ? lineAngleDeg(lineLast.A, lineLast.B, lineLast.base) : null;
+  if(document.activeElement !== line_ang) line_ang.value = lineAngLock != null ? lineAngLock : (deg != null ? deg : '');
+  const shown = lineAngLock != null ? Math.round(lineAngLock) : deg;
+  const css = shown != null ? ANGLE_CSS[shown] || '' : ''; // 90 — красный, 60/45/30 — свои цвета
+  line_ang.style.color = css; line_angl.style.color = css; line_angl.style.fontWeight = css ? '700' : '';
+  line_snap.innerHTML = lineStart && lineSnapHtml ? lineSnapHtml : '&nbsp;';
+  const locks = [lineLenLock ? 'length' : '', lineAngLock != null ? 'angle' : ''].filter(Boolean).join(' and ');
+  line_info.innerHTML = lineStart && locks
+    ? '<span style="color:#6aff3d">' + locks + ' fixed · the cursor picks the side</span>'
+    : editing ? 'new length or angle + Enter redraws the line' : '&nbsp;';
   line_hint.hidden = !hintsChk.checked;
 }
 // перерисовать последний отрезок новой длиной от его начала, по тому же направлению
-function resizeLastLine(len){
+function resizeLastLine(len, newDir){
   if(!lineLastValid()) return false;
   const {A, B} = lineLast;
-  const dir = new THREE.Vector3().subVectors(B, A);
+  const dir = newDir ? newDir.clone() : new THREE.Vector3().subVectors(B, A);
   if(dir.length() < 1e-9) return false;
   const B2 = A.clone().addScaledVector(dir.normalize(), len);
   if(!segmentOnSomeFace(A, B2)){ warnTip('Line must lie on a face'); return false; }
@@ -1376,40 +1428,83 @@ function resizeLastLine(len){
   addGuide(A, B2);
   splitMeshByChord(A, B2);
   extractEdges();
-  lineLast = {A: A.clone(), B: B2, snap: undoStack[undoStack.length - 1]};
+  lineLast = {A: A.clone(), B: B2, snap: undoStack[undoStack.length - 1], base: lineLast.base, n: lineLast.n};
   updateLineInfo();
   return true;
 }
+// поле → замок (при рисовании) или правка последнего отрезка (после)
+function lineFieldLock(which){
+  if(!lineStart) return;
+  if(which === 'len'){ const v = snapMM(parseFloat(line_len.value)); lineLenLock = v > 0 ? v : null; }
+  else { const a = parseFloat(line_ang.value); lineAngLock = isFinite(a) ? Math.max(0, Math.min(180, a)) : null; }
+  updateLineInfo();
+}
 function applyLineLen(final){
-  const v = snapMM(parseFloat(line_len.value));
   if(lineStart){
-    lineLenLock = v > 0 ? v : null;
-    // Enter/OK: конец ставится по направлению курсора на заданной длине
-    if(final && lineLenLock && lastLinePt && lastLinePt.distanceTo(lineStart) > 0.05){
-      const dir = new THREE.Vector3().subVectors(lastLinePt, lineStart).normalize();
-      commitLinePoint(lineStart.clone().addScaledVector(dir, lineLenLock));
-      killRubber();
-    }
+    // Enter/OK: конец ставится с введёнными длиной/углом, курсор — сторона
+    const lk = final && lastLinePt ? lineLockedEnd(lastLinePt) : null;
+    if(lk && lk.pos.distanceTo(lineStart) > 0.05){ commitLinePoint(lk.pos); killRubber(); }
     updateLineInfo();
     return;
   }
-  if(final && v > 0) resizeLastLine(v);
+  if(!final || !lineLastValid()) return;
+  const {A, B} = lineLast, oldLen = A.distanceTo(B);
+  const L = snapMM(parseFloat(line_len.value)), deg = parseFloat(line_ang.value);
+  const len = L > 0 ? L : oldLen;
+  const oldDeg = lineAngleDeg(A, B, lineLast.base);
+  const oldDir = new THREE.Vector3().subVectors(B, A).normalize();
+  const dir = isFinite(deg) && oldDeg != null && Math.abs(deg - oldDeg) > 0.01
+    ? lineDirAtAngle(lineLast.base, lineLast.n, Math.max(0, Math.min(180, deg)), oldDir) : null;
+  if(dir || Math.abs(len - oldLen) > 1e-6) resizeLastLine(len, dir);
 }
-line_len.addEventListener('input', () => { if(lineStart) applyLineLen(false); });
-line_len.addEventListener('keydown', e => {
-  if(e.key === 'Enter'){ e.preventDefault(); applyLineLen(true); releaseToolInput(); }
-  if(e.key === 'Escape'){ e.preventDefault(); releaseToolInput(); }
-  e.stopPropagation(); // цифры поля не уходят в набор длины с клавиатуры
-});
+for(const [inp, which] of [[line_len, 'len'], [line_ang, 'ang']]){
+  inp.addEventListener('input', () => lineFieldLock(which));
+  inp.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); lineFieldLock(which); applyLineLen(true); releaseToolInput(); }
+    if(e.key === 'Escape'){ e.preventDefault(); releaseToolInput(); }
+    e.stopPropagation(); // цифры поля не уходят в набор длины с клавиатуры
+  });
+}
 document.getElementById('line_ok').addEventListener('click', () => {
   // OK — применить введённое и завершить инструмент (Finish у Draft во FreeCAD)
   // (живую длину резинки OK не ставит — только введённую руками)
-  const v = snapMM(parseFloat(line_len.value));
-  if(lineStart){ if(lineLenLock) applyLineLen(true); }
-  else if(lineLastValid() && v > 0 && Math.abs(v - lineLast.A.distanceTo(lineLast.B)) > 1e-6) resizeLastLine(v);
+  if(lineStart){ if(lineLenLock || lineAngLock != null) applyLineLen(true); }
+  else applyLineLen(true); // правит, только если длина или угол изменились
   if(lineMode) setLineMode(false);
   closeLinePopup();
 });
+
+// Десятичная точка в числовых полях при русской раскладке: клавиша, где
+// в латинице «.», даёт «ю» (запятая — «б»), а <input type=number> такие
+// символы молча выбрасывает — «5.5» не набиралось. Эти клавиши, запятая и
+// точка цифрового блока вставляют «.»: поле на время набора становится
+// текстовым (у числового нельзя поставить символ в позицию курсора), а
+// на выходе из поля — снова числовым
+document.addEventListener('keydown', e => {
+  const el = e.target;
+  if(!el || el.tagName !== 'INPUT' || (el.type !== 'number' && !el.dataset.numType)) return;
+  if(e.key === '.' || e.ctrlKey || e.altKey || e.metaKey) return;
+  const dec = e.code === 'Period' || e.code === 'Comma' || e.code === 'NumpadDecimal'
+    || e.key === ',' || e.key === 'ю' || e.key === 'б' || e.key === 'Ю' || e.key === 'Б';
+  if(!dec) return;
+  e.preventDefault();
+  if(String(el.value).includes('.')) return;
+  if(el.type === 'number'){
+    el.dataset.numType = '1';
+    el.type = 'text';
+    el.addEventListener('blur', () => {
+      const v = parseFloat(el.value);
+      delete el.dataset.numType;
+      el.type = 'number';
+      if(isFinite(v)) el.value = v;
+    }, {once: true});
+    el.setSelectionRange(el.value.length, el.value.length);
+  }
+  const s = el.selectionStart, t = el.selectionEnd;
+  el.value = el.value.slice(0, s) + '.' + el.value.slice(t);
+  el.setSelectionRange(s + 1, s + 1);
+  el.dispatchEvent(new Event('input', {bubbles: true}));
+}, true);
 
 // ---------- «Точка» (G,Y — Create Point в Sketcher FreeCAD) ----------
 let pointMode = false;
@@ -7624,7 +7719,7 @@ window.addEventListener('keydown', e=>{
       else setCircleMode(false);
     }
     if(lineMode){
-      if(lineStart){ lineStart=null; lastLinePt=null; lineLenStr=''; lineDirLock=null; lineLenLock=null; killRubber(); updateLineInfo(); }
+      if(lineStart){ lineStart=null; lastLinePt=null; lineLenStr=''; lineDirLock=null; lineLenLock=null; lineAngLock=null; killRubber(); updateLineInfo(); }
       else setLineMode(false);
     }
     if(!lineMode && !linePopup.hidden){ closeLinePopup();
@@ -7886,9 +7981,12 @@ canvas.addEventListener('pointerdown', e=>{
             if(pp) pos = pp.p;
           }
         }
-        if(lineStart && lineLenLock && pos.distanceTo(lineStart) > 1e-6)
-          pos = lineStart.clone().addScaledVector(new THREE.Vector3().subVectors(pos, lineStart).normalize(), lineLenLock);
+        { const lk = lineLockedEnd(pos); if(lk) pos = lk.pos; }
         const wasFirst = !lineStart;
+        if(wasFirst){ // плоскость линии — для угла из окна
+          const f0 = raycastFace(q);
+          lineStartN = f0 ? triNormalAt(f0.faceIndex) : GROUND_N.clone();
+        }
         commitLinePoint(pos);
         // стартовали с ребра/линии — запоминаем его направление для
         // угловых магнитов; точка/вершина тоже знает своё ребро-хозяина
@@ -8411,12 +8509,8 @@ canvas.addEventListener('pointermove', e=>{
           }
         }
       }
-      if(lineStart && lineLenLock && pos.distanceTo(lineStart) > 1e-6){
-        pos = lineStart.clone().addScaledVector(new THREE.Vector3().subVectors(pos, lineStart).normalize(), lineLenLock);
-        note += ' · length ' + lineLenLock + ' mm';
-      }
+      { const lk = lineLockedEnd(pos); if(lk){ pos = lk.pos; note += lk.note; } }
       lastLinePt = pos.clone();
-      updateLineInfo();
       ghost.material.color.setHex(pt.kind==='vertex' ? C_VERT : C_EDGE);
       ghost.position.copy(pos); ghost.visible = true;
       showHintFor(pt);
@@ -8458,13 +8552,17 @@ canvas.addEventListener('pointermove', e=>{
         }
         // финиш ляжет на ребро/линию — расстояния до его концов (как у точки);
         // при активной угловой/осевой привязке конец уже не на ребре — молчим
+        let distHtml = '';
         if(pt.chain && pt.s !== undefined && !axSnap && !perpSnap && !e.shiftKey){
-          msg += '<br>◀ ' + pt.s.toFixed(1) + ' mm · '
-               + (pt.chain.total - pt.s).toFixed(1) + ' mm ▶';
+          distHtml = '◀ ' + pt.s.toFixed(1) + ' mm · ' + (pt.chain.total - pt.s).toFixed(1) + ' mm ▶';
+          msg += '<br>' + distHtml;
         }
         if(lineLenStr) msg += '<br>typed: '+lineLenStr+' mm (Enter)';
+        lineSnapHtml = note + (distHtml ? '<br>' + distHtml : '');
       }
-      tipAt(e, msg);
+      // окно Line открыто — привязка, длина и угол там; тултип у курсора прятался бы под окном
+      updateLineInfo();
+      if(linePopup.hidden) tipAt(e, msg); else tipHide();
     } else { ghost.visible=false; killRubber(); tipHide(); }
     return;
   }

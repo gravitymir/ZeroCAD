@@ -390,9 +390,11 @@
     <div id="linePopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
       <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Line</b><span id="line_state" style="font-size:14px">start</span></div>
+      <div class="pinfo" id="line_snap">&nbsp;</div>
       <div class="prow"><span class="plab">Length</span><input id="line_len" type="number" step="0.1" min="0.1" placeholder="—"> mm</div>
+      <div class="prow"><span class="plab" id="line_angl">Angle</span><input id="line_ang" type="number" step="1" min="0" max="180" placeholder="—"> °</div>
       <div class="pinfo" id="line_info">&nbsp;</div>
-      <div class="phint" id="line_hint">Click the start, then the end — it snaps to vertices, midpoints, axes and angles. Type the length to fix it: before the end, the line keeps that length and the cursor only sets the direction; after placing, a new length redraws the line from its start (Enter). OK — finish the tool.</div>
+      <div class="phint" id="line_hint">Click the start, then the end — it snaps to vertices, midpoints, axes and angles. Type the length or the angle to fix it: before the end, the cursor only picks the side; after placing, a new length or angle redraws the line from its start (Enter). The angle is measured to the edge the line starts from (or to the axis), 90° — red. OK — finish the tool.</div>
       <div class="prow" style="margin-top:8px"><button id="line_ok">OK</button></div>
     </div>
     <div id="rectPopup" hidden>
