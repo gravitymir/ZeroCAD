@@ -6653,14 +6653,24 @@ function loadProjectText(text, name){
   try{ loadProjectData(JSON.parse(text), name); }
   catch(err){ alert('Cannot open project: ' + err.message); }
 }
+// Open… принимает и проект .zcad, и сетку .stl (как File → Open во FreeCAD):
+// STL — это экспорт для принтера, без линий, точек и истории, но открыть
+// свою же выгрузку обратно должно быть можно без поиска кнопки Import
+async function openFileAny(file, handle){
+  if(/\.stl$/i.test(file.name)){ importSTL(await file.arrayBuffer(), file.name); return; }
+  loadProjectText(await file.text(), file.name);
+  if(handle) projectHandle = handle;
+}
 async function openProject(){
   if(window.showOpenFilePicker){
     try{
       const [h] = await window.showOpenFilePicker({
-        types: [{description: 'ZeroCAD project', accept: {'application/json': ['.zcad']}}]});
-      const file = await h.getFile();
-      loadProjectText(await file.text(), file.name);
-      projectHandle = h;
+        types: [
+          {description: 'ZeroCAD project or STL mesh', accept: {'application/json': ['.zcad', '.json'], 'model/stl': ['.stl']}},
+          {description: 'ZeroCAD project', accept: {'application/json': ['.zcad', '.json']}},
+          {description: 'STL mesh', accept: {'model/stl': ['.stl']}}
+        ]});
+      await openFileAny(await h.getFile(), h);
       return;
     }catch(err){ if(err && err.name === 'AbortError') return; }
   }
@@ -8840,7 +8850,7 @@ view.addEventListener('drop', async e=>{
 });
 f_file.addEventListener('change', async ()=>{
   const file = f_file.files && f_file.files[0];
-  if(file) loadProjectText(await file.text(), file.name);
+  if(file) await openFileAny(file, null);
 });
 // Ctrl+S / Ctrl+Shift+S / Ctrl+O — как во всех редакторах; по e.code, чтобы
 // работало и в русской раскладке, и прямо из полей ввода

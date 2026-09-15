@@ -522,7 +522,7 @@
     <div class="stat">Project<b id="s_file">untitled</b></div>
     <div class="btns" style="margin-top:10px">
       <button id="f_new" title="Start screen: pick a shape to start with">New…</button>
-      <button id="f_open" title="Ctrl+O">Open…</button>
+      <button id="f_open" title="Ctrl+O · a .zcad project or an .stl mesh">Open…</button>
       <button id="f_save" class="primary" title="Ctrl+S · Ctrl+Shift+S — save as">Save</button>
       <button id="f_import" title="Import an STL file (or drop it onto the view)">Import…</button>
       <button id="reset" title="Start over from the shape preset">Reset</button>
@@ -534,7 +534,7 @@
       <button id="x_obj" title="Wavefront OBJ">OBJ</button>
       <button id="x_step" title="Faceted STEP (AP214): a solid of flat faces, no exact cylinders">STEP</button>
     </div>
-    <input type="file" id="f_file" accept=".zcad,application/json" hidden>
+    <input type="file" id="f_file" accept=".zcad,.json,application/json,.stl,model/stl" hidden>
     <input type="file" id="f_stl" accept=".stl,model/stl" hidden>
 
     <p class="hint"><b>L</b> — Line (SketchUp pencil): click a vertex, edge or
