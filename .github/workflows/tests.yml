@@ -1,0 +1,31 @@
+# Автотесты: Rust-сервер (MCP-мост) и ядро геометрии из web/app.js в Node.
+# Интеграционные тесты через MCP (tests/mcp/run.py) требуют браузер с открытой
+# вкладкой редактора и запускаются вручную
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test "tests/core/*.test.js"
+      # больше случайных пар для точных булевых — другой сид на каждом прогоне
+      - run: node --test "tests/core/mesh_boolean.test.js"
+        env:
+          ZC_STRESS: 1500
+          ZC_SEED: ${{ github.run_number }}

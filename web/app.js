@@ -5622,15 +5622,20 @@ function csgSubtractOne(aTris, bTris){
 // при объединении встречные грани исчезают, попутные остаются одной
 function meshBoolean(aTris, bTris, op){
   const EPS = 2e-5, f = Math.fround;
+  // точки пересечения ближе POOL — одна точка: две точки в 2.2e-5 мм друг от
+  // друга (чуть больше EPS, но в одном ключе редактора) давали щепку и
+  // Т-стык, через который протекала классификация (4 конуса из одной точки
+  // с неокруглённой осью: объём +1400 мм³). 5e-4 уже сливает лишнее
+  const POOL = 2e-4;
   const P = [];
   // пул точек: пространственный хеш с допуском
-  const cellS = EPS * 4, hash = new Map();
+  const cellS = POOL * 2, hash = new Map();
   const hk = (x, y, z) => x+','+y+','+z;
   const poolFind = X => {
     const cx = Math.floor(X.x / cellS), cy = Math.floor(X.y / cellS), cz = Math.floor(X.z / cellS);
     for(let dx=-1;dx<=1;dx++) for(let dy=-1;dy<=1;dy++) for(let dz=-1;dz<=1;dz++){
       const L = hash.get(hk(cx+dx, cy+dy, cz+dz)); if(!L) continue;
-      for(const id of L) if(P[id].distanceToSquared(X) < EPS*EPS) return id;
+      for(const id of L) if(P[id].distanceToSquared(X) < POOL*POOL) return id;
     }
     return -1;
   };
