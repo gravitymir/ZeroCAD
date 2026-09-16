@@ -3215,14 +3215,36 @@ function textCellsOf(str){
   }
   return cells;
 }
+// Клетки для врезки в тело — на сетке вдвое мельче, с мостиками: у диагоналей
+// пиксельного шрифта (X, Z, K, V…) клетки касаются только углом, и на таком
+// стыке ребро делят четыре треугольника — тело «не многообразно», слайсеры
+// принтеров на это ругаются (калибровочный куб XYZ: 16 таких рёбер). В каждый
+// угловой стык добавляется четвертинка соседней пустой клетки — стык получает
+// толщину в полклетки, форма буквы почти не меняется
+function textCellsFine(str){
+  const cells = textCellsOf(str), fine = new Set();
+  const has = (x, y) => cells.has(x + ',' + y);
+  for(const key of cells){
+    const [x, y] = key.split(',').map(Number);
+    for(let a=0;a<2;a++) for(let b=0;b<2;b++) fine.add((2*x+a) + ',' + (2*y+b));
+  }
+  for(const key of cells){
+    const [x, y] = key.split(',').map(Number);
+    // (x,y) и (x+1,y+1) касаются углом, (x+1,y) и (x,y+1) пусты
+    if(has(x+1, y+1) && !has(x+1, y) && !has(x, y+1)) fine.add((2*x+2) + ',' + (2*y+1));
+    // (x,y) и (x-1,y+1) касаются углом, (x-1,y) и (x,y+1) пусты
+    if(has(x-1, y+1) && !has(x-1, y) && !has(x, y+1)) fine.add((2*x-1) + ',' + (2*y+1));
+  }
+  return fine;
+}
 function placeTextAt(P, n){
   const {str, h, d} = textParams;
-  const s = h/7; // клетка
+  const s = h/14; // клетка мелкой сетки (textCellsFine): буква — 10×14
   const u = Math.abs(n.z) > 0.9
     ? new THREE.Vector3(1,0,0)
     : new THREE.Vector3(0,0,1).cross(n).normalize();
   const v = new THREE.Vector3().crossVectors(n, u).normalize(); // «вверх» по грани
-  const cells = textCellsOf(str);
+  const cells = textCellsFine(str);
   if(!cells.size) return;
   // контур букв — граничные рёбра клеток, слитые в длинные отрезки по
   // строкам/столбцам; врезается в грань линиями-хордами (noExt: сегменты
@@ -3312,6 +3334,8 @@ function placeTextAt(P, n){
         cleanupMesh(); healCoplanarOverlaps(); healTJunctions();
         if(mesh.geometry.attributes.position.array.length === len0) break;
       }
+      // трещины у букв (на Z калибровочного куба оставалось 39 открытых рёбер)
+      healCracks();
       removeInvertedShells();
     }
   }catch(err){
@@ -6230,6 +6254,11 @@ function healAll(){
     cleanupMesh(); healTJunctions();
     if(mesh.geometry.attributes.position.array.length === len0) break;
   }
+  healCracks();
+  removeInvertedShells();
+}
+// Добивка после сшивки Т-стыков (общая для healAll и гравировки текста)
+function healCracks(){
   // Трещины вдоль рёбер: точки пересечения у соседних граней после булевых
   // расходятся на сотые мм (65.59 и 65.60), обе стороны ребра остаются
   // «граничными» — рёбра рисовались обрывками линий вокруг выреза. Если после
@@ -6247,7 +6276,6 @@ function healAll(){
   // соседние щели влияют друг на друга (закрыли одну — другая сменила
   // обход), поэтому несколько проходов до исчезновения
   for(let i=0;i<4 && closeSliverHoles();i++) cleanupMesh();
-  removeInvertedShells();
 }
 // знаковый объём меша по массиву позиций (дивергентная формула)
 function meshVolumeOf(arr){
@@ -10828,6 +10856,21 @@ const zcV3 = (a, name) => {
   return new THREE.Vector3(+a[0], +a[1], +a[2]);
 };
 const zcVec = {type: 'array', items: {type: 'number'}, minItems: 3, maxItems: 3};
+// рёбра, на которых сходятся больше двух треугольников (касание углом, как
+// у диагоналей пиксельного шрифта): тело замкнуто, но не «многообразно» —
+// для печати такое место неоднозначно
+function nonManifoldEdgeCount(){
+  const pos = mesh.geometry.attributes.position.array, cnt = new Map();
+  for(let o=0;o<pos.length;o+=9) for(let e=0;e<3;e++){
+    const o1=o+e*3, o2=o+((e+1)%3)*3;
+    const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+    if(k1 === k2) continue;
+    const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+    cnt.set(ek, (cnt.get(ek)||0) + 1);
+  }
+  let n = 0; for(const c of cnt.values()) if(c > 2) n++;
+  return n;
+}
 function zcSummary(){
   const pos = mesh.geometry.attributes.position.array;
   const box = new THREE.Box3();
@@ -10839,6 +10882,7 @@ function zcSummary(){
     volume_mm3: +meshVolumeOf(pos).toFixed(3),
     bbox_min: r3(box.min), bbox_max: r3(box.max),
     open_edges: openEdgeCount(),   // 0 — тело замкнуто
+    nonmanifold_edges: nonManifoldEdgeCount(), // рёбра с 3+ треугольниками: слайсеры на них ругаются
     lines: guides.length,
     undo_steps: undoStack.length
   };
@@ -11202,6 +11246,32 @@ const ZC_COMMANDS = {
       if(t < 0) throw new Error('no face at this point');
       cachedPatch = null;
       return zcCutThrough(t);
+    }
+  },
+  add_text: {
+    description: 'Put text on a face, centred at a point: depth > 0 embosses (raised letters), depth < 0 engraves, 0 only draws the letter outlines. Blocky 5×7 font; on vertical faces the text reads upright, on horizontal faces along +X.',
+    params: {center: Object.assign({description: 'centre of the text on the face, mm'}, zcVec),
+             normal: Object.assign({description: 'outward normal of that face'}, zcVec),
+             text: {type: 'string'}, height: {type: 'number', description: 'letter height, mm (≥ 3)'},
+             depth: {type: 'number', description: 'mm: + raised, − engraved, 0 outline'}},
+    required: ['center', 'normal', 'text', 'height', 'depth'],
+    run(a){
+      const n = zcV3(a.normal, 'normal');
+      if(n.length() < 1e-9) throw new Error('normal must not be zero');
+      n.normalize();
+      const C = zcV3(a.center, 'center');
+      if(zcFaceAt(C, n) < 0) throw new Error('no face with this normal at the centre point');
+      const str = String(a.text || '').toUpperCase();
+      if(![...str].some(ch => FONT57[ch] && ch !== ' ')) throw new Error('no printable letters (A–Z, 0–9)');
+      const h = Math.max(3, +a.height || 10), d = snapMM(+a.depth || 0);
+      textParams = {str, h, d};
+      const v0 = meshVolumeOf(mesh.geometry.attributes.position.array), u0 = undoStack.length;
+      placeTextAt(txLeftFromAnchor(C, n, textParams), n);
+      if(undoStack.length === u0 || (d !== 0 && Math.abs(meshVolumeOf(mesh.geometry.attributes.position.array) - v0) < 1e-6))
+        throw new Error('text could not be placed here');
+      const cells = textCellsFine(str).size, s = h / 14;
+      return Object.assign({letter_area_mm2: +(cells * s * s).toFixed(3), text_width_mm: +textWidth(textParams).toFixed(3),
+        volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
     }
   },
   undo: {
