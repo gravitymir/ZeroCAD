@@ -2549,7 +2549,7 @@ const bevelTool = {
       const arr = [];
       for(const t of body) for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
       setMeshFromArray(new Float32Array(arr));
-      healAll();
+      healAfterBool();
       // стык нескольких скруглений: убрать вершины-разрезы на прямых и
       // заново сшить Т-стыки, иначе грани расползаются на треугольники
       if(collapseCollinearVertices()){
@@ -3324,19 +3324,22 @@ function placeTextAt(P, n){
         for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
       }
       setMeshFromArray(new Float32Array(arr));
-      // Т-стыков после BSP у текста сотни (healTJunctions чинит до 16 за
-      // вызов) — гоняем до полной сходимости. healCoplanarOverlaps
-      // обязателен: при сквозной гравировке (глубина = толщине тела) дно
-      // призмы копланарно задней грани — без взаимной подрезки остаются
-      // мембраны и вывернутые куски
-      for(let i=0;i<80;i++){
-        const len0 = mesh.geometry.attributes.position.array.length;
-        cleanupMesh(); healCoplanarOverlaps(); healTJunctions();
-        if(mesh.geometry.attributes.position.array.length === len0) break;
+      cleanupMesh();
+      if(openEdgeCount() || nonManifoldEdgeCount()){
+        // Т-стыков после BSP у текста сотни (healTJunctions чинит до 16 за
+        // вызов) — гоняем до полной сходимости. healCoplanarOverlaps
+        // обязателен: при сквозной гравировке (глубина = толщине тела) дно
+        // призмы копланарно задней грани — без взаимной подрезки остаются
+        // мембраны и вывернутые куски
+        for(let i=0;i<80;i++){
+          const len0 = mesh.geometry.attributes.position.array.length;
+          cleanupMesh(); healCoplanarOverlaps(); healTJunctions();
+          if(mesh.geometry.attributes.position.array.length === len0) break;
+        }
+        // трещины у букв (на Z калибровочного куба оставалось 39 открытых рёбер)
+        healCracks();
+        removeInvertedShells();
       }
-      // трещины у букв (на Z калибровочного куба оставалось 39 открытых рёбер)
-      healCracks();
-      removeInvertedShells();
     }
   }catch(err){
     console.warn('BSP-текст не удался — операция отменена', err);
@@ -4578,7 +4581,7 @@ function flatFillLoop(loop){
       }
       pushHistory(snap);
       setMeshFromArray(new Float32Array(arr));
-      healAll();
+      healAfterBool();
     } else {
       pushHistory(snap);
       const keep = [];
@@ -5522,12 +5525,54 @@ function csgClusters(tris){
   }
   return groups.map(g => g.ts);
 }
+// Инструменты мыши (выдавливание, карман, текст, фаска, сдвиг ребра)
+// сначала идут точным meshBoolean; BSP остаётся запасным путём — если
+// входное тело не замкнуто, точный путь бросил ошибку или дал щели
+function openEdgesOfTris(tris){
+  const cnt = new Map();
+  for(const t of tris){
+    const k = t.map(v => keyOf(v.x, v.y, v.z));
+    if(k[0] === k[1] || k[1] === k[2] || k[0] === k[2]) continue;
+    // нулевой площади вызывающий код всё равно выбрасывает
+    if(new THREE.Vector3().subVectors(t[1], t[0]).cross(new THREE.Vector3().subVectors(t[2], t[0])).length() < 1e-6) continue;
+    for(let e=0;e<3;e++){ const a = k[e], b = k[(e+1)%3], ek = a < b ? a+'|'+b : b+'|'+a; cnt.set(ek, (cnt.get(ek)||0) + 1); }
+  }
+  let open = 0; for(const c of cnt.values()) if(c === 1) open++;
+  return open;
+}
+let lastBoolPath = '';
+// после булевой: лечилки (сварка, Т-стыки, трещины — секунды на крупной
+// сетке) нужны, только если в сетке остались щели или рёбра с 3+ гранями;
+// точный результат обычно чист — хватает чистки вырожденных треугольников
+function healAfterBool(){
+  cleanupMesh();
+  if(openEdgeCount() === 0 && nonManifoldEdgeCount() === 0) return;
+  healAll();
+} // 'exact' | 'bsp' — для отладки и тестов
+function exactBool(aTris, bTris, op){
+  try{
+    if(!aTris.length || !bTris.length) return null;
+    if(openEdgesOfTris(aTris) || openEdgesOfTris(bTris)) return null;
+    const arr = meshBoolean(aTris, bTris, op), tris = [];
+    for(let i=0;i<arr.length;i+=9)
+      tris.push([new THREE.Vector3(arr[i],arr[i+1],arr[i+2]), new THREE.Vector3(arr[i+3],arr[i+4],arr[i+5]),
+                 new THREE.Vector3(arr[i+6],arr[i+7],arr[i+8])]);
+    if(openEdgesOfTris(tris)) return null;
+    return tris;
+  }catch(err){ console.warn('exact boolean failed, falling back to BSP:', err.message); return null; }
+}
 function csgUnion(aTris, bTris){
+  const ex = exactBool(aTris, bTris, 'union');
+  lastBoolPath = ex ? 'exact' : 'bsp';
+  if(ex) return ex;
   const groups = csgClusters(bTris);
   if(groups.length > 1){ let cur = aTris; for(const g of groups) cur = csgUnionOne(cur, g); return cur; }
   return csgUnionOne(aTris, bTris);
 }
 function csgSubtract(aTris, bTris){
+  const ex = exactBool(aTris, bTris, 'subtract');
+  lastBoolPath = ex ? 'exact' : 'bsp';
+  if(ex) return ex;
   const groups = csgClusters(bTris);
   if(groups.length > 1){ let cur = aTris; for(const g of groups) cur = csgSubtractOne(cur, g); return cur; }
   return csgSubtractOne(aTris, bTris);
@@ -5748,12 +5793,19 @@ function meshBoolean(aTris, bTris, op){
     return votes >= 2;
   };
   const shell = (T, flipIt) => T.flatMap(([i, j, k]) => (flipIt ? [i, k, j] : [i, j, k]).flatMap(v => [P[v].x, P[v].y, P[v].z]));
-  if(!pairs){ // не касаются: одно внутри другого или врозь
+  if(!pairs){ // не касаются: куски B внутри A или врозь, либо A внутри B
     const cen = ([i, j, k]) => P[i].clone().add(P[j]).add(P[k]).multiplyScalar(1/3);
-    const bInA = TB.length && inside(cen(TB[0]), TA), aInB = TA.length && inside(cen(TA[0]), TB);
-    let out;
-    if(op === 'union') out = bInA ? shell(TA) : aInB ? shell(TB) : shell(TA).concat(shell(TB));
-    else out = bInA ? shell(TA).concat(shell(TB, true)) : aInB ? [] : shell(TA);
+    if(TA.length && inside(cen(TA[0]), TB)) return new Float32Array(op === 'union' ? shell(TB) : []);
+    const par = TB.map((_, i) => i), root = i => { while(par[i] !== i){ par[i] = par[par[i]]; i = par[i]; } return i; };
+    const byV = new Map();
+    TB.forEach((t, i) => { for(const v of t){ const j = byV.get(v); if(j === undefined) byV.set(v, i); else { const r1 = root(i), r2 = root(j); if(r1 !== r2) par[r1] = r2; } } });
+    const comps = new Map(); TB.forEach((t, i) => { const r = root(i); if(!comps.has(r)) comps.set(r, []); comps.get(r).push(t); });
+    let out = shell(TA);
+    for(const c of comps.values()){
+      const inA = inside(cen(c[0]), TA);
+      if(op === 'union' && !inA) out = out.concat(shell(c));
+      if(op === 'subtract' && inA) out = out.concat(shell(c, true));
+    }
     return new Float32Array(out);
   }
   // перетриангуляция одного треугольника с отрезками
@@ -5773,6 +5825,25 @@ function meshBoolean(aTris, bTris, op){
       for(let c=0;c+1<ch.length;c++) addE(L(ch[c]), L(ch[c+1]));
     }
     for(const [p, q] of segs) addE(L(p), L(q));
+    // рёбра на одной прямой, наложенные друг на друга (длинное поверх двух
+    // коротких — у дна букв), делятся точками, лежащими на них
+    for(const e of [...edges]){
+      const [u, v] = e.split('_').map(Number), A = X[u], B = X[v];
+      const dx = B[0]-A[0], dy = B[1]-A[1], L2 = dx*dx + dy*dy;
+      const mids = [];
+      for(let w=0; w<X.length; w++){
+        if(w === u || w === v) continue;
+        const cx = dx*(X[w][1]-A[1]) - dy*(X[w][0]-A[0]);
+        if(cx*cx > EPS*EPS * L2) continue;
+        const t = ((X[w][0]-A[0])*dx + (X[w][1]-A[1])*dy) / L2;
+        if(t > 1e-9 && t < 1 - 1e-9) mids.push([t, w]);
+      }
+      if(!mids.length) continue;
+      edges.delete(e);
+      mids.sort((a, b) => a[0] - b[0]);
+      const ch = [u, ...mids.map(m => m[1]), v];
+      for(let c=0;c+1<ch.length;c++) addE(ch[c], ch[c+1]);
+    }
     const nb = X.map(() => []);
     for(const e of edges){ const [u, v] = e.split('_').map(Number); nb[u].push(v); nb[v].push(u); }
     for(let changed = true; changed;){ // висячие рёбра мешают обходу граней
@@ -5848,15 +5919,23 @@ function meshBoolean(aTris, bTris, op){
       let guard = idx.length * idx.length + 10;
       while(idx.length > 3 && guard-- > 0){
         let cut = -1;
-        for(let i=0;i<idx.length && cut < 0;i++){
-          const a = idx[(i-1+idx.length)%idx.length], b = idx[i], c = idx[(i+1)%idx.length];
-          if(cr(a, b, c) <= 1e-10) continue;
-          let ok = true;
-          for(const w of idx){ // точка на самой диагонали a–c тоже мешает: иначе Т-стык
-            if(w === a || w === b || w === c) continue;
-            if(cr(a, b, w) > 1e-10 && cr(b, c, w) > 1e-10 && cr(c, a, w) > -1e-10){ ok = false; break; }
+        // два прохода: сначала уши с допуском EPS (расстояния — у координат
+        // из Float32 шум ~1e-6, и «ухо» из трёх точек на одной прямой давало
+        // щепку и Т-стык), если таких нет — честно тонкие уши
+        for(const tol of [EPS, 0]){
+          for(let i=0;i<idx.length && cut < 0;i++){
+            const a = idx[(i-1+idx.length)%idx.length], b = idx[i], c = idx[(i+1)%idx.length];
+            const len = (p, q) => Math.hypot(X[q][0]-X[p][0], X[q][1]-X[p][1]) || 1;
+            const lab = len(a, b), lbc = len(b, c), lca = len(c, a);
+            if(cr(a, b, c) / lca <= (tol || 1e-12)) continue;
+            let ok = true;
+            for(const w of idx){ // точка на самой диагонали a–c тоже мешает: иначе Т-стык
+              if(w === a || w === b || w === c) continue;
+              if(cr(a, b, w) / lab > tol && cr(b, c, w) / lbc > tol && cr(c, a, w) / lca > -tol){ ok = false; break; }
+            }
+            if(ok) cut = i;
           }
-          if(ok) cut = i;
+          if(cut >= 0) break;
         }
         if(cut < 0) break;
         out.push([G[idx[(cut-1+idx.length)%idx.length]], G[idx[cut]], G[idx[(cut+1)%idx.length]]]);
@@ -6004,7 +6083,7 @@ function commitPocketCSG(snap, patchTris, n, depth){
       for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
     }
     setMeshFromArray(new Float32Array(arr));
-    healAll();           // осколки, копланарные наложения и Т-стыки BSP
+    healAfterBool();     // у BSP — осколки, копланарные наложения и Т-стыки
     if(!modified){ modified = true; s_mod.textContent = 'yes'; }
   }catch(err){
     console.warn('BSP-карман не удался — операция отменена', err);
@@ -6141,7 +6220,7 @@ function extrudeCSG(basePos, prism, op){
     for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
   }
   setMeshFromArray(new Float32Array(arr));
-  healAll();
+  healAfterBool();
 }
 let exFaceDrag = null; // грань тянут мышью при открытом окне Extrude
 // белая пунктирная ось выдавливания через центр грани (как ось в SketchUp)
@@ -6310,10 +6389,11 @@ function commitExtrude(){
   // делаем так же — тело ДО операции плюс замкнутая призма поднятия.
   // Локальная сшивка не справляется, когда стенки проходят сквозь другие
   // грани (поднятые донья кармана): получается тело внутри тела.
-  // На крупных сетках (колесо — 26 000 треугольников) BSP слишком дорог,
-  // там остаётся локальный путь: пересечений с чужими гранями почти не бывает
+  // На крупных сетках (колесо — 26 000 треугольников) BSP слишком дорог:
+  // там только точный путь, а если он не прошёл — локальная сшивка
   let padded = false;
-  if(patchTris && mesh.geometry.attributes.position.array.length/9 <= 6000){
+  const bigMesh = mesh.geometry.attributes.position.array.length/9 > 6000;
+  if(patchTris && mesh.geometry.attributes.position.array.length/9 <= 80000){
     const before = mesh.geometry.attributes.position.array.slice();
     const snap = undoStack[undoStack.length-1];
     try{
@@ -6323,7 +6403,8 @@ function commitExtrude(){
         body.push([new THREE.Vector3(snap.pos[i],snap.pos[i+1],snap.pos[i+2]),
                    new THREE.Vector3(snap.pos[i+3],snap.pos[i+4],snap.pos[i+5]),
                    new THREE.Vector3(snap.pos[i+6],snap.pos[i+7],snap.pos[i+8])]);
-      const res = csgUnion(body, prism);
+      const res = bigMesh ? exactBool(body, prism, 'union') : csgUnion(body, prism);
+      if(!res) throw new Error('exact union failed on a large mesh');
       const q = x => Math.round(x*1000)/1000;
       const arr = [];
       for(const t of res){
@@ -6333,10 +6414,10 @@ function commitExtrude(){
         for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
       }
       setMeshFromArray(new Float32Array(arr));
-      healAll();
+      healAfterBool();
       padded = true;
     }catch(err){
-      console.warn('BSP-union не удался — локальная сшивка', err);
+      console.warn('union не удался — локальная сшивка', err);
       setMeshFromArray(before);
     }
   }
@@ -7296,7 +7377,7 @@ function finishEdgeMove(){
           for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
         }
         setMeshFromArray(new Float32Array(arr));
-        healAll();
+        healAfterBool();
       }catch(err){
         console.warn('edge cut failed', err);
         setMeshFromArray(moved); // остаётся сгиб
@@ -11255,6 +11336,7 @@ function zcApplySolid(tris, op){
                  new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
     const R = t => t.map(v => new THREE.Vector3(q3(v.x), q3(v.y), q3(v.z)));
     out = meshBoolean(body, tris.map(R), op === 'cut' ? 'subtract' : 'union');
+    lastBoolPath = 'exact';
   }
   if(!out.length) throw new Error('the result is empty');
   pushHistory(snap);
@@ -12181,7 +12263,11 @@ async function zcRun(name, args){
   const c = ZC_COMMANDS[name];
   if(!c) throw new Error('unknown command ' + name);
   zcAgentBadge(name);
-  return await c.run(args || {});
+  lastBoolPath = '';
+  const res = await c.run(args || {});
+  // каким путём прошли булевы инструментов: exact — точный, bsp — запасной
+  if(lastBoolPath && res && typeof res === 'object' && !Array.isArray(res)) res.boolean = lastBoolPath;
+  return res;
 }
 window.zc = {run: zcRun, tools: zcToolList}; // и для консоли разработчика
 let zcBadgeT = 0;
