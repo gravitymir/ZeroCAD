@@ -10998,6 +10998,119 @@ function zcTaperExtrude(tri, d, k){
   if(dv <= 0 || openEdgeCount() > 0){ undo(true); throw new Error('tapered extrude did not close the body here'); }
   return Object.assign({face_area_mm2: +patch.area.toFixed(3), volume_change_mm3: +dv.toFixed(3)}, zcSummary());
 }
+// Сквозной вырез области грани до параллельной обратной грани (отверстие в
+// пластине) — без булевых. BSP на пластине с уже вырезанными дырками рос до
+// тысяч треугольников, оставлял щели и тянулся секундами. Здесь: контур
+// области переносится на обратную грань хордами (с линиями, как у круга),
+// обе области снимаются, стенки сшиваются «молнией» между верхним и нижним
+// контуром по положению вдоль контура — точки врезки с каждой стороны свои,
+// но каждая встаёт в стенку, и Т-стыков нет
+function zcCutThrough(tri){
+  let pos = mesh.geometry.attributes.position.array;
+  const patchTop = facePatchCached(tri);
+  const n = triNormalAt(tri).clone().normalize();
+  const top = patchOutlineLoop(pos, patchTop.tris);
+  if(!top) throw new Error('the face region must have one outline without holes');
+  const newell = L => {
+    const w = new THREE.Vector3();
+    for(let i=0;i<L.length;i++){ const p = L[i], q = L[(i+1)%L.length];
+      w.x += (p.y-q.y)*(p.z+q.z); w.y += (p.z-q.z)*(p.x+q.x); w.z += (p.x-q.x)*(p.y+q.y); }
+    return w;
+  };
+  if(newell(top).dot(n) < 0) top.reverse();
+  // контур не должен касаться края грани: иначе стенка легла бы на боковину
+  const K = X => keyOf(X.x, X.y, X.z);
+  const c = top.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / top.length);
+  // толщина: ближайшая грань ниже по -n, смотрящая против n
+  const ray = new THREE.Ray(c.clone().addScaledVector(n, -1e-3), n.clone().negate());
+  const hit = new THREE.Vector3(), A = new THREE.Vector3(), B = new THREE.Vector3(), Cc = new THREE.Vector3();
+  let depth = Infinity, exitTri = -1;
+  for(let o=0;o<pos.length;o+=9){
+    A.fromArray(pos, o); B.fromArray(pos, o+3); Cc.fromArray(pos, o+6);
+    if(!ray.intersectTriangle(A, B, Cc, false, hit)) continue;
+    const dd = hit.distanceTo(c);
+    if(dd > 1e-3 && dd < depth){ depth = dd; exitTri = o/9; }
+  }
+  if(exitTri < 0) throw new Error('nothing below this region to cut through');
+  if(triNormalAt(exitTri).dot(n) > -0.999) throw new Error('the opposite face is not parallel to this one');
+  const bot = top.map(p => p.clone().addScaledVector(n, -depth));
+  // обратная грань должна лежать под всем контуром
+  const test = getFaceTester();
+  for(let i=0;i<bot.length;i++)
+    if(!test(bot[i]) || !test(bot[i].clone().lerp(bot[(i+1)%bot.length], 0.5)))
+      throw new Error('the opposite face does not cover the whole outline');
+  const v0 = meshVolumeOf(pos);
+  pushUndo();
+  // врезать контур в обратную грань: линии держат область, хорды режут сетку
+  for(let i=0;i<bot.length;i++){
+    const a = bot[i], b = bot[(i+1)%bot.length];
+    if(a.distanceTo(b) < 1e-6) continue;
+    addGuide(a, b, true);
+    splitMeshByChord(a, b, 'segment');
+  }
+  cleanupMesh(); extractEdges();
+  pos = mesh.geometry.attributes.position.array;
+  const tb = zcFaceAt(c.clone().addScaledVector(n, -depth), n.clone().negate());
+  const tt = zcFaceAt(c, n);
+  if(tb < 0 || tt < 0){ undo(true); throw new Error('could not find the regions after cutting the outline'); }
+  cachedPatch = null;
+  const pTop = facePatchAt(tt), pBot = facePatchAt(tb);
+  const loopT = patchOutlineLoop(pos, pTop.tris), loopB = patchOutlineLoop(pos, pBot.tris);
+  if(!loopT || !loopB){ undo(true); throw new Error('the outline on the opposite face did not close'); }
+  if(newell(loopT).dot(n) < 0) loopT.reverse();
+  if(newell(loopB).dot(n) < 0) loopB.reverse(); // оба — против часовой вокруг n
+  // положение точки вдоль контура (по проекции на верхнюю петлю)
+  const cum = [0];
+  for(let i=0;i<loopT.length;i++) cum.push(cum[i] + loopT[i].distanceTo(loopT[(i+1)%loopT.length]));
+  const per = cum[loopT.length];
+  const param = P => {
+    const Q = P.clone().addScaledVector(n, n.dot(new THREE.Vector3().subVectors(loopT[0], P)));
+    let best = 0, bd = Infinity;
+    for(let i=0;i<loopT.length;i++){
+      const a = loopT[i], b = loopT[(i+1)%loopT.length], ab = new THREE.Vector3().subVectors(b, a);
+      const L2 = ab.lengthSq(); if(L2 < 1e-12) continue;
+      const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(Q, a).dot(ab) / L2));
+      const d = a.clone().addScaledVector(ab, t).distanceTo(Q);
+      if(d < bd){ bd = d; best = cum[i] + t * Math.sqrt(L2); }
+    }
+    return best % per;
+  };
+  const sT = loopT.map((p, i) => ({p, s: cum[i]}));
+  const sB = loopB.map(p => ({p, s: param(p)}));
+  // нижнюю петлю начинаем с точки, ближайшей к началу верхней
+  let b0 = 0;
+  for(let j=1;j<sB.length;j++){ const dj = Math.min(sB[j].s, per - sB[j].s), db = Math.min(sB[b0].s, per - sB[b0].s); if(dj < db) b0 = j; }
+  const B2 = sB.slice(b0).concat(sB.slice(0, b0)).map((x, k) => ({p: x.p, s: k === 0 && x.s > per/2 ? x.s - per : x.s}));
+  for(let k=1;k<B2.length;k++) if(B2[k].s < B2[k-1].s - per/2) B2[k].s += per;
+  const T2 = sT.concat([{p: sT[0].p, s: per}]);
+  B2.push({p: B2[0].p, s: B2[0].s + per});
+  const drop = new Set([...pTop.tris, ...pBot.tris]);
+  const out = [];
+  for(let t=0;t<pos.length/9;t++) if(!drop.has(t)) for(let j=0;j<9;j++) out.push(pos[t*9+j]);
+  const walls = [];
+  let i = 0, j = 0;
+  while(i < T2.length - 1 || j < B2.length - 1){
+    const nextT = i < T2.length - 1 ? T2[i+1].s : Infinity, nextB = j < B2.length - 1 ? B2[j+1].s : Infinity;
+    if(nextT <= nextB){ walls.push([T2[i].p, T2[i+1].p, B2[j].p]); i++; }
+    else { walls.push([T2[i].p, B2[j+1].p, B2[j].p]); j++; }
+  }
+  const push = (a, b, c2) => out.push(a.x, a.y, a.z, b.x, b.y, b.z, c2.x, c2.y, c2.z);
+  // стенка отверстия смотрит внутрь отверстия (к оси): проверим по первой
+  const axis = c;
+  const w0 = walls[0], wn = new THREE.Vector3().subVectors(w0[1], w0[0]).cross(new THREE.Vector3().subVectors(w0[2], w0[0]));
+  const mid = w0[0].clone().add(w0[1]).add(w0[2]).multiplyScalar(1/3);
+  const toAxis = new THREE.Vector3().subVectors(axis, mid); toAxis.addScaledVector(n, -toAxis.dot(n));
+  const flip = wn.dot(toAxis) < 0;
+  for(const [a, b, c2] of walls) flip ? push(a, c2, b) : push(a, b, c2);
+  setMeshFromArray(new Float32Array(out));
+  cleanupMesh();
+  hidePatch(); ppPatch = null; clearEdgeSel(); deselect();
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  extractEdges();
+  const dv = meshVolumeOf(mesh.geometry.attributes.position.array) - v0;
+  if(dv >= 0 || openEdgeCount() > 0){ undo(true); throw new Error('cut through did not close the body here'); }
+  return Object.assign({face_area_mm2: +patchTop.area.toFixed(3), depth_mm: +depth.toFixed(3), volume_change_mm3: +dv.toFixed(3)}, zcSummary());
+}
 const ZC_COMMANDS = {
   get_state: {
     description: 'Current model: triangle count, volume (mm³), bounding box, open edges (0 = closed solid), drawn lines, undo steps.',
@@ -11077,6 +11190,18 @@ const ZC_COMMANDS = {
       releaseToolInput();
       return Object.assign({face_area_mm2: +area.toFixed(3),
         volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
+    }
+  },
+  cut_through: {
+    description: 'Cut the face region under a point straight through the body until it exits the opposite parallel face — a through hole in a plate (draw its outline first, e.g. draw_circle). The outline must lie inside both faces.',
+    params: {point: Object.assign({description: 'a point inside the region, mm'}, zcVec),
+             normal: Object.assign({description: 'optional face normal'}, zcVec)},
+    required: ['point'],
+    run(a){
+      const t = zcFaceAt(zcV3(a.point, 'point'), a.normal ? zcV3(a.normal, 'normal').normalize() : null);
+      if(t < 0) throw new Error('no face at this point');
+      cachedPatch = null;
+      return zcCutThrough(t);
     }
   },
   undo: {
