@@ -201,6 +201,18 @@ def extrude_pocket_pad_through():
 
 
 @case
+def extrude_end_size_draft():
+    # End size окна Extrude (end_scale): усечённый конус h/3·(A + A·k² + A·k)
+    for dist, k in [(10, 0.5), (-10, 0.5), (15, 1.4)]:
+        call('new_shape', {'shape': 'cube', 'size': 40})
+        call('draw_circle', {'center': [20, 20, 40], 'normal': [0, 0, 1], 'radius': 8, 'segments': 48})
+        d = call('extrude_face', {'point': [20, 20, 40], 'normal': [0, 0, 1], 'distance': dist, 'end_scale': k})
+        exp = abs(dist) / 3 * (A48 + A48 * k * k + A48 * k) * (1 if dist > 0 else -1)
+        closed(d, f'draft {dist} x{k}'); exact(d, f'draft {dist} x{k}')
+        near(d['volume_change_mm3'], exp, 0.05, f'draft {dist} x{k}')
+
+
+@case
 def bevel_edges_tool():
     call('new_shape', {'shape': 'cube', 'size': 40})
     d = call('bevel_edges', {'points': [[20, 0, 40]], 'size': 4, 'segments': 1})

@@ -233,6 +233,15 @@
   #exPopup #ex_ok.cut{background:#fff;color:#10131a;border-color:#fff}
   /* операция ничего не изменит — кнопка серая и не нажимается */
   #exPopup #ex_ok:disabled{background:#3a3f47;color:#8b93a1;border-color:#3a3f47;cursor:default}
+  #exPopup .plab{display:inline-block;min-width:80px}
+  #exPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em;max-width:340px}
+  #exPopup #ex_through{flex:0 0 auto;padding:4px 12px;font-size:14px;margin-left:10px;background:var(--panel2);color:var(--text);border:1px solid var(--line)}
+  #exPopup #ex_through.on{background:#fff;color:#10131a;font-weight:700;border-color:#fff}
+  #exPopup #ex_through:disabled,#exPopup #ex_taper:disabled{opacity:.4;cursor:default}
+  #bevPopup .prow[hidden]{display:none}
+  #bevPopup .plab{display:inline-block;min-width:70px}
+  #bevPopup button.lp{padding:6px 8px;font-size:15px}
+  #bevPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
   #exPopup #ex_note{font-size:15px;color:#ffb347;margin:8px 0 0;max-width:340px;line-height:1.4}
   /* окно Divide узкое и высокое: данные по строкам, варианты — сеткой по 4 */
   #divPopup{cursor:move;padding:14px 16px;width:300px;box-sizing:border-box}
@@ -375,6 +384,7 @@
       <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Bevel</b><span id="bev_kind" style="font-size:14px">chamfer</span></div>
       <div class="prow">Size <input id="bev_d" type="number" step="0.1" min="0.1" value="2"> mm</div>
       <div class="prow">Segments <input id="bev_s" type="number" step="1" min="1" max="32" value="1"></div>
+      <div class="prow" id="bev_loops" hidden><span class="plab">Outline</span><button id="bev_outer" class="lp on">Outer</button><button id="bev_holes" class="lp">Holes</button><button id="bev_all" class="lp">All</button></div>
       <div class="pinfo" id="bev_info"></div>
       <div class="phint" id="bev_hint">1 segment — chamfer · 2+ — round</div>
       <div class="prow" style="gap:10px;margin-top:8px"><button id="bev_ok">OK</button><button id="bev_cancel">Cancel</button></div>
@@ -455,12 +465,15 @@
     <div id="exPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
       <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Extrude</b></div>
-      <div class="prow"><input id="ex_val" type="number" step="0.1" value="5"> mm</div>
+      <div class="prow"><input id="ex_val" type="number" step="0.1" value="5"> mm<button id="ex_through" title="Cut through the whole body along the face normal (Through All)">Through all</button></div>
+      <div class="prow"><span class="plab">End size</span><input id="ex_taper" type="number" step="5" min="5" max="500" value="100"> %</div>
+      <div class="pinfo" id="ex_info">&nbsp;</div>
       <div class="prow excmd" id="ex_ctrl"><span class="key">Ctrl</span> — cut</div>
       <div class="exline">
         <div>Drag the face with the mouse or type the height; a minus goes against the face direction.</div>
         <div>Hold Ctrl while dragging, or press Ctrl+Enter — the face cuts material instead of adding it. Released the face with Ctrl held — the button stays Cut.</div>
         <div>Without Ctrl it picks itself: into the body — Cut, outward or from a face in the air — Add.</div>
+        <div>Through all — cut down to where the body ends. End size — the far end of the extrusion in % of the face: under 100 narrows (draft), over 100 widens.</div>
         <div>Enter — apply · Esc — cancel</div>
       </div>
       <div id="ex_note" hidden></div>

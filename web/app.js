@@ -2482,7 +2482,9 @@ function bevelPrism(ed, size, segs){
 // уже показанное и пишет одну запись истории
 const bevelTool = {
   hud: 'BEVEL · size and segments in the window (1 — chamfer, 2+ — round) · Enter — OK · Esc',
-  edges: [], snap: null, shown: null, timer: 0, committed: false,
+  // face: номер треугольника выбранной грани — фаска по её контурам (Chamfer
+  // по грани во Fusion берёт весь контур); иначе edges — прямые рёбра
+  edges: [], face: -1, loops: 'outer', snap: null, shown: null, timer: 0, committed: false,
   on(){
     const vr = view.getBoundingClientRect();
     bevPopup.style.left = Math.min(lastMX - vr.left + 20, vr.width - 340) + 'px';
@@ -2490,6 +2492,8 @@ const bevelTool = {
     bevPopup.hidden = false;
     bev_hint.hidden = !hintsChk.checked;
     this.snap = takeSnapshot(); this.shown = null; this.committed = false;
+    bev_loops.hidden = this.face < 0;
+    this.paintLoops();
     this.selKeys = edgeSel.map(es=>es.key); // вернуть выбор, если отменят
     for(const es of edgeSel) es.line.visible = false; // зелёные линии висели бы над срезом
     hideSelEnds();
@@ -2500,15 +2504,20 @@ const bevelTool = {
     clearTimeout(this.timer);
     bevPopup.hidden = true; releaseToolInput(); tipHide();
     if(!this.committed && this.snap){ // отмена: исходная сетка и прежний выбор
-      if(this.shown){
+      if(this.shown || this.face >= 0){
         setMeshFromArray(this.snap.pos);
+        restoreGuides(this.snap.guides);
         hardEdges = this.snap.hard.map(h=>({a: h.a.clone(), b: h.b.clone()}));
         extractEdges();
         for(const ch of chains) if(this.selKeys.includes(edgeSelKey(ch))) toggleEdgeSel(ch);
       }
       for(const es of edgeSel) es.line.visible = true;
     }
-    this.snap = null; this.shown = null;
+    this.snap = null; this.shown = null; this.face = -1;
+  },
+  paintLoops(){
+    for(const [id, w] of [['bev_outer', 'outer'], ['bev_holes', 'holes'], ['bev_all', 'all']])
+      document.getElementById(id).classList.toggle('on', this.loops === w);
   },
   params(){
     return {size: Math.max(0.1, snapMM(+bev_d.value || 0.1)),
@@ -2518,12 +2527,16 @@ const bevelTool = {
   key(e){ if(e.key === 'Enter'){ this.commit(); e.preventDefault(); return true; } return false; },
   preview(now){
     const {size, segs} = this.params();
-    const alpha = this.edges[0].alpha;
-    bev_kind.textContent = segs === 1 ? 'chamfer' : 'round';
+    bev_kind.textContent = (segs === 1 ? 'chamfer' : 'round') + (this.face >= 0 ? ' · outline' : '');
     bev_info.style.color = '';
-    bev_info.textContent = segs === 1
-      ? 'Face ' + (2 * size * Math.sin(alpha / 2)).toFixed(2) + ' mm wide'
-      : 'R ' + (size * Math.tan(alpha / 2)).toFixed(2) + ' mm · ' + segs + ' segments';
+    if(this.face >= 0){
+      bev_info.textContent = '…';
+    } else {
+      const alpha = this.edges[0].alpha;
+      bev_info.textContent = segs === 1
+        ? 'Face ' + (2 * size * Math.sin(alpha / 2)).toFixed(2) + ' mm wide'
+        : 'R ' + (size * Math.tan(alpha / 2)).toFixed(2) + ' mm · ' + segs + ' segments';
+    }
     clearTimeout(this.timer);
     if(now) this.apply();
     else this.timer = setTimeout(()=>{ if(activeTool === this) this.apply(); }, 120);
@@ -2531,9 +2544,10 @@ const bevelTool = {
   // срез тела по текущим параметрам (всегда от исходной сетки)
   apply(){
     const {size, segs} = this.params();
-    const sig = size + '|' + segs;
+    const sig = size + '|' + segs + '|' + (this.face >= 0 ? this.loops : '');
     if(this.shown === sig) return true;
     const base = this.snap.pos;
+    if(this.face >= 0) return this.applyFace(size, segs, sig);
     try{
       let body = [];
       for(let i=0;i<base.length;i+=9)
@@ -2581,6 +2595,35 @@ const bevelTool = {
       this.shown = null;
       bev_info.style.color = '#ff6b6b';
       bev_info.textContent = 'Bevel failed with these values';
+      bev_ok.disabled = true;
+      return false;
+    }
+  },
+  // по грани: всегда от исходной сетки; записи истории, которые делают
+  // хирургия и булева, снимаются — окно пишет одну запись при OK
+  applyFace(size, segs, sig){
+    setMeshFromArray(this.snap.pos);
+    restoreGuides(this.snap.guides);
+    hardEdges = this.snap.hard.map(h=>({a: h.a.clone(), b: h.b.clone()}));
+    const u0 = undoStack.length, redo0 = redoStack.slice();
+    try{
+      const r = bevelFaceOutlines(this.face, size, segs, this.loops);
+      undoStack.length = u0; redoStack = redo0;
+      clearEdgeSel(); hideSelEnds();
+      extractEdges();
+      this.shown = sig;
+      bev_ok.disabled = false;
+      const n = r.outlines || 1;
+      bev_info.textContent = (n === 1 ? '1 outline' : n + ' outlines') + ' · ' + Math.abs(r.volume_change_mm3).toFixed(1) + ' mm³ removed';
+      return true;
+    }catch(err){
+      undoStack.length = Math.min(undoStack.length, u0); redoStack = redo0;
+      setMeshFromArray(this.snap.pos);
+      restoreGuides(this.snap.guides);
+      extractEdges();
+      this.shown = null;
+      bev_info.style.color = '#ff6b6b';
+      bev_info.textContent = err.message.replace(/^size /, 'Size ');
       bev_ok.disabled = true;
       return false;
     }
@@ -3489,6 +3532,12 @@ for(const inp of [bev_d, bev_s]){
   });
 }
 bev_ok.addEventListener('click', ()=>{ if(activeTool === bevelTool) bevelTool.commit(); });
+const bev_loops = document.getElementById('bev_loops');
+for(const [id, w] of [['bev_outer', 'outer'], ['bev_holes', 'holes'], ['bev_all', 'all']])
+  document.getElementById(id).addEventListener('click', ()=>{
+    if(activeTool !== bevelTool || bevelTool.face < 0) return;
+    bevelTool.loops = w; bevelTool.paintLoops(); bevelTool.preview(true);
+  });
 bev_cancel.addEventListener('click', ()=>setActiveTool(null));
 for(const inp of [arr_n, arr_a]){
   inp.addEventListener('input', ()=>{ if(activeTool === arrTool){ arrTool.auto = false; arrTool.preview(); } });
@@ -4228,6 +4277,7 @@ function showFacePalette(){
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     (!hintsChk.checked ? '' :
     '<div><span class="key">E</span> — Extrude: drag or value · Join / Cut</div>' +
+    '<div><span class="key">Ctrl+B</span> — chamfer / fillet the outline</div>' +
     '<div><span class="key">Ctrl+click</span> — multi-select (same plane)</div>' +
     '<div><span class="key">Ctrl+I</span> — invert: the other areas of this plane</div>' +
     '<div><span class="key">B</span> — bounding edges</div>' +
@@ -6283,6 +6333,22 @@ function openExtrude(){
   }
   exLive = {idx: ex.idx, fac: ex.fac, set: new Set(ex.idx),
             n: ppPatch.normal.clone(), applied: 0, sheet, probe, samples};
+  // Through all и End size: абсолютные позиции от исходных (торец масштабируется
+  // вокруг центра контура), глубина тела под гранью, треугольники лоскута
+  {
+    const posE = mesh.geometry.attributes.position.array, nn = ppPatch.normal.clone().normalize();
+    exLive.base = Float32Array.from(ex.idx.map(i => [posE[i], posE[i+1], posE[i+2]]).flat());
+    const loop = patchOutlineLoop(snapPos, ppPatch.tris);
+    exLive.center = loop ? loop.reduce((acc, p) => acc.add(p), new THREE.Vector3()).multiplyScalar(1 / loop.length) : c.clone();
+    exLive.tris = ppPatch.tris.slice();
+    exLive.area = ppPatch.area || 0;
+    const d0 = nn.dot(new THREE.Vector3().fromArray(snapPos, ppPatch.tris[0]*9));
+    let below = 0;
+    for(let i=0;i<snapPos.length;i+=3) below = Math.max(below, d0 - (nn.x*snapPos[i] + nn.y*snapPos[i+1] + nn.z*snapPos[i+2]));
+    exLive.below = below;
+    exLive.through = false; exLive.taper = 1;
+  }
+  ex_taper.value = 100;
   exOpManual = null; exCtrl = false;
   paintExOp();
   showExAxis(c, ppPatch.normal);
@@ -6302,21 +6368,57 @@ function paintExVal(){
 function applyExtrudeLive(v){
   if(!exLive) return;
   v = Math.round(v*10)/10;
-  const d = v - exLive.applied;
-  if(d){
-    const pos = mesh.geometry.attributes.position.array;
-    exLive.idx.forEach((i,k)=>{
-      const f = exLive.fac[k];
-      pos[i] += exLive.n.x*d*f; pos[i+1] += exLive.n.y*d*f; pos[i+2] += exLive.n.z*d*f;
+  const d = v - exLive.applied, k = exLive.taper || 1;
+  if(d || exLive.shownTaper !== k){
+    // позиции от исходных: сдвиг по нормали и масштаб торца вокруг центра
+    // контура (End size), стенки-веера — на полпути (f = 0.5)
+    const pos = mesh.geometry.attributes.position.array, B = exLive.base, C = exLive.center, n = exLive.n;
+    exLive.idx.forEach((i, j)=>{
+      const f = exLive.fac[j], sc = (k - 1) * f, bx = B[j*3], by = B[j*3+1], bz = B[j*3+2];
+      pos[i]   = bx + n.x*v*f + (bx - C.x)*sc;
+      pos[i+1] = by + n.y*v*f + (by - C.y)*sc;
+      pos[i+2] = bz + n.z*v*f + (bz - C.z)*sc;
     });
     mesh.geometry.attributes.position.needsUpdate = true;
     mesh.geometry.computeVertexNormals();
-    if(ppHi) ppHi.position.addScaledVector(exLive.n, d); // зелёная подсветка едет с гранью
+    if(ppHi){ ppHi.position.addScaledVector(n, d); ppHi.visible = k === 1; } // зелёная подсветка едет с гранью
     if(!modified){ modified = true; s_mod.textContent = 'yes'; }
-    exLive.applied = v;
+    exLive.applied = v; exLive.shownTaper = k;
   }
   paintExVal();
   paintExOp();
+  paintExInfo();
+}
+// строка данных окна Extrude: что получится — видна всегда (данные не гейтятся)
+function paintExInfo(){
+  if(!exLive) return;
+  const k = exLive.taper || 1, v = exLive.applied;
+  ex_through.classList.toggle('on', !!exLive.through);
+  ex_through.disabled = exLive.sheet || exLive.below < 0.05;
+  const parts = [];
+  if(exLive.through) parts.push('Through all · body ' + exLive.below.toFixed(1) + ' mm under the face');
+  else parts.push('Face ' + (Math.round(exLive.area*10)/10) + ' mm²');
+  if(Math.abs(k - 1) > 1e-6){
+    const endArea = exLive.area * k * k;
+    // угол стенки для круглой грани той же площади — ориентир уклона
+    const r = Math.sqrt(exLive.area / Math.PI), ang = v ? Math.atan(r * Math.abs(1 - k) / Math.abs(v)) * 180 / Math.PI : 0;
+    parts.push('end ' + (Math.round(endArea*10)/10) + ' mm²' + (v ? ' · walls ≈ ' + ang.toFixed(1) + '° ' + (k < 1 ? 'in' : 'out') : ''));
+    if(exLive.sheet) parts.push('<span style="color:#ffb347">End size needs a solid, not a sheet</span>');
+  }
+  ex_info.innerHTML = parts.join('<br>');
+}
+function setExThrough(on){
+  if(!exLive) return;
+  exLive.through = !!on && !exLive.sheet && exLive.below >= 0.05;
+  if(exLive.through){
+    const v = -snapMM(exLive.below + 1); // на 1 мм за конец тела: без плёнки у дна
+    ex_val.value = v.toFixed(1);
+    setExOp('cut');
+    applyExtrudeLive(v);
+  } else {
+    if(exOpManual === 'cut' && !exCtrl) setExOp(null);
+    paintExInfo();
+  }
 }
 function releaseToolInput(){ // фокус обратно на сцену
   const el = document.activeElement;
@@ -6332,6 +6434,7 @@ function commitExtrude(){
   exLive && updateOrbitCursor(false);
   if(!exLive){ exPopup.hidden = true; return; }
   applyExtrudeLive(snapMM(+ex_val.value||0));
+  if(exLive.taper && Math.abs(exLive.taper - 1) > 1e-6 && exLive.applied && !exLive.sheet){ commitTaperExtrude(); return; }
   const applied = exLive.applied, n = exLive.n.clone(), op = exOp(), sheet = exLive.sheet;
   // Быстрый путь (грань просто сдвинулась, проверка по объёму) законен, только
   // если призма выдавливания целиком в теле (вырез) или целиком снаружи
@@ -6805,6 +6908,44 @@ function buildPatchPrismRange(pos, trisIdx, n, hLow, hHigh){
   }
   return out;
 }
+// Выдавливание с End size ≠ 100 % (Draft/Taper у Extrude во Fusion): призма
+// лоскута, торец которой масштабирован вокруг центра контура, объединяется с
+// телом или вычитается точной булевой — работает и наружу, и в тело (карман
+// с уклоном), и у граней с отверстиями. Предпросмотр откатывается к снимку
+// до окна, призма строится по тем же треугольникам лоскута
+function commitTaperExtrude(){
+  const L = exLive, v = L.applied, k = L.taper, op = exOp(), n = L.n.clone().normalize();
+  exLive = null; exPopup.hidden = true;
+  hideExAxis(); exFaceDrag = null; releaseToolInput(); updateOrbitCursor(false);
+  undo(true); // снимок до окна: без предпросмотрных стенок
+  hidePatch(); ppPatch = null; cachedPatch = null;
+  const pos = mesh.geometry.attributes.position.array;
+  const V = o => new THREE.Vector3(pos[o], pos[o+1], pos[o+2]);
+  const top = P => P.clone().addScaledVector(n, v).add(new THREE.Vector3().subVectors(P, L.center).multiplyScalar(k - 1));
+  const tris = [], cnt = new Map();
+  for(const t of L.tris){
+    const A = V(t*9), B = V(t*9+3), C = V(t*9+6);
+    tris.push([A, C, B], [top(A), top(B), top(C)]);
+    for(const [P, Q] of [[A, B], [B, C], [C, A]]){
+      const ka = keyOf(P.x, P.y, P.z), kb = keyOf(Q.x, Q.y, Q.z), ek = ka < kb ? ka+'|'+kb : kb+'|'+ka;
+      const r = cnt.get(ek); if(r) r.n++; else cnt.set(ek, {n: 1, P, Q});
+    }
+  }
+  for(const w of cnt.values()) if(w.n === 1) tris.push([w.P, w.Q, top(w.Q)], [w.P, top(w.Q), top(w.P)]);
+  try{
+    const r = zcApplySolid(tris, op === 'cut' ? 'cut' : 'join', false);
+    if(r.open_edges || r.nonmanifold_edges || !r.volume_change_mm3){
+      undo(true);
+      warnTip(r.volume_change_mm3 ? 'Extrude with end size failed here' : 'Nothing to ' + (op === 'cut' ? 'cut' : 'add') + ' here');
+      return false;
+    }
+    return r;
+  }catch(err){
+    console.warn('taper extrude failed', err);
+    warnTip('Extrude with end size failed here');
+    return false;
+  }
+}
 function closeExtrude(){ // Esc: стенки уже врезаны — откат всей сессии окна
   hideExAxis(); exFaceDrag = null; releaseToolInput();
   updateOrbitCursor(false);
@@ -6813,7 +6954,23 @@ function closeExtrude(){ // Esc: стенки уже врезаны — отка
 }
 ex_val.addEventListener('input', ()=>{
   const v = +ex_val.value;
+  if(exLive && exLive.through) setExThrough(false); // своё число — уже не «насквозь»
   if(Number.isFinite(v)) applyExtrudeLive(snapMM(v)); else paintExVal();
+});
+const ex_through = document.getElementById('ex_through'), ex_taper = document.getElementById('ex_taper'),
+      ex_info = document.getElementById('ex_info');
+ex_through.addEventListener('click', ()=>{ if(exLive) setExThrough(!exLive.through); });
+ex_taper.addEventListener('input', ()=>{
+  if(!exLive) return;
+  const pct = +ex_taper.value;
+  if(!Number.isFinite(pct) || pct < 5 || pct > 500) return; // пока набирают — не трогаем
+  exLive.taper = pct / 100;
+  applyExtrudeLive(exLive.applied);
+});
+ex_taper.addEventListener('keydown', e=>{
+  if(e.key === 'Enter'){ e.preventDefault(); commitExtrude(); }
+  if(e.key === 'Escape'){ closeExtrude(); }
+  e.stopPropagation();
 });
 ex_val.addEventListener('keydown', e=>{
   if(e.key === 'Enter'){
@@ -9123,7 +9280,15 @@ window.addEventListener('keydown', e=>{
     e.preventDefault();
     if(activeTool === bevelTool){ setActiveTool(null); return; }
     const mesheEdges = edgeSel.filter(x=>!x.isGuide);
-    if(!mesheEdges.length){ warnTip('Select an edge of the body to bevel'); return; }
+    if(!mesheEdges.length && ppPatch){ // грань: фаска по её контурам
+      if(ppParts && ppParts.length > 1){ warnTip('Select one face to bevel its outline'); return; }
+      hideChordHint();
+      bevelTool.edges = []; bevelTool.face = ppPatch.tris[0];
+      hidePatch(); ppPatch = null; ppParts = null;
+      setActiveTool(bevelTool);
+      return;
+    }
+    if(!mesheEdges.length){ warnTip('Select an edge of the body or a face to bevel'); return; }
     const eds = [];
     for(const es of mesheEdges){
       const ed = analyzeBevelEdge(es.pts);
@@ -9131,7 +9296,7 @@ window.addEventListener('keydown', e=>{
       eds.push(ed);
     }
     hideChordHint();
-    bevelTool.edges = eds; setActiveTool(bevelTool);
+    bevelTool.edges = eds; bevelTool.face = -1; setActiveTool(bevelTool);
     return;
   }
   // Q — поворот/копия выбранных линий или точки (Rotate в SketchUp)
@@ -9927,6 +10092,7 @@ canvas.addEventListener('pointermove', e=>{
     const t = rayLineParam(raycaster.ray, exFaceDrag.base, exFaceDrag.n);
     const v = snapMM(exFaceDrag.v0 + t - exFaceDrag.t0);
     ex_val.value = v.toFixed(1);
+    if(exLive && exLive.through && v !== exLive.applied) setExThrough(false);
     applyExtrudeLive(v);
     return;
   }
@@ -11503,60 +11669,6 @@ function planeCut(pos, P, n){
   }
   return new Float32Array(out);
 }
-// Выдавливание с сужением (Draft у Extrude во Fusion, масштаб торца): лоскут
-// снимается, по его контуру встают стенки к уменьшенному торцу, торец —
-// ушами. Всё из тех же вершин контура, без булевых: у луча-конуса на грани
-// ядра щелей не бывает. Только наружу и только туда, где тело свободно
-function zcTaperExtrude(tri, d, k){
-  if(!(k >= 0.05 && k <= 5)) throw new Error('end_scale must be between 0.05 and 5');
-  if(d <= 0) throw new Error('a tapered extrude goes outward only (distance > 0)');
-  const pos = mesh.geometry.attributes.position.array;
-  const patch = facePatchCached(tri);
-  const loop = patchOutlineLoop(pos, patch.tris);
-  if(!loop) throw new Error('the face region must have one outline without holes');
-  const n = patch.normal.clone().normalize();
-  // нормаль лоскута может смотреть внутрь — берём по обходу контура (Ньюэлл)
-  const nw = new THREE.Vector3();
-  for(let i=0;i<loop.length;i++){
-    const p = loop[i], q = loop[(i+1)%loop.length];
-    nw.x += (p.y-q.y)*(p.z+q.z); nw.y += (p.z-q.z)*(p.x+q.x); nw.z += (p.x-q.x)*(p.y+q.y);
-  }
-  if(nw.dot(triNormalAt(tri)) < 0) loop.reverse();
-  n.copy(triNormalAt(tri)).normalize();
-  const c = loop.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / loop.length);
-  const top = loop.map(p => c.clone().addScaledVector(new THREE.Vector3().subVectors(p, c), k).addScaledVector(n, d));
-  const v0 = meshVolumeOf(pos);
-  const drop = new Set(patch.tris), out = [];
-  for(let t=0;t<pos.length/9;t++) if(!drop.has(t)) for(let j=0;j<9;j++) out.push(pos[t*9+j]);
-  const push = (A, B, C) => out.push(A.x, A.y, A.z, B.x, B.y, B.z, C.x, C.y, C.z);
-  for(let i=0;i<loop.length;i++){
-    const j = (i+1) % loop.length;
-    push(loop[i], loop[j], top[j]); push(loop[i], top[j], top[i]);
-  }
-  // торец: веер из центра, если контур звёздный относительно центра (круг,
-  // многоугольник) — точки контура на одной прямой уши теряли, и торец
-  // оставался с щелями; иначе — уши
-  const tc = c.clone().addScaledVector(n, d);
-  let star = true;
-  for(let i=0;i<top.length && star;i++){
-    const tn = new THREE.Vector3().subVectors(top[i], tc).cross(new THREE.Vector3().subVectors(top[(i+1)%top.length], tc));
-    if(tn.dot(n) <= 1e-9) star = false;
-  }
-  if(star) for(let i=0;i<top.length;i++) push(tc, top[i], top[(i+1)%top.length]);
-  else for(const [A, B, C] of earClip(top)){
-    const tn = new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(C, A));
-    if(tn.dot(n) >= 0) push(A, B, C); else push(A, C, B);
-  }
-  pushUndo();
-  hidePatch(); ppPatch = null; clearEdgeSel(); deselect();
-  setMeshFromArray(new Float32Array(out));
-  cleanupMesh();
-  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
-  extractEdges();
-  const dv = meshVolumeOf(mesh.geometry.attributes.position.array) - v0;
-  if(dv <= 0 || openEdgeCount() > 0){ undo(true); throw new Error('tapered extrude did not close the body here'); }
-  return Object.assign({face_area_mm2: +patch.area.toFixed(3), volume_change_mm3: +dv.toFixed(3)}, zcSummary());
-}
 // Сквозной вырез области грани до параллельной обратной грани (отверстие в
 // пластине) — без булевых. BSP на пластине с уже вырезанными дырками рос до
 // тысяч треугольников, оставлял щели и тянулся секундами. Здесь: контур
@@ -11907,6 +12019,21 @@ function dropAirGuides(){
   if(dropped) extractEdges();
   return dropped;
 }
+// Фаска/скругление контуров грани — общая для Ctrl+B по грани и MCP
+// bevel_outline. Внешний контур — сначала хирургия без булевых
+// (zcBevelFaceLoop), края отверстий и всё, что она не берёт, — точной булевой
+function bevelFaceOutlines(tri, size, segs, which){
+  cachedPatch = null;
+  if(which === 'outer'){
+    try{ return zcBevelFaceLoop(tri, size, segs); }
+    catch(err){
+      // ошибки размера — ответ; прочие ограничения хирургии — к булевой
+      if(/sharper|bigger than|taller|no closed outline/.test(err.message)) throw err;
+      cachedPatch = null;
+    }
+  }
+  return zcBevelLoopsCSG(tri, size, segs, which);
+}
 // Сквозной вырез области точной булевой (Through All во Fusion): призма
 // лоскута от 1 мм над гранью до выхода за тело по -n. В отличие от
 // zcCutThrough не нужна параллельная обратная грань, а область может быть с
@@ -12119,14 +12246,15 @@ const ZC_COMMANDS = {
              normal: Object.assign({description: 'optional face normal to choose between faces meeting at the point'}, zcVec),
              distance: {type: 'number', description: 'mm, + out of the face, − into the body'},
              operation: {type: 'string', enum: ['auto', 'join', 'cut'], description: 'auto: into the body cuts, outward joins'},
-             end_scale: {type: 'number', description: 'tapered extrude: size of the end face relative to the base (0.05–5, default 1). Outward only; the region must not run into other parts of the body.'}},
+             end_scale: {type: 'number', description: 'tapered extrude (End size in the Extrude window): size of the end face relative to the base, scaled around the outline centre (0.05–5, default 1). Works outward and into the body, also for regions with holes.'}},
     required: ['point', 'distance'],
     run(a){
       const d = +a.distance;
       if(!Number.isFinite(d) || Math.abs(d) < 0.05) throw new Error('distance must be a number of mm');
       const t = zcFaceAt(zcV3(a.point, 'point'), a.normal ? zcV3(a.normal, 'normal').normalize() : null);
       if(t < 0) throw new Error('no face at this point');
-      if(a.end_scale != null && Math.abs(+a.end_scale - 1) > 1e-6) return zcTaperExtrude(t, d, +a.end_scale);
+      const k = a.end_scale == null ? 1 : +a.end_scale;
+      if(!(k >= 0.05 && k <= 5)) throw new Error('end_scale must be between 0.05 and 5');
       const v0 = meshVolumeOf(mesh.geometry.attributes.position.array);
       clearEdgeSel(); deselect();
       ppParts = null; ppPatch = facePatchCached(t);
@@ -12134,8 +12262,11 @@ const ZC_COMMANDS = {
       openExtrude();
       ex_val.value = snapMM(d);
       exOpManual = a.operation === 'join' || a.operation === 'cut' ? a.operation : null;
+      exLive.taper = k; ex_taper.value = Math.round(k * 100); // End size окна
       applyExtrudeLive(snapMM(d));
+      const v1 = undoStack.length;
       commitExtrude();
+      if(Math.abs(k - 1) > 1e-6 && !exLive && undoStack.length < v1){ releaseToolInput(); throw new Error('extrude with end_scale failed here (nothing to ' + (d < 0 ? 'cut' : 'add') + ', or the solid did not close)'); }
       if(exLive){ closeExtrude(); throw new Error('nothing to ' + (exOp() === 'cut' ? 'cut' : 'add') + ' here'); }
       releaseToolInput();
       return Object.assign({face_area_mm2: +area.toFixed(3),
@@ -12245,7 +12376,7 @@ const ZC_COMMANDS = {
       if(activeTool) setActiveTool(null);
       clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
       const v0 = meshVolumeOf(mesh.geometry.attributes.position.array), u0 = undoStack.length;
-      bevelTool.edges = found.map(f => f.ed);
+      bevelTool.edges = found.map(f => f.ed); bevelTool.face = -1;
       bev_d.value = size; bev_s.value = segs;
       setActiveTool(bevelTool);  // on(): снимок и предпросмотр по полям окна
       bevelTool.commit();         // одна запись истории на все рёбра
@@ -12270,19 +12401,9 @@ const ZC_COMMANDS = {
       const t = zcFaceAt(zcV3(a.point, 'point'), a.normal ? zcV3(a.normal, 'normal').normalize() : null);
       if(t < 0) throw new Error('no face at this point');
       if(activeTool) setActiveTool(null);
-      cachedPatch = null;
       const which = a.outlines || 'outer';
       if(!['outer', 'holes', 'all'].includes(which)) throw new Error('outlines must be outer, holes or all');
-      const kind = segs === 1 ? 'chamfer' : 'round';
-      if(which === 'outer'){
-        try{ return Object.assign({kind}, zcBevelFaceLoop(t, size, segs), zcSummary()); }
-        catch(err){
-          // ошибки размера — ответ; прочие ограничения хирургии — к булевой
-          if(/sharper|bigger than|taller|no closed outline/.test(err.message)) throw err;
-          cachedPatch = null;
-        }
-      }
-      return Object.assign({kind}, zcBevelLoopsCSG(t, size, segs, which));
+      return Object.assign({kind: segs === 1 ? 'chamfer' : 'round'}, bevelFaceOutlines(t, size, segs, which), zcSummary());
     }
   },
   undo: {
