@@ -10862,6 +10862,142 @@ function zcFaceAt(P, normal){
   }
   return best;
 }
+// Срез тела плоскостью без булевых: BSP на косой плоскости дробил даже
+// простое тело (98 треугольников → 533 и 157 открытых рёбер), и лечение
+// сетки потом разгонялось до тысяч. Здесь каждый треугольник отсекается по
+// плоскости; точка на ребре считается от концов, упорядоченных по ключу, —
+// у двух соседей она выходит бит в бит одинаковой, щелей нет. Контур среза
+// (отрезки от оставшихся кусков) сцепляется в петли и закрывается крышкой,
+// смотрящей по нормали. Остаётся сторона против нормали. null — контур не
+// замкнулся или петли вложены (дырка в сечении — крышка без дыр не годится)
+function planeCut(pos, P, n){
+  const EPS = 1e-5;
+  const V = o => new THREE.Vector3(pos[o], pos[o+1], pos[o+2]);
+  const dist = X => { const d = n.dot(X) - n.dot(P); return Math.abs(d) < EPS ? 0 : d; };
+  const K = X => keyOf(X.x, X.y, X.z);
+  const cross = (A, B, dA, dB) => {
+    // порядок концов по ключу — одинаковая точка у обоих треугольников ребра
+    if(K(A) > K(B)){ const T = A; A = B; B = T; const t = dA; dA = dB; dB = t; }
+    return A.clone().lerp(B, dA / (dA - dB));
+  };
+  const out = [], segs = [];
+  const push = (a, b, c) => out.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  for(let o=0;o<pos.length;o+=9){
+    const vs = [V(o), V(o+3), V(o+6)], ds = vs.map(dist);
+    if(ds.every(d => d >= 0)){
+      // всё на снимаемой стороне; треугольник в самой плоскости, смотрящий
+      // против нормали, — это и есть сечение, его не выбрасываем
+      if(ds.every(d => d === 0) && new THREE.Vector3().subVectors(vs[1], vs[0]).cross(new THREE.Vector3().subVectors(vs[2], vs[0])).dot(n) < 0){
+        push(vs[0], vs[1], vs[2]);
+        for(let e=0;e<3;e++) segs.push([vs[(e+1)%3], vs[e]]);
+      }
+      continue;
+    }
+    const poly = [];
+    for(let e=0;e<3;e++){
+      const A = vs[e], B = vs[(e+1)%3], dA = ds[e], dB = ds[(e+1)%3];
+      if(dA <= 0) poly.push({p: A, on: dA === 0});
+      if((dA < 0 && dB > 0) || (dA > 0 && dB < 0)) poly.push({p: cross(A, B, dA, dB), on: true});
+    }
+    for(let k=1;k+1<poly.length;k++) push(poly[0].p, poly[k].p, poly[k+1].p);
+    // ребро куска, лежащее в плоскости, — край сечения (крышка обходит его обратно)
+    for(let k=0;k<poly.length;k++){
+      const a = poly[k], b = poly[(k+1)%poly.length];
+      if(a.on && b.on && K(a.p) !== K(b.p)) segs.push([b.p, a.p]);
+    }
+  }
+  if(!out.length) return new Float32Array(0);
+  if(!segs.length) return new Float32Array(out); // плоскость мимо тела
+  // сцепить отрезки в петли
+  const next = new Map();
+  for(const [a, b] of segs){
+    const ka = K(a);
+    if(!next.has(ka)) next.set(ka, []);
+    next.get(ka).push(b);
+  }
+  const used = new Set(), loops = [];
+  for(const [a0] of segs){
+    const k0 = K(a0);
+    if(used.has(k0) || !next.has(k0)) continue;
+    const loop = [];
+    let cur = a0, guard = segs.length + 2;
+    while(guard-- > 0){
+      const kc = K(cur);
+      if(used.has(kc)) break;
+      used.add(kc); loop.push(cur);
+      const nx = (next.get(kc) || []).find(p => !used.has(K(p)) || K(p) === k0);
+      if(!nx) return null;
+      if(K(nx) === k0) break;
+      cur = nx;
+    }
+    if(loop.length >= 3) loops.push(loop);
+  }
+  if(!loops.length) return null;
+  if(loops.length > 1) return null; // вложенные/несколько сечений — пока не поддержано
+  // крышка по тем же точкам, что края кусков: Т-стыков между ними нет
+  const loop = loops[0];
+  const tris = earClip(loop);
+  if(!tris.length) return null;
+  for(const [a, b, c] of tris){
+    const tn = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a));
+    if(tn.dot(n) >= 0) push(a, b, c); else push(a, c, b);
+  }
+  return new Float32Array(out);
+}
+// Выдавливание с сужением (Draft у Extrude во Fusion, масштаб торца): лоскут
+// снимается, по его контуру встают стенки к уменьшенному торцу, торец —
+// ушами. Всё из тех же вершин контура, без булевых: у луча-конуса на грани
+// ядра щелей не бывает. Только наружу и только туда, где тело свободно
+function zcTaperExtrude(tri, d, k){
+  if(!(k >= 0.05 && k <= 5)) throw new Error('end_scale must be between 0.05 and 5');
+  if(d <= 0) throw new Error('a tapered extrude goes outward only (distance > 0)');
+  const pos = mesh.geometry.attributes.position.array;
+  const patch = facePatchCached(tri);
+  const loop = patchOutlineLoop(pos, patch.tris);
+  if(!loop) throw new Error('the face region must have one outline without holes');
+  const n = patch.normal.clone().normalize();
+  // нормаль лоскута может смотреть внутрь — берём по обходу контура (Ньюэлл)
+  const nw = new THREE.Vector3();
+  for(let i=0;i<loop.length;i++){
+    const p = loop[i], q = loop[(i+1)%loop.length];
+    nw.x += (p.y-q.y)*(p.z+q.z); nw.y += (p.z-q.z)*(p.x+q.x); nw.z += (p.x-q.x)*(p.y+q.y);
+  }
+  if(nw.dot(triNormalAt(tri)) < 0) loop.reverse();
+  n.copy(triNormalAt(tri)).normalize();
+  const c = loop.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / loop.length);
+  const top = loop.map(p => c.clone().addScaledVector(new THREE.Vector3().subVectors(p, c), k).addScaledVector(n, d));
+  const v0 = meshVolumeOf(pos);
+  const drop = new Set(patch.tris), out = [];
+  for(let t=0;t<pos.length/9;t++) if(!drop.has(t)) for(let j=0;j<9;j++) out.push(pos[t*9+j]);
+  const push = (A, B, C) => out.push(A.x, A.y, A.z, B.x, B.y, B.z, C.x, C.y, C.z);
+  for(let i=0;i<loop.length;i++){
+    const j = (i+1) % loop.length;
+    push(loop[i], loop[j], top[j]); push(loop[i], top[j], top[i]);
+  }
+  // торец: веер из центра, если контур звёздный относительно центра (круг,
+  // многоугольник) — точки контура на одной прямой уши теряли, и торец
+  // оставался с щелями; иначе — уши
+  const tc = c.clone().addScaledVector(n, d);
+  let star = true;
+  for(let i=0;i<top.length && star;i++){
+    const tn = new THREE.Vector3().subVectors(top[i], tc).cross(new THREE.Vector3().subVectors(top[(i+1)%top.length], tc));
+    if(tn.dot(n) <= 1e-9) star = false;
+  }
+  if(star) for(let i=0;i<top.length;i++) push(tc, top[i], top[(i+1)%top.length]);
+  else for(const [A, B, C] of earClip(top)){
+    const tn = new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(C, A));
+    if(tn.dot(n) >= 0) push(A, B, C); else push(A, C, B);
+  }
+  pushUndo();
+  hidePatch(); ppPatch = null; clearEdgeSel(); deselect();
+  setMeshFromArray(new Float32Array(out));
+  cleanupMesh();
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  extractEdges();
+  const dv = meshVolumeOf(mesh.geometry.attributes.position.array) - v0;
+  if(dv <= 0 || openEdgeCount() > 0){ undo(true); throw new Error('tapered extrude did not close the body here'); }
+  return Object.assign({face_area_mm2: +patch.area.toFixed(3), volume_change_mm3: +dv.toFixed(3)}, zcSummary());
+}
 const ZC_COMMANDS = {
   get_state: {
     description: 'Current model: triangle count, volume (mm³), bounding box, open edges (0 = closed solid), drawn lines, undo steps.',
@@ -10919,13 +11055,15 @@ const ZC_COMMANDS = {
     params: {point: Object.assign({description: 'a point on the face, mm'}, zcVec),
              normal: Object.assign({description: 'optional face normal to choose between faces meeting at the point'}, zcVec),
              distance: {type: 'number', description: 'mm, + out of the face, − into the body'},
-             operation: {type: 'string', enum: ['auto', 'join', 'cut'], description: 'auto: into the body cuts, outward joins'}},
+             operation: {type: 'string', enum: ['auto', 'join', 'cut'], description: 'auto: into the body cuts, outward joins'},
+             end_scale: {type: 'number', description: 'tapered extrude: size of the end face relative to the base (0.05–5, default 1). Outward only; the region must not run into other parts of the body.'}},
     required: ['point', 'distance'],
     run(a){
       const d = +a.distance;
       if(!Number.isFinite(d) || Math.abs(d) < 0.05) throw new Error('distance must be a number of mm');
       const t = zcFaceAt(zcV3(a.point, 'point'), a.normal ? zcV3(a.normal, 'normal').normalize() : null);
       if(t < 0) throw new Error('no face at this point');
+      if(a.end_scale != null && Math.abs(+a.end_scale - 1) > 1e-6) return zcTaperExtrude(t, d, +a.end_scale);
       const v0 = meshVolumeOf(mesh.geometry.attributes.position.array);
       clearEdgeSel(); deselect();
       ppParts = null; ppPatch = facePatchCached(t);
@@ -10955,34 +11093,82 @@ const ZC_COMMANDS = {
       if(n.length() < 1e-9) throw new Error('normal must not be zero');
       n.normalize();
       const pos = mesh.geometry.attributes.position.array;
-      const box = new THREE.Box3();
-      for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
-      // квадрат в плоскости с запасом шире тела, призма — на всю толщину тела по нормали
-      const L = box.getSize(new THREE.Vector3()).length() + box.min.distanceTo(P) + box.max.distanceTo(P) + 10;
-      const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize();
-      const v = n.clone().cross(u);
-      const loop = [[-1,-1],[1,-1],[1,1],[-1,1]].map(([x,y]) => P.clone().addScaledVector(u, x*L).addScaledVector(v, y*L));
       const v0 = meshVolumeOf(pos);
-      const snap = takeSnapshot();
-      const body = [];
-      for(let i=0;i<pos.length;i+=9)
-        body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]), new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
-                   new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
-      const res = csgSubtract(body, buildPrismTris(loop, n, L, 0));
-      const q = x => Math.round(x*1000)/1000, arr = [];
-      for(const t of res){
-        const ar = new THREE.Vector3().subVectors(t[1],t[0]).cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
-        if(ar < 1e-6) continue;
-        for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
-      }
-      if(!arr.length) throw new Error('the plane removes the whole body');
-      pushHistory(snap);
-      setMeshFromArray(new Float32Array(arr));
-      healAll();
+      const out = planeCut(pos, P, n);
+      if(!out) throw new Error('the plane cut could not close the section (open or nested contour)');
+      if(!out.length) throw new Error('the plane removes the whole body');
+      pushUndo();
+      setMeshFromArray(out);
+      weldVertices(0.0015); cleanupMesh();
       if(!modified){ modified = true; s_mod.textContent = 'yes'; }
       clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
       extractEdges();
       return Object.assign({volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
+    }
+  },
+  add_frustum: {
+    description: 'Solid truncated cone (or cylinder when r1 = r2) from point "from" (radius r1) to point "to" (radius r2). operation: join — merge with the body, cut — subtract it, new — replace the whole model with this solid.',
+    params: {from: zcVec, to: zcVec, r1: {type: 'number', description: 'mm at "from"'}, r2: {type: 'number', description: 'mm at "to"'},
+             segments: {type: 'integer', description: '3–256, default 48'},
+             operation: {type: 'string', enum: ['join', 'cut', 'new']}},
+    required: ['from', 'to', 'r1', 'r2'],
+    run(a){
+      const A = zcV3(a.from, 'from'), B = zcV3(a.to, 'to');
+      const r1 = +a.r1, r2 = +a.r2, op = a.operation || 'join';
+      if(!(r1 >= 0) || !(r2 >= 0) || r1 + r2 < 0.1) throw new Error('radii must be ≥ 0 mm, not both zero');
+      const axis = new THREE.Vector3().subVectors(B, A), L = axis.length();
+      if(L < 0.1) throw new Error('from and to must be at least 0.1 mm apart');
+      axis.multiplyScalar(1/L);
+      const seg = Math.max(3, Math.min(256, Math.round(+a.segments || 48)));
+      const u = (Math.abs(axis.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(axis).normalize();
+      const v = axis.clone().cross(u);
+      const ring = (C, r) => Array.from({length: seg}, (_, i) => {
+        const t = i / seg * Math.PI * 2;
+        return C.clone().addScaledVector(u, r*Math.cos(t)).addScaledVector(v, r*Math.sin(t));
+      });
+      const ra = ring(A, r1), rb = ring(B, r2), tris = [];
+      for(let i=0;i<seg;i++){
+        const j = (i+1) % seg;
+        if(r1 > 0) tris.push([A, ra[j], ra[i]]);
+        if(r2 > 0) tris.push([B, rb[i], rb[j]]);
+        if(r1 > 0) tris.push([ra[i], ra[j], rb[j]]);
+        if(r2 > 0) tris.push([ra[i], rb[j], rb[i]]);
+      }
+      let vol = 0;
+      for(const [p, q, r] of tris) vol += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
+      if(vol < 0) for(const t of tris){ const x = t[1]; t[1] = t[2]; t[2] = x; }
+      const q3 = x => Math.round(x*1000)/1000;
+      const toArr = list => {
+        const arr = [];
+        for(const t of list){
+          const ar = new THREE.Vector3().subVectors(t[1],t[0]).cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
+          if(ar < 1e-6) continue;
+          for(const vv of t) arr.push(q3(vv.x), q3(vv.y), q3(vv.z));
+        }
+        return new Float32Array(arr);
+      };
+      const pos = mesh.geometry.attributes.position.array;
+      const v0 = meshVolumeOf(pos);
+      const snap = takeSnapshot();
+      let out;
+      if(op === 'new') out = toArr(tris);
+      else {
+        const body = [];
+        for(let i=0;i<pos.length;i+=9)
+          body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]), new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
+                     new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
+        out = toArr(op === 'cut' ? csgSubtract(body, tris) : csgUnion(body, tris));
+      }
+      if(!out.length) throw new Error('the result is empty');
+      pushHistory(snap);
+      if(op === 'new') restoreGuides([]);
+      setMeshFromArray(out);
+      if(op !== 'new') healAll();
+      if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+      clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
+      extractEdges();
+      return Object.assign({solid_volume_mm3: +Math.abs(vol).toFixed(3),
+        volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
     }
   },
   screenshot: {
