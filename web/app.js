@@ -11155,6 +11155,214 @@ function zcCutThrough(tri){
   if(dv >= 0 || openEdgeCount() > 0){ undo(true); throw new Error('cut through did not close the body here'); }
   return Object.assign({face_area_mm2: +patchTop.area.toFixed(3), depth_mm: +depth.toFixed(3), volume_change_mm3: +dv.toFixed(3)}, zcSummary());
 }
+// Фаска/скругление по всему внешнему контуру грани — прямые участки и дуги
+// разом (bevel_edges умеет только прямые рёбра: после скругления вертикальных
+// рёбер фаска по верху шла лишь по прямым, дуги оставались острыми).
+// Без булевых, для «призматического» края: стенки вдоль контура
+// перпендикулярны грани. В грань врезается контур отступа (в углах — по
+// биссектрисе, отступ от обеих сторон — size), полоса между краем и ним
+// снимается, край стенок опускается на size, между ними — профиль: одна
+// полоса для фаски, segs для скругления, сшитые «молнией» с точками
+// врезки. Остальная грань не двигается — тонкие треугольники у отверстий не
+// выворачиваются; внутренние контуры не трогаются
+function zcBevelFaceLoop(tri, size, segs){
+  let pos = mesh.geometry.attributes.position.array;
+  const n = triNormalAt(tri).clone().normalize();
+  const d0 = n.dot(new THREE.Vector3().fromArray(pos, tri*9));
+  const patch = facePatchCached(tri);
+  const K = X => keyOf(X.x, X.y, X.z);
+  const Kp = (arr, o) => keyOf(arr[o], arr[o+1], arr[o+2]);
+  const newell = L => {
+    const w = new THREE.Vector3();
+    for(let i=0;i<L.length;i++){ const p = L[i], q = L[(i+1)%L.length];
+      w.x += (p.y-q.y)*(p.z+q.z); w.y += (p.z-q.z)*(p.x+q.x); w.z += (p.x-q.x)*(p.y+q.y); }
+    return w.dot(n) / 2;
+  };
+  // граничные рёбра области, сцепленные в петли; внешняя — самая большая
+  const chainLoops = (trisList, arr, edgeFilter) => {
+    const cnt = new Map();
+    for(const t of trisList) for(let e=0;e<3;e++){
+      const o1 = t*9+e*3, o2 = t*9+((e+1)%3)*3, k1 = Kp(arr, o1), k2 = Kp(arr, o2);
+      if(k1 === k2) continue;
+      const ek = k1 < k2 ? k1+'|'+k2 : k2+'|'+k1;
+      const r = cnt.get(ek);
+      if(r) r.c++; else cnt.set(ek, {c: 1, ka: k1, kb: k2, a: new THREE.Vector3().fromArray(arr, o1), b: new THREE.Vector3().fromArray(arr, o2)});
+    }
+    const next = new Map();
+    for(const r of cnt.values()) if(r.c === 1 && (!edgeFilter || edgeFilter(r))) next.set(r.ka, r);
+    const loops = [], used = new Set();
+    for(const [k0] of next){
+      if(used.has(k0)) continue;
+      const L = []; let k = k0, guard = next.size + 2;
+      while(guard-- > 0 && !used.has(k)){ const r = next.get(k); if(!r) break; used.add(k); L.push(r.a); k = r.kb; }
+      if(k === k0 && L.length >= 3) loops.push(L);
+    }
+    return loops;
+  };
+  const loops = chainLoops(patch.tris, pos);
+  if(!loops.length) throw new Error('the face region has no closed outline');
+  loops.sort((a, b) => Math.abs(newell(b)) - Math.abs(newell(a)));
+  let P = loops[0];
+  if(newell(P) < 0) P = P.slice().reverse(); // против часовой вокруг n
+  const m = P.length;
+  const ins = [];
+  for(let i=0;i<m;i++){
+    const e = new THREE.Vector3().subVectors(P[(i+1)%m], P[i]);
+    ins.push(e.length() < 1e-9 ? null : new THREE.Vector3().crossVectors(n, e.normalize()));
+  }
+  const miter = [];
+  for(let i=0;i<m;i++){
+    let a = ins[(i-1+m)%m], b = ins[i];
+    if(!a) a = b; if(!b) b = a;
+    if(!a) throw new Error('degenerate outline');
+    const bis = a.clone().add(b);
+    if(bis.length() < 1e-6) throw new Error('the outline turns back on itself');
+    bis.normalize();
+    const c = bis.dot(a);
+    if(c < 0.35) throw new Error('the outline has a corner sharper than 40° — too sharp to bevel');
+    miter.push(bis.multiplyScalar(size / c));
+  }
+  const I = P.map((p, i) => p.clone().add(miter[i]));
+  // 2D в плоскости грани
+  const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize();
+  const v = n.clone().cross(u);
+  const to2 = X => [X.dot(u), X.dot(v)];
+  const P2 = P.map(to2), I2 = I.map(to2);
+  const inPoly = (poly, [x, y]) => {
+    let inside = false;
+    for(let i=0, j=poly.length-1; i<poly.length; j=i++){
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if((yi > y) !== (yj > y) && x < (xj-xi)*(y-yi)/(yj-yi) + xi) inside = !inside;
+    }
+    return inside;
+  };
+  // отступ не должен пересекать себя и внутренние контуры (отверстия)
+  for(let i=0;i<m;i++) if(new THREE.Vector3().subVectors(I[(i+1)%m], I[i]).dot(new THREE.Vector3().subVectors(P[(i+1)%m], P[i])) < 0)
+    throw new Error('size ' + size + ' mm is bigger than the rounded corners of the outline');
+  for(const H of loops.slice(1)) for(const q of H) if(!inPoly(I2, to2(q)))
+    throw new Error('size ' + size + ' mm reaches a hole in the face');
+  // стенки у контура: перпендикулярны и не ниже size
+  const outlineKeys = new Map(P.map((p, i) => [K(p), i]));
+  const inPatch = new Set(patch.tris);
+  const depth = new Array(m).fill(0);
+  for(let t=0;t<pos.length/9;t++){
+    if(inPatch.has(t)) continue;
+    let hit = -1;
+    for(let j=0;j<3;j++){ const i = outlineKeys.get(Kp(pos, t*9+j*3)); if(i !== undefined) hit = i; }
+    if(hit < 0) continue;
+    const tn = triNormalAt(t);
+    if(tn.lengthSq() < 1e-12) continue;
+    if(Math.abs(tn.dot(n)) > 0.02) throw new Error('the walls along the outline are not perpendicular to the face');
+    for(let j=0;j<3;j++){
+      const i = outlineKeys.get(Kp(pos, t*9+j*3));
+      if(i === undefined) continue;
+      for(let jj=0;jj<3;jj++){
+        const dd = -new THREE.Vector3().fromArray(pos, t*9+jj*3).sub(P[i]).dot(n);
+        if(dd > depth[i]) depth[i] = dd;
+      }
+    }
+  }
+  if(depth.some(d => d < size + 0.05)) throw new Error('size ' + size + ' mm is taller than the walls along the outline');
+  const v0 = meshVolumeOf(pos);
+  pushUndo();
+  // 1) врезать контур отступа в грань
+  for(let i=0;i<m;i++){
+    const a = I[i], b = I[(i+1)%m];
+    if(a.distanceTo(b) > 1e-6) splitMeshByChord(a, b, 'segment');
+  }
+  cleanupMesh();
+  pos = mesh.geometry.attributes.position.array;
+  // 2) полоса грани между краем и отступом — снять
+  const onPlane = o => Math.abs(n.x*pos[o]+n.y*pos[o+1]+n.z*pos[o+2] - d0) < 0.02;
+  const strip = new Set(), inner = [];
+  for(let t=0;t<pos.length/9;t++){
+    const o = t*9;
+    if(!onPlane(o) || !onPlane(o+3) || !onPlane(o+6) || triNormalAt(t).dot(n) < 0.99) continue;
+    const c = new THREE.Vector3((pos[o]+pos[o+3]+pos[o+6])/3, (pos[o+1]+pos[o+4]+pos[o+7])/3, (pos[o+2]+pos[o+5]+pos[o+8])/3);
+    const c2 = to2(c);
+    if(!inPoly(P2, c2)) continue;
+    if(inPoly(I2, c2)) inner.push(t); else strip.add(t);
+  }
+  // внутренний край оставшейся грани — точки врезки на контуре отступа
+  const onInset = r => {
+    const mid = r.a.clone().add(r.b).multiplyScalar(0.5);
+    for(let i=0;i<m;i++){
+      const a = I[i], ab = new THREE.Vector3().subVectors(I[(i+1)%m], a), L2 = ab.lengthSq();
+      if(L2 < 1e-12) continue;
+      const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(mid, a).dot(ab) / L2));
+      if(a.clone().addScaledVector(ab, t).distanceTo(mid) < 0.01) return true;
+    }
+    return false;
+  };
+  const innerLoops = chainLoops(inner, pos, onInset);
+  if(innerLoops.length !== 1){ undo(true); throw new Error('the inset outline did not cut cleanly into the face'); }
+  let Q = innerLoops[0];
+  if(newell(Q) < 0) Q = Q.slice().reverse();
+  // положение точки врезки вдоль контура отступа: индекс отрезка + доля
+  const paramI = X => {
+    let best = 0, bd = Infinity;
+    for(let i=0;i<m;i++){
+      const a = I[i], ab = new THREE.Vector3().subVectors(I[(i+1)%m], a), L2 = ab.lengthSq();
+      const t = L2 < 1e-12 ? 0 : Math.max(0, Math.min(1, new THREE.Vector3().subVectors(X, a).dot(ab) / L2));
+      const dd = a.clone().addScaledVector(ab, t).distanceTo(X);
+      if(dd < bd){ bd = dd; best = i + t; }
+    }
+    return best;
+  };
+  // 3) профиль: кольцо k (0 — в стенке, segs — в грани) в точках контура
+  const prof = (i, k) => {
+    const phi = k / segs * Math.PI / 2;
+    const a = segs === 1 ? k : 1 - Math.cos(phi), b = segs === 1 ? 1 - k : 1 - Math.sin(phi);
+    return P[i].clone().addScaledVector(miter[i], a).addScaledVector(n, -size * b);
+  };
+  const out = [];
+  for(let t=0;t<pos.length/9;t++) if(!strip.has(t)) for(let j=0;j<9;j++) out.push(pos[t*9+j]);
+  // край стенок — вниз на size (только вершины контура в стенках)
+  for(let o=0;o<out.length;o+=3){
+    const i = outlineKeys.get(keyOf(out[o], out[o+1], out[o+2]));
+    if(i === undefined) continue;
+    const Wp = prof(i, 0);
+    out[o] = Wp.x; out[o+1] = Wp.y; out[o+2] = Wp.z;
+  }
+  const band = [];
+  for(let k=0;k<segs-1;k++) for(let i=0;i<m;i++){
+    const j = (i+1) % m;
+    band.push([prof(i, k), prof(j, k), prof(j, k+1)], [prof(i, k), prof(j, k+1), prof(i, k+1)]);
+  }
+  // последняя полоса — «молния» между кольцом segs-1 и точками врезки
+  const last = [];
+  for(let i=0;i<=m;i++) last.push({p: prof(i % m, segs - 1), s: i});
+  const qs = Q.map(p => ({p, s: paramI(p)}));
+  let q0 = 0;
+  for(let k=1;k<qs.length;k++) if(Math.min(qs[k].s, m - qs[k].s) < Math.min(qs[q0].s, m - qs[q0].s)) q0 = k;
+  const qz = qs.slice(q0).concat(qs.slice(0, q0)).map(x => ({p: x.p, s: x.s}));
+  if(qz[0].s > m / 2) qz[0].s -= m;
+  for(let k=1;k<qz.length;k++) while(qz[k].s < qz[k-1].s - m / 2) qz[k].s += m;
+  qz.push({p: qz[0].p, s: qz[0].s + m});
+  let a = 0, b = 0;
+  while(a < last.length - 1 || b < qz.length - 1){
+    const na = a < last.length - 1 ? last[a+1].s : Infinity, nb = b < qz.length - 1 ? qz[b+1].s : Infinity;
+    if(na <= nb){ band.push([last[a].p, last[a+1].p, qz[b].p]); a++; }
+    else { band.push([last[a].p, qz[b+1].p, qz[b].p]); b++; }
+  }
+  // ориентация полос — наружу: от внутренней точки профиля в тело
+  const tb = band.find(t => new THREE.Vector3().subVectors(t[1], t[0]).cross(new THREE.Vector3().subVectors(t[2], t[0])).lengthSq() > 1e-12) || band[0];
+  const bn = new THREE.Vector3().subVectors(tb[1], tb[0]).cross(new THREE.Vector3().subVectors(tb[2], tb[0]));
+  const bodyward = n.clone().negate().add(ins[0] || ins.find(Boolean)); // внутрь тела у края: вниз и внутрь
+  const flip = bn.dot(bodyward) > 0;
+  for(const [A, B, C] of band){
+    const q = flip ? [A, C, B] : [A, B, C];
+    for(const X of q) out.push(X.x, X.y, X.z);
+  }
+  setMeshFromArray(new Float32Array(out));
+  cleanupMesh();
+  hidePatch(); ppPatch = null; clearEdgeSel(); deselect(); cachedPatch = null;
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  extractEdges();
+  const dv = meshVolumeOf(mesh.geometry.attributes.position.array) - v0;
+  if(dv >= 0 || openEdgeCount() > 0 || nonManifoldEdgeCount() > 0){ undo(true); throw new Error('the bevel did not close the body here'); }
+  return {outline_points: m, volume_change_mm3: +dv.toFixed(3)};
+}
 const ZC_COMMANDS = {
   get_state: {
     description: 'Current model: triangle count, volume (mm³), bounding box, open edges (0 = closed solid), drawn lines, undo steps.',
@@ -11342,6 +11550,25 @@ const ZC_COMMANDS = {
       if(undoStack.length === u0) throw new Error('bevel did not change the body');
       return Object.assign({kind: segs === 1 ? 'chamfer' : 'round', edges: info,
         volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
+    }
+  },
+  bevel_outline: {
+    description: 'Chamfer (segments = 1, default) or round (segments ≥ 2) the whole outer outline of a face — straight edges and arcs together, e.g. the top edge of a box with rounded corners. The walls along the outline must be perpendicular to the face; holes inside the face are left as they are.',
+    params: {point: Object.assign({description: 'a point on the face, mm'}, zcVec),
+             normal: Object.assign({description: 'optional face normal'}, zcVec),
+             size: {type: 'number', description: 'mm: inset on the face and drop on the walls'},
+             segments: {type: 'integer', description: '1 — chamfer (default), 2–32 — round'}},
+    required: ['point', 'size'],
+    run(a){
+      const size = +a.size;
+      if(!(size >= 0.1)) throw new Error('size must be at least 0.1 mm');
+      const segs = Math.max(1, Math.min(32, Math.round(a.segments == null ? 1 : +a.segments)));
+      const t = zcFaceAt(zcV3(a.point, 'point'), a.normal ? zcV3(a.normal, 'normal').normalize() : null);
+      if(t < 0) throw new Error('no face at this point');
+      if(activeTool) setActiveTool(null);
+      cachedPatch = null;
+      const r = zcBevelFaceLoop(t, size, segs);
+      return Object.assign({kind: segs === 1 ? 'chamfer' : 'round'}, r, zcSummary());
     }
   },
   undo: {
