@@ -5560,6 +5560,376 @@ function csgSubtractOne(aTris, bTris){
   return csgFan(csgAllPolys(b, []), out);
 }
 
+// ---------- точные булевы над замкнутыми сетками (без BSP) ----------
+// BSP режет плоскостями одного тела всё другое: на гладком корпусе (тело
+// вращения) и трубе носика объединение шло 40 с и оставляло сотни дыр.
+// Здесь, как в Cork/libigl mesh boolean: считаются отрезки пересечения
+// пар треугольников, каждый задетый треугольник перетриангулируется с этими
+// отрезками как с рёбрами, куски классифицируются «внутри/снаружи» другого
+// тела лучом — по одному на связную область между линиями пересечения.
+// Точка «ребро × треугольник» считается один раз от концов ребра,
+// упорядоченных по номеру, и кэшируется; все точки идут через общий пул с
+// допуском, куда заранее положены вершины обоих тел, — у соседей по шву
+// номер точки один и тот же. Вырожденные случаи, частые у симметричных
+// построений: вершина или ребро в плоскости чужой грани, точка на чужом
+// ребре (регистрируется на нём, иначе Т-стык), совпадающие грани (цилиндр
+// стоит на грани куба) — у совпавших кусков своё правило, как в Fusion:
+// при объединении встречные грани исчезают, попутные остаются одной
+function meshBoolean(aTris, bTris, op){
+  const EPS = 2e-5, f = Math.fround;
+  const P = [];
+  // пул точек: пространственный хеш с допуском
+  const cellS = EPS * 4, hash = new Map();
+  const hk = (x, y, z) => x+','+y+','+z;
+  const poolFind = X => {
+    const cx = Math.floor(X.x / cellS), cy = Math.floor(X.y / cellS), cz = Math.floor(X.z / cellS);
+    for(let dx=-1;dx<=1;dx++) for(let dy=-1;dy<=1;dy++) for(let dz=-1;dz<=1;dz++){
+      const L = hash.get(hk(cx+dx, cy+dy, cz+dz)); if(!L) continue;
+      for(const id of L) if(P[id].distanceToSquared(X) < EPS*EPS) return id;
+    }
+    return -1;
+  };
+  const pool = X => {
+    const f0 = poolFind(X); if(f0 >= 0) return f0;
+    const id = P.length; P.push(X);
+    const k = hk(Math.floor(X.x / cellS), Math.floor(X.y / cellS), Math.floor(X.z / cellS));
+    let L = hash.get(k); if(!L) hash.set(k, L = []); L.push(id);
+    return id;
+  };
+  const index = tris => {
+    const T = [];
+    for(const t of tris){
+      const ids = t.map(v => pool(new THREE.Vector3(f(v.x), f(v.y), f(v.z))));
+      if(ids[0] !== ids[1] && ids[1] !== ids[2] && ids[0] !== ids[2]) T.push(ids);
+    }
+    return T;
+  };
+  const TA = index(aTris), TB = index(bTris);
+  const plane = T => T.map(([i, j, k]) => {
+    const n = new THREE.Vector3().subVectors(P[j], P[i]).cross(new THREE.Vector3().subVectors(P[k], P[i]));
+    const len = n.length(); if(len > 0) n.multiplyScalar(1/len);
+    return {n, d: n.dot(P[i]), ok: len > 1e-10};
+  });
+  const plA = plane(TA), plB = plane(TB);
+  const boxOf = ([i, j, k]) => new THREE.Box3().setFromPoints([P[i], P[j], P[k]]).expandByScalar(EPS * 2);
+  const bxA = TA.map(boxOf), bxB = TB.map(boxOf);
+  const all = new THREE.Box3(); bxB.forEach(b => all.union(b));
+  const sz = all.getSize(new THREE.Vector3());
+  const cell = Math.max(1e-3, Math.cbrt(sz.x * sz.y * sz.z / Math.max(1, TB.length)) * 1.5, Math.max(sz.x, sz.y, sz.z) / 128);
+  const cix = v => Math.floor(v / cell);
+  const grid = new Map();
+  bxB.forEach((b, t) => {
+    for(let x=cix(b.min.x); x<=cix(b.max.x); x++) for(let y=cix(b.min.y); y<=cix(b.max.y); y++) for(let z=cix(b.min.z); z<=cix(b.max.z); z++){
+      const k = x+','+y+','+z; let L = grid.get(k); if(!L) grid.set(k, L = []); L.push(t);
+    }
+  });
+  const onEdge = new Map(); // "lo_hi" -> Set номеров точек на ребре
+  const EKey = (i, j) => i < j ? i+'_'+j : j+'_'+i;
+  const regEdge = (i, j, id) => { if(id === i || id === j) return; const k = EKey(i, j); let s = onEdge.get(k); if(!s) onEdge.set(k, s = new Set()); s.add(id); };
+  const sgn = (v, pl) => { const d = pl.n.dot(P[v]) - pl.d; return d > EPS ? 1 : d < -EPS ? -1 : 0; };
+  // где точка X в плоскости треугольника: снаружи / вершина k / ребро k / внутри
+  const locate = (X, tri, n) => {
+    let onE = -1;
+    for(let e=0;e<3;e++){
+      const A = P[tri[e]], B = P[tri[(e+1)%3]], ab = new THREE.Vector3().subVectors(B, A), L = ab.length();
+      const c = ab.cross(new THREE.Vector3().subVectors(X, A)).dot(n) / L;
+      if(c < -EPS) return {out: true};
+      if(c < EPS) onE = onE < 0 ? e : onE;
+    }
+    for(let e=0;e<3;e++) if(P[tri[e]].distanceToSquared(X) < EPS*EPS) return {vertex: tri[e]};
+    return onE >= 0 ? {edge: onE} : {};
+  };
+  // точка в треугольнике: к вершине — её номер; на ребре — зарегистрировать
+  const attach = (id, tri, loc) => {
+    if(loc.vertex !== undefined) return loc.vertex;
+    if(loc.edge !== undefined) regEdge(tri[loc.edge], tri[(loc.edge+1)%3], id);
+    return id;
+  };
+  const cacheET = new Map(), cacheEE = new Map();
+  // пересечение двух рёбер в одной плоскости (нормаль n)
+  const edgeEdge = (i, j, k, l, n) => {
+    const key = EKey(i, j) < EKey(k, l) ? EKey(i, j)+'x'+EKey(k, l) : EKey(k, l)+'x'+EKey(i, j);
+    const c = cacheEE.get(key); if(c !== undefined) return c;
+    let res = -1;
+    const [a, b] = i < j ? [i, j] : [j, i], [p, q] = k < l ? [k, l] : [l, k];
+    const r = new THREE.Vector3().subVectors(P[b], P[a]), s = new THREE.Vector3().subVectors(P[q], P[p]);
+    const den = r.clone().cross(s).dot(n);
+    if(Math.abs(den) > 1e-12){
+      const qp = new THREE.Vector3().subVectors(P[p], P[a]);
+      const t = qp.clone().cross(s).dot(n) / den, u = qp.clone().cross(r).dot(n) / den;
+      const tl = EPS / r.length(), ul = EPS / s.length();
+      if(t > tl && t < 1 - tl && u > ul && u < 1 - ul){
+        res = pool(P[a].clone().addScaledVector(r, t));
+        regEdge(a, b, res); regEdge(p, q, res);
+      }
+    }
+    cacheEE.set(key, res); return res;
+  };
+  // точки ребра (i, j) на треугольнике: 0, 1 или 2 (ребро лежит в плоскости)
+  const edgeTri = (i, j, tri, pl, tag) => {
+    const lo = Math.min(i, j), hi = Math.max(i, j), key = lo+'_'+hi+'_'+tag;
+    const c = cacheET.get(key); if(c !== undefined) return c;
+    const sl = sgn(lo, pl), sh = sgn(hi, pl);
+    let res = [];
+    if(sl !== 0 && sh !== 0 && sl !== sh){
+      const dl = pl.n.dot(P[lo]) - pl.d, dh = pl.n.dot(P[hi]) - pl.d;
+      const X = P[lo].clone().lerp(P[hi], dl / (dl - dh));
+      const loc = locate(X, tri, pl.n);
+      if(!loc.out){
+        let id = loc.vertex !== undefined ? loc.vertex : pool(X);
+        id = attach(id, tri, loc);
+        regEdge(lo, hi, id);
+        res = [id];
+      }
+    } else if(sl === 0 && sh !== 0 || sh === 0 && sl !== 0){
+      const v = sl === 0 ? lo : hi, loc = locate(P[v], tri, pl.n);
+      if(!loc.out) res = [attach(v, tri, loc)];
+    } else if(sl === 0 && sh === 0){
+      const pts = [];
+      for(const v of [lo, hi]){ const loc = locate(P[v], tri, pl.n); if(!loc.out) pts.push(attach(v, tri, loc)); }
+      for(let e=0;e<3;e++){ const id = edgeEdge(lo, hi, tri[e], tri[(e+1)%3], pl.n); if(id >= 0) pts.push(id); }
+      const d = new THREE.Vector3().subVectors(P[hi], P[lo]);
+      const u = [...new Set(pts)].sort((p, q) => new THREE.Vector3().subVectors(P[p], P[lo]).dot(d) - new THREE.Vector3().subVectors(P[q], P[lo]).dot(d));
+      res = u.length >= 2 ? [u[0], u[u.length-1]] : u;
+    }
+    cacheET.set(key, res); return res;
+  };
+  const segA = new Map(), segB = new Map(), copA = new Map(), copB = new Map();
+  const addTo = (M, t, s) => { let L = M.get(t); if(!L) M.set(t, L = []); L.push(s); };
+  const stamp = new Int32Array(TB.length).fill(-1);
+  let pairs = 0;
+  TA.forEach((ta, a) => {
+    if(!plA[a].ok) return;
+    const b0 = bxA[a];
+    if(!b0.intersectsBox(all)) return;
+    for(let x=cix(b0.min.x); x<=cix(b0.max.x); x++) for(let y=cix(b0.min.y); y<=cix(b0.max.y); y++) for(let z=cix(b0.min.z); z<=cix(b0.max.z); z++){
+      const L = grid.get(x+','+y+','+z); if(!L) continue;
+      for(const b of L){
+        if(stamp[b] === a || !plB[b].ok) continue;
+        stamp[b] = a;
+        if(!b0.intersectsBox(bxB[b])) continue;
+        const tb = TB[b];
+        const coplanar = tb.every(v => sgn(v, plA[a]) === 0) && ta.every(v => sgn(v, plB[b]) === 0);
+        if(coplanar){
+          let any = false;
+          for(let e=0;e<3;e++){
+            const s1 = edgeTri(tb[e], tb[(e+1)%3], ta, plA[a], 'a'+a); if(s1.length === 2){ addTo(segA, a, s1); any = true; }
+            const s2 = edgeTri(ta[e], ta[(e+1)%3], tb, plB[b], 'b'+b); if(s2.length === 2){ addTo(segB, b, s2); any = true; }
+            if(s1.length || s2.length) any = true;
+          }
+          if(any){ addTo(copA, a, b); addTo(copB, b, a); pairs++; }
+          continue;
+        }
+        const pts = new Set();
+        for(let e=0;e<3;e++){
+          for(const id of edgeTri(ta[e], ta[(e+1)%3], tb, plB[b], 'b'+b)) pts.add(id);
+          for(const id of edgeTri(tb[e], tb[(e+1)%3], ta, plA[a], 'a'+a)) pts.add(id);
+        }
+        if(pts.size < 2) continue;
+        let arr = [...pts];
+        if(arr.length > 2){
+          let best = [arr[0], arr[1]], bd = -1;
+          for(let i=0;i<arr.length;i++) for(let j=i+1;j<arr.length;j++){ const d = P[arr[i]].distanceToSquared(P[arr[j]]); if(d > bd){ bd = d; best = [arr[i], arr[j]]; } }
+          arr = best;
+        }
+        addTo(segA, a, arr); addTo(segB, b, arr); pairs++;
+      }
+    }
+  });
+  const ray = new THREE.Ray(), hit = new THREE.Vector3();
+  const dirs = [new THREE.Vector3(0.5773, 0.5774, 0.5775), new THREE.Vector3(-0.3141, 0.8192, -0.4794), new THREE.Vector3(0.7071, -0.1003, 0.7)].map(d => d.normalize());
+  const inside = (pt, T) => {
+    let votes = 0;
+    for(const d of dirs){
+      ray.set(pt, d); let c = 0;
+      for(const [i, j, k] of T) if(ray.intersectTriangle(P[i], P[j], P[k], false, hit)) c++;
+      if(c % 2) votes++;
+    }
+    return votes >= 2;
+  };
+  const shell = (T, flipIt) => T.flatMap(([i, j, k]) => (flipIt ? [i, k, j] : [i, j, k]).flatMap(v => [P[v].x, P[v].y, P[v].z]));
+  if(!pairs){ // не касаются: одно внутри другого или врозь
+    const cen = ([i, j, k]) => P[i].clone().add(P[j]).add(P[k]).multiplyScalar(1/3);
+    const bInA = TB.length && inside(cen(TB[0]), TA), aInB = TA.length && inside(cen(TA[0]), TB);
+    let out;
+    if(op === 'union') out = bInA ? shell(TA) : aInB ? shell(TB) : shell(TA).concat(shell(TB));
+    else out = bInA ? shell(TA).concat(shell(TB, true)) : aInB ? [] : shell(TA);
+    return new Float32Array(out);
+  }
+  // перетриангуляция одного треугольника с отрезками
+  const retri = (tri, pl, segs) => {
+    const n = pl.n, ax = Math.abs(n.x) > Math.abs(n.y) ? (Math.abs(n.x) > Math.abs(n.z) ? 0 : 2) : (Math.abs(n.y) > Math.abs(n.z) ? 1 : 2);
+    const sg = [n.x, n.y, n.z][ax] >= 0 ? 1 : -1;
+    const to2 = V => ax === 0 ? [V.y, sg * V.z] : ax === 1 ? [V.z, sg * V.x] : [V.x, sg * V.y];
+    const loc = new Map(), X = [], G = [];
+    const L = id => { let l = loc.get(id); if(l === undefined){ l = X.length; X.push(to2(P[id])); G.push(id); loc.set(id, l); } return l; };
+    const edges = new Set();
+    const addE = (u, v) => { if(u !== v) edges.add(u < v ? u+'_'+v : v+'_'+u); };
+    for(let e=0;e<3;e++){
+      const i = tri[e], j = tri[(e+1)%3];
+      const s = onEdge.get(EKey(i, j));
+      const ds = new THREE.Vector3().subVectors(P[j], P[i]);
+      const ch = [i, ...(s ? [...s].sort((p, q) => new THREE.Vector3().subVectors(P[p], P[i]).dot(ds) - new THREE.Vector3().subVectors(P[q], P[i]).dot(ds)) : []), j];
+      for(let c=0;c+1<ch.length;c++) addE(L(ch[c]), L(ch[c+1]));
+    }
+    for(const [p, q] of segs) addE(L(p), L(q));
+    const nb = X.map(() => []);
+    for(const e of edges){ const [u, v] = e.split('_').map(Number); nb[u].push(v); nb[v].push(u); }
+    for(let changed = true; changed;){ // висячие рёбра мешают обходу граней
+      changed = false;
+      for(let v=0;v<X.length;v++) if(nb[v].length === 1){ const w = nb[v][0]; nb[w] = nb[w].filter(x => x !== v); nb[v] = []; changed = true; }
+    }
+    for(let v=0;v<X.length;v++) nb[v].sort((p, q) => Math.atan2(X[p][1]-X[v][1], X[p][0]-X[v][0]) - Math.atan2(X[q][1]-X[v][1], X[q][0]-X[v][0]));
+    const used = new Set(), loops = [];
+    for(let u=0;u<X.length;u++) for(const v of nb[u]){
+      if(used.has(u+'>'+v)) continue;
+      const loop = []; let a = u, b = v, guard = edges.size * 2 + 4;
+      while(guard-- > 0 && !used.has(a+'>'+b)){
+        used.add(a+'>'+b); loop.push(a);
+        const lst = nb[b], idx = lst.indexOf(a);
+        const c = lst[(idx - 1 + lst.length) % lst.length];
+        a = b; b = c;
+      }
+      loops.push(loop);
+    }
+    const area = lp => { let s = 0; for(let i=0;i<lp.length;i++){ const p = X[lp[i]], q = X[lp[(i+1)%lp.length]]; s += p[0]*q[1] - q[0]*p[1]; } return s / 2; };
+    const faces = [], holes = [];
+    for(const lp of loops){ const A = area(lp); if(A > 1e-14) faces.push({lp, A, holes: []}); else if(A < -1e-14) holes.push({lp, A}); }
+    holes.sort((p, q) => p.A - q.A); holes.shift(); // самый отрицательный — сам треугольник
+    const pip = (pt, lp) => { let c = false;
+      for(let i=0, j=lp.length-1; i<lp.length; j=i++){ const a = X[lp[i]], b = X[lp[j]];
+        if((a[1] > pt[1]) !== (b[1] > pt[1]) && pt[0] < (b[0]-a[0]) * (pt[1]-a[1]) / (b[1]-a[1]) + a[0]) c = !c; }
+      return c; };
+    for(const h of holes){
+      const p = X[h.lp[0]], q = X[h.lp[1]], dx = q[0]-p[0], dy = q[1]-p[1];
+      const pt = [(p[0]+q[0])/2 - dy*1e-4, (p[1]+q[1])/2 + dx*1e-4];
+      let host = null;
+      for(const fc of faces) if(pip(pt, fc.lp) && (!host || fc.A < host.A)) host = fc;
+      if(host) host.holes.push(h.lp);
+    }
+    const out = [];
+    const segCross = (p1, p2, p3, p4) => {
+      const d = (a, b, c) => (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0]);
+      const d1 = d(p3, p4, p1), d2 = d(p3, p4, p2), d3 = d(p1, p2, p3), d4 = d(p1, p2, p4);
+      return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+    };
+    for(const fc of faces){
+      let poly = fc.lp.slice();
+      for(const h of fc.holes.sort((p, q) => Math.max(...q.map(v => X[v][0])) - Math.max(...p.map(v => X[v][0])))){
+        let hi = 0; h.forEach((v, i) => { if(X[v][0] > X[h[hi]][0]) hi = i; });
+        const hv = h[hi];
+        const cand = poly.map((v, i) => i).sort((i, j) => (X[poly[i]][0]-X[hv][0])**2 + (X[poly[i]][1]-X[hv][1])**2 - (X[poly[j]][0]-X[hv][0])**2 - (X[poly[j]][1]-X[hv][1])**2);
+        let oi = cand[0];
+        const rings = [poly, ...fc.holes];
+        // мост не должен пересекать рёбра и проходить через вершины (коллинеарные
+        // рёбра отверстия на одной прямой с мостом segCross не видит)
+        const onBridge = (A, B, w) => {
+          const cx = (B[0]-A[0])*(w[1]-A[1]) - (B[1]-A[1])*(w[0]-A[0]);
+          const L2 = (B[0]-A[0])**2 + (B[1]-A[1])**2;
+          if(cx*cx > 1e-12 * L2) return false;
+          const t = ((w[0]-A[0])*(B[0]-A[0]) + (w[1]-A[1])*(B[1]-A[1])) / L2;
+          return t > 1e-9 && t < 1 - 1e-9;
+        };
+        for(const i of cand){
+          let clear = true;
+          for(const r of rings){
+            for(let k=0;k<r.length && clear;k++){
+              if(segCross(X[poly[i]], X[hv], X[r[k]], X[r[(k+1)%r.length]])) clear = false;
+              else if(r[k] !== poly[i] && r[k] !== hv && onBridge(X[poly[i]], X[hv], X[r[k]])) clear = false;
+            }
+            if(!clear) break;
+          }
+          if(clear){ oi = i; break; }
+        }
+        poly = poly.slice(0, oi+1).concat(h.slice(hi), h.slice(0, hi), [hv, poly[oi]], poly.slice(oi+1));
+      }
+      const cr = (a, b, c) => (X[b][0]-X[a][0])*(X[c][1]-X[a][1]) - (X[b][1]-X[a][1])*(X[c][0]-X[a][0]);
+      const idx = poly.slice();
+      let guard = idx.length * idx.length + 10;
+      while(idx.length > 3 && guard-- > 0){
+        let cut = -1;
+        for(let i=0;i<idx.length && cut < 0;i++){
+          const a = idx[(i-1+idx.length)%idx.length], b = idx[i], c = idx[(i+1)%idx.length];
+          if(cr(a, b, c) <= 1e-10) continue;
+          let ok = true;
+          for(const w of idx){ // точка на самой диагонали a–c тоже мешает: иначе Т-стык
+            if(w === a || w === b || w === c) continue;
+            if(cr(a, b, w) > 1e-10 && cr(b, c, w) > 1e-10 && cr(c, a, w) > -1e-10){ ok = false; break; }
+          }
+          if(ok) cut = i;
+        }
+        if(cut < 0) break;
+        out.push([G[idx[(cut-1+idx.length)%idx.length]], G[idx[cut]], G[idx[(cut+1)%idx.length]]]);
+        idx.splice(cut, 1);
+      }
+      if(idx.length === 3) out.push([G[idx[0]], G[idx[1]], G[idx[2]]]);
+      else if(idx.length > 3 && Math.abs(area(idx)) > 1e-8) throw new Error('could not triangulate an intersected triangle');
+    }
+    return out;
+  };
+  const frags = []; // {ids, side, parent}
+  const cut = (T, pl, segs, side) => T.forEach((t, i) => {
+    const s = segs.get(i);
+    const touched = s || t.some((v, e) => onEdge.has(EKey(v, t[(e+1)%3])));
+    if(!touched){ frags.push({ids: t, side, parent: i}); return; }
+    for(const fr of retri(t, pl[i], s || [])) frags.push({ids: fr, side, parent: i});
+  });
+  cut(TA, plA, segA, 0); cut(TB, plB, segB, 1);
+  // совпавшие с чужой гранью куски: попутно (same) или встречно (opposite)
+  const onState = frags.map(fr => {
+    const cop = (fr.side === 0 ? copA : copB).get(fr.parent);
+    if(!cop) return null;
+    const [p, q, r] = fr.ids, c = P[p].clone().add(P[q]).add(P[r]).multiplyScalar(1/3);
+    const myN = (fr.side === 0 ? plA : plB)[fr.parent].n;
+    for(const o of cop){
+      const T = fr.side === 0 ? TB : TA, pl = (fr.side === 0 ? plB : plA)[o];
+      const loc = locate(c, T[o], pl.n);
+      if(!loc.out) return pl.n.dot(myN) > 0 ? 'same' : 'opposite';
+    }
+    return null;
+  });
+  const constr = new Set();
+  for(const M of [segA, segB]) for(const L of M.values()) for(const [p, q] of L) constr.add(EKey(p, q));
+  const par = frags.map((_, i) => i);
+  const root = i => { while(par[i] !== i){ par[i] = par[par[i]]; i = par[i]; } return i; };
+  const byEdge = new Map();
+  frags.forEach((fr, i) => { if(onState[i]) return; for(let e=0;e<3;e++){
+    const ek = EKey(fr.ids[e], fr.ids[(e+1)%3]);
+    if(constr.has(ek)) continue;
+    const k = fr.side + '#' + ek, j = byEdge.get(k);
+    if(j === undefined) byEdge.set(k, i); else { const r1 = root(i), r2 = root(j); if(r1 !== r2) par[r1] = r2; }
+  }});
+  const comps = new Map();
+  frags.forEach((fr, i) => { if(onState[i]) return; const r = root(i); if(!comps.has(r)) comps.set(r, []); comps.get(r).push(i); });
+  const keep = new Array(frags.length).fill(false), flip = new Array(frags.length).fill(false);
+  for(const list of comps.values()){
+    let best = list[0], ba = -1;
+    for(const i of list){ const [p, q, r] = frags[i].ids;
+      const ar = new THREE.Vector3().subVectors(P[q], P[p]).cross(new THREE.Vector3().subVectors(P[r], P[p])).lengthSq();
+      if(ar > ba){ ba = ar; best = i; } }
+    const fr = frags[best], [p, q, r] = fr.ids;
+    const inOther = inside(P[p].clone().add(P[q]).add(P[r]).multiplyScalar(1/3), fr.side === 0 ? TB : TA);
+    let k, fl = false;
+    if(op === 'union') k = !inOther;
+    else { if(fr.side === 0) k = !inOther; else { k = inOther; fl = true; } }
+    for(const i of list){ keep[i] = k; flip[i] = fl; }
+  }
+  frags.forEach((fr, i) => {
+    const st = onState[i]; if(!st) return;
+    // объединение: попутные — одна грань (от A), встречные — исчезают;
+    // вычитание: грань A остаётся только там, где B подходит к ней встречно
+    if(op === 'union') keep[i] = st === 'same' && fr.side === 0;
+    else keep[i] = st === 'opposite' && fr.side === 0;
+  });
+  const arr = [];
+  frags.forEach((fr, i) => {
+    if(!keep[i]) return;
+    const [p, q, r] = flip[i] ? [fr.ids[0], fr.ids[2], fr.ids[1]] : fr.ids;
+    for(const id of [p, q, r]) arr.push(P[id].x, P[id].y, P[id].z);
+  });
+  return new Float32Array(arr);
+}
+
 // внешний контур лоскута по снимку (до предпросмотрных стенок):
 // направленные граничные рёбра сцепляются в CCW-петлю вокруг нормали
 function patchOutlineLoop(pos, trisIdx){
@@ -10856,6 +11226,47 @@ const zcV3 = (a, name) => {
   return new THREE.Vector3(+a[0], +a[1], +a[2]);
 };
 const zcVec = {type: 'array', items: {type: 'number'}, minItems: 3, maxItems: 3};
+// Готовое замкнутое тело из треугольников (конус, тело вращения, труба) —
+// в модель: new заменяет её, join/cut — через BSP с лечением швов.
+// Ориентация — по знаку объёма, координаты округляются до 0.001 мм
+function zcApplySolid(tris, op){
+  let vol = 0;
+  for(const [p, q, r] of tris) vol += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
+  if(vol < 0) tris = tris.map(t => [t[0], t[2], t[1]]);
+  const q3 = x => Math.round(x*1000)/1000;
+  const toArr = list => {
+    const arr = [];
+    for(const t of list){
+      const ar = new THREE.Vector3().subVectors(t[1],t[0]).cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
+      if(ar < 1e-6) continue;
+      for(const vv of t) arr.push(q3(vv.x), q3(vv.y), q3(vv.z));
+    }
+    return new Float32Array(arr);
+  };
+  const pos = mesh.geometry.attributes.position.array;
+  const v0 = meshVolumeOf(pos);
+  const snap = takeSnapshot();
+  let out;
+  if(op === 'new') out = toArr(tris);
+  else {
+    const body = [];
+    for(let i=0;i<pos.length;i+=9)
+      body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]), new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
+                 new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
+    const R = t => t.map(v => new THREE.Vector3(q3(v.x), q3(v.y), q3(v.z)));
+    out = meshBoolean(body, tris.map(R), op === 'cut' ? 'subtract' : 'union');
+  }
+  if(!out.length) throw new Error('the result is empty');
+  pushHistory(snap);
+  if(op === 'new') restoreGuides([]);
+  setMeshFromArray(out);
+  if(op !== 'new'){ cleanupMesh(); if(openEdgeCount() > 0) healAll(); }
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
+  extractEdges();
+  return Object.assign({solid_volume_mm3: +Math.abs(vol).toFixed(3),
+    volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
+}
 // рёбра, на которых сходятся больше двух треугольников (касание углом, как
 // у диагоналей пиксельного шрифта): тело замкнуто, но не «многообразно» —
 // для печати такое место неоднозначно
@@ -11626,41 +12037,102 @@ const ZC_COMMANDS = {
         if(r1 > 0) tris.push([ra[i], ra[j], rb[j]]);
         if(r2 > 0) tris.push([ra[i], rb[j], rb[i]]);
       }
-      let vol = 0;
-      for(const [p, q, r] of tris) vol += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
-      if(vol < 0) for(const t of tris){ const x = t[1]; t[1] = t[2]; t[2] = x; }
-      const q3 = x => Math.round(x*1000)/1000;
-      const toArr = list => {
-        const arr = [];
-        for(const t of list){
-          const ar = new THREE.Vector3().subVectors(t[1],t[0]).cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
-          if(ar < 1e-6) continue;
-          for(const vv of t) arr.push(q3(vv.x), q3(vv.y), q3(vv.z));
-        }
-        return new Float32Array(arr);
-      };
-      const pos = mesh.geometry.attributes.position.array;
-      const v0 = meshVolumeOf(pos);
-      const snap = takeSnapshot();
-      let out;
-      if(op === 'new') out = toArr(tris);
-      else {
-        const body = [];
-        for(let i=0;i<pos.length;i+=9)
-          body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]), new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
-                     new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
-        out = toArr(op === 'cut' ? csgSubtract(body, tris) : csgUnion(body, tris));
+      return zcApplySolid(tris, op);
+    }
+  },
+  add_revolve: {
+    description: 'Solid of revolution (Revolve / lathe): profile [[r, h], ...] is turned around the axis through "base" along "axis" (default Z). r is the distance from the axis, h the height along it; the profile must start and end on the axis (r = 0) and must not cross itself. Sample curves densely yourself. operation: join, cut or new.',
+    params: {profile: {type: 'array', items: {type: 'array', items: {type: 'number'}, minItems: 2, maxItems: 2}, minItems: 3},
+             base: zcVec, axis: zcVec, segments: {type: 'integer', description: '3–256, default 64'},
+             operation: {type: 'string', enum: ['join', 'cut', 'new']}},
+    required: ['profile'],
+    run(a){
+      const B = a.base ? zcV3(a.base, 'base') : new THREE.Vector3();
+      const ax = a.axis ? zcV3(a.axis, 'axis') : new THREE.Vector3(0,0,1);
+      if(ax.length() < 1e-9) throw new Error('axis must not be zero');
+      ax.normalize();
+      const seg = Math.max(3, Math.min(256, Math.round(+a.segments || 64)));
+      if(!Array.isArray(a.profile)) throw new Error('profile must be [[r, h], ...]');
+      const prof = [];
+      for(const q of a.profile){
+        if(!Array.isArray(q) || q.length !== 2 || !Number.isFinite(+q[0]) || !Number.isFinite(+q[1])) throw new Error('profile points must be [r, h]');
+        const r = +q[0], h = +q[1];
+        if(r < -1e-9) throw new Error('profile r must be ≥ 0');
+        const last = prof[prof.length-1];
+        if(last && Math.hypot(last[0]-r, last[1]-h) < 1e-4) continue;
+        prof.push([Math.max(0, r), h]);
       }
-      if(!out.length) throw new Error('the result is empty');
-      pushHistory(snap);
-      if(op === 'new') restoreGuides([]);
-      setMeshFromArray(out);
-      if(op !== 'new') healAll();
-      if(!modified){ modified = true; s_mod.textContent = 'yes'; }
-      clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
-      extractEdges();
-      return Object.assign({solid_volume_mm3: +Math.abs(vol).toFixed(3),
-        volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
+      if(prof.length < 3) throw new Error('profile needs at least 3 distinct points');
+      if(prof[0][0] > 1e-6 || prof[prof.length-1][0] > 1e-6) throw new Error('profile must start and end on the axis (r = 0) so the solid is closed');
+      const u = (Math.abs(ax.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(ax).normalize();
+      const v = ax.clone().cross(u);
+      const rows = prof.map(([r, h]) => {
+        const C = B.clone().addScaledVector(ax, h);
+        if(r < 1e-6) return {pole: C};
+        return {ring: Array.from({length: seg}, (_, i) => { const t = i / seg * Math.PI * 2;
+          return C.clone().addScaledVector(u, r*Math.cos(t)).addScaledVector(v, r*Math.sin(t)); })};
+      });
+      const tris = [];
+      for(let k=0;k+1<rows.length;k++){
+        const A = rows[k], C = rows[k+1];
+        if(A.pole && C.pole) throw new Error('profile runs along the axis between points ' + k + ' and ' + (k+1));
+        for(let i=0;i<seg;i++){
+          const j = (i+1) % seg;
+          if(A.pole) tris.push([A.pole, C.ring[j], C.ring[i]]);
+          else if(C.pole) tris.push([A.ring[i], A.ring[j], C.pole]);
+          else { tris.push([A.ring[i], A.ring[j], C.ring[j]]); tris.push([A.ring[i], C.ring[j], C.ring[i]]); }
+        }
+      }
+      return zcApplySolid(tris, a.operation || 'join');
+    }
+  },
+  add_sweep: {
+    description: 'Solid tube swept along a path (Sweep / pipe): an ellipse section follows the polyline "path" [[x,y,z], ...], ends capped. radius: mm, one number or one per path point; side_radius: the other semi-axis (default = radius), measured along "side" (a direction; default chosen automatically). The section is carried along the path without twisting. Sample curves densely and keep the radius below the bend radius. operation: join, cut or new.',
+    params: {path: {type: 'array', items: zcVec, minItems: 2},
+             radius: {description: 'number or array per path point'}, side_radius: {description: 'number or array per path point'},
+             side: zcVec, segments: {type: 'integer', description: '3–128, default 24'},
+             operation: {type: 'string', enum: ['join', 'cut', 'new']}},
+    required: ['path', 'radius'],
+    run(a){
+      if(!Array.isArray(a.path)) throw new Error('path must be [[x, y, z], ...]');
+      const P = [], idx = [];
+      a.path.forEach((q, k) => { const X = zcV3(q, 'path point'); if(P.length && P[P.length-1].distanceTo(X) < 1e-4) return; P.push(X); idx.push(k); });
+      if(P.length < 2) throw new Error('path needs at least 2 distinct points');
+      const per = (val, name) => {
+        if(Array.isArray(val)){
+          if(val.length !== a.path.length) throw new Error(name + ' array must have one value per path point');
+          return idx.map(k => +val[k]);
+        }
+        return P.map(() => +val);
+      };
+      const R = per(a.radius, 'radius'), S = a.side_radius == null ? R : per(a.side_radius, 'side_radius');
+      if([...R, ...S].some(x => !(x > 0))) throw new Error('radii must be > 0 mm');
+      const seg = Math.max(3, Math.min(128, Math.round(+a.segments || 24)));
+      const n = P.length, T = P.map((_, k) => new THREE.Vector3().subVectors(P[Math.min(n-1, k+1)], P[Math.max(0, k-1)]).normalize());
+      const side = a.side ? zcV3(a.side, 'side') : (Math.abs(T[0].z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0));
+      side.addScaledVector(T[0], -side.dot(T[0]));
+      if(side.length() < 1e-6) throw new Error('side must not be parallel to the start of the path');
+      side.normalize();
+      const rings = [];
+      for(let k=0;k<n;k++){
+        if(k > 0){ // перенос без закрутки: поворот от прежней касательной к новой
+          side.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(T[k-1], T[k]));
+          side.addScaledVector(T[k], -side.dot(T[k])).normalize();
+        }
+        const up = new THREE.Vector3().crossVectors(T[k], side);
+        rings.push(Array.from({length: seg}, (_, i) => { const t = i / seg * Math.PI * 2;
+          return P[k].clone().addScaledVector(side, S[k]*Math.cos(t)).addScaledVector(up, R[k]*Math.sin(t)); }));
+      }
+      const tris = [];
+      for(let k=0;k+1<n;k++) for(let i=0;i<seg;i++){
+        const j = (i+1) % seg;
+        tris.push([rings[k][i], rings[k][j], rings[k+1][j]]); tris.push([rings[k][i], rings[k+1][j], rings[k+1][i]]);
+      }
+      for(let i=0;i<seg;i++){
+        const j = (i+1) % seg;
+        tris.push([P[0], rings[0][j], rings[0][i]]); tris.push([P[n-1], rings[n-1][i], rings[n-1][j]]);
+      }
+      return zcApplySolid(tris, a.operation || 'join');
     }
   },
   screenshot: {
