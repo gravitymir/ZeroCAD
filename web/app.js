@@ -11285,6 +11285,65 @@ const ZC_COMMANDS = {
       return Object.assign({stl_base64: btoa(bin), name: String(a.name || projectName || 'zerocad'), bytes: buf.length}, st);
     }
   },
+  bevel_edges: {
+    description: 'Chamfer (segments = 1) or round/fillet (segments ≥ 2) straight convex edges of the body — the same tool as Ctrl+B. Each edge is given by a point on it (not at a corner). size is the setback along each face from the edge; on a 90° edge the fillet radius equals size.',
+    params: {points: {type: 'array', items: zcVec, description: 'one point on each edge, mm'},
+             size: {type: 'number', description: 'mm, setback along the faces'},
+             segments: {type: 'integer', description: '1 — chamfer, 2–32 — round (default 8)'}},
+    required: ['points', 'size'],
+    run(a){
+      if(!Array.isArray(a.points) || !a.points.length) throw new Error('points must list at least one point on an edge');
+      const size = +a.size;
+      if(!(size >= 0.1)) throw new Error('size must be at least 0.1 mm');
+      const segs = Math.max(1, Math.min(32, Math.round(a.segments == null ? 8 : +a.segments)));
+      const found = [], info = [];
+      a.points.forEach((pt, i) => {
+        const P = zcV3(pt, 'points[' + i + ']');
+        // ребро тела, на котором лежит точка (ближайший отрезок цепочки, ≤ 0.05 мм)
+        let best = null, bd = 0.05, second = Infinity;
+        for(const ch of chains){
+          if(ch.isGuide || ch.closed) continue;
+          let d = Infinity;
+          for(let k=0;k+1<ch.pts.length;k++){
+            const A = ch.pts[k], ab = new THREE.Vector3().subVectors(ch.pts[k+1], A), L2 = ab.lengthSq();
+            if(L2 < 1e-12) continue;
+            const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(P, A).dot(ab) / L2));
+            d = Math.min(d, A.clone().addScaledVector(ab, t).distanceTo(P));
+          }
+          if(d < bd){ second = bd; bd = d; best = ch; }
+          else if(d < second) second = d;
+        }
+        if(!best) throw new Error('no edge of the body at points[' + i + ']');
+        if(second < 0.05 && second - bd < 1e-6) throw new Error('points[' + i + '] is at a corner — pick a point along the edge');
+        if(found.some(f => f.ch === best)) return; // то же ребро дважды
+        const ed = analyzeBevelEdge(best.pts);
+        if(ed.err) throw new Error('points[' + i + ']: ' + ed.err);
+        // отступ должен уместиться на обеих гранях: размер 60 на кубе 40 молча
+        // срезал полкуба. Точка середины ребра, сдвинутая на size в глубь каждой
+        // грани, обязана остаться на этой грани
+        const M = ed.A.clone().lerp(ed.B, 0.5);
+        for(const [t, n] of [[ed.t1, ed.n1], [ed.t2, ed.n2]])
+          if(zcFaceAt(M.clone().addScaledVector(t, size), n) < 0)
+            throw new Error('points[' + i + ']: size ' + size + ' mm does not fit on the faces of this edge');
+        found.push({ch: best, ed});
+        const deg = ed.alpha * 180 / Math.PI;
+        info.push(segs === 1
+          ? {edge_length_mm: +ed.L.toFixed(3), angle_deg: +deg.toFixed(2), chamfer_face_width_mm: +(2 * size * Math.sin(ed.alpha / 2)).toFixed(3)}
+          : {edge_length_mm: +ed.L.toFixed(3), angle_deg: +deg.toFixed(2), radius_mm: +(size * Math.tan(ed.alpha / 2)).toFixed(3)});
+      });
+      if(activeTool) setActiveTool(null);
+      clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
+      const v0 = meshVolumeOf(mesh.geometry.attributes.position.array), u0 = undoStack.length;
+      bevelTool.edges = found.map(f => f.ed);
+      bev_d.value = size; bev_s.value = segs;
+      setActiveTool(bevelTool);  // on(): снимок и предпросмотр по полям окна
+      bevelTool.commit();         // одна запись истории на все рёбра
+      if(activeTool === bevelTool){ setActiveTool(null); throw new Error('bevel failed with these values (too big for the faces?)'); }
+      if(undoStack.length === u0) throw new Error('bevel did not change the body');
+      return Object.assign({kind: segs === 1 ? 'chamfer' : 'round', edges: info,
+        volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
+    }
+  },
   undo: {
     description: 'Undo the last step (the same history as Ctrl+Z).',
     params: {}, run(){ if(!undoStack.length) throw new Error('nothing to undo'); undo(); return zcSummary(); }
