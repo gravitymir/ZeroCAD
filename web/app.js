@@ -5641,10 +5641,15 @@ function meshBoolean(aTris, bTris, op){
     let L = hash.get(k); if(!L) hash.set(k, L = []); L.push(id);
     return id;
   };
+  // вершины с одним ключом приложения (0.001 мм) — одна точка: сетка после
+  // прошлых операций сварена по ключу, а позиции расходятся на доли микрона,
+  // и без этого в точной топологии тела оставались щели (16 у отверстия Ø6)
+  const keyId = new Map();
   const index = tris => {
     const T = [];
     for(const t of tris){
-      const ids = t.map(v => pool(new THREE.Vector3(f(v.x), f(v.y), f(v.z))));
+      const ids = t.map(v => { const k = keyOf(v.x, v.y, v.z); let id = keyId.get(k);
+        if(id === undefined){ id = pool(new THREE.Vector3(f(v.x), f(v.y), f(v.z))); keyId.set(k, id); } return id; });
       if(ids[0] !== ids[1] && ids[1] !== ids[2] && ids[0] !== ids[2]) T.push(ids);
     }
     return T;
@@ -5942,7 +5947,14 @@ function meshBoolean(aTris, bTris, op){
         idx.splice(cut, 1);
       }
       if(idx.length === 3) out.push([G[idx[0]], G[idx[1]], G[idx[2]]]);
-      else if(idx.length > 3 && Math.abs(area(idx)) > 1e-8) throw new Error('could not triangulate an intersected triangle');
+      else if(idx.length > 3){
+        // застрял на щепке уже EPS (точки почти на одной прямой, любое ухо
+        // перекрыто соседней точкой): веер — топологически замкнут, ширина
+        // и так нулевая
+        let per = 0; for(let i=0;i<idx.length;i++){ const p = X[idx[i]], q = X[idx[(i+1)%idx.length]]; per += Math.hypot(q[0]-p[0], q[1]-p[1]); }
+        if(Math.abs(area(idx)) > EPS * per) throw new Error('could not triangulate an intersected triangle');
+        for(let i=1;i+1<idx.length;i++) out.push([G[idx[0]], G[idx[i]], G[idx[i+1]]]);
+      }
     }
     return out;
   };
@@ -6371,9 +6383,13 @@ function commitExtrude(){
     // грань просто опустилась
     cleanupMesh();
     if(prismClear && extrudeLooksClean(snap.pos, applied, patchArea)){ extractEdges(); return; }
-    healAll();
-    if(prismClear && extrudeLooksClean(snap.pos, applied, patchArea)){ extractEdges(); return; }
-    // не сошлось — карман режет соседний материал, нужен честный BSP
+    // лечилка ради быстрого пути имеет смысл, только если призма целиком в
+    // теле: сквозной вырез в шестерне тратил на неё 2.2 с перед булевой
+    if(prismClear){
+      healAll();
+      if(extrudeLooksClean(snap.pos, applied, patchArea)){ extractEdges(); return; }
+    }
+    // не сошлось — карман режет соседний материал, нужна булева
     commitPocketCSG(snap, patchTris, n, -applied);
     return;
   }
@@ -11310,7 +11326,7 @@ const zcVec = {type: 'array', items: {type: 'number'}, minItems: 3, maxItems: 3}
 // Готовое замкнутое тело из треугольников (конус, тело вращения, труба) —
 // в модель: new заменяет её, join/cut — через BSP с лечением швов.
 // Ориентация — по знаку объёма, координаты округляются до 0.001 мм
-function zcApplySolid(tris, op){
+function zcApplySolid(tris, op, round = true){
   let vol = 0;
   for(const [p, q, r] of tris) vol += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
   if(vol < 0) tris = tris.map(t => [t[0], t[2], t[1]]);
@@ -11334,7 +11350,9 @@ function zcApplySolid(tris, op){
     for(let i=0;i<pos.length;i+=9)
       body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]), new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
                  new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
-    const R = t => t.map(v => new THREE.Vector3(q3(v.x), q3(v.y), q3(v.z)));
+    // round: false — второе тело из точек самой модели (призма лоскута):
+    // округление сдвинуло бы его стенки с рёбер контура на доли микрона
+    const R = t => round ? t.map(v => new THREE.Vector3(q3(v.x), q3(v.y), q3(v.z))) : t;
     out = meshBoolean(body, tris.map(R), op === 'cut' ? 'subtract' : 'union');
     lastBoolPath = 'exact';
   }
@@ -11370,7 +11388,6 @@ function zcSummary(){
   for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
   const r3 = v => [+v.x.toFixed(3), +v.y.toFixed(3), +v.z.toFixed(3)];
   return {
-    shape: (document.querySelector('input[name=shape]:checked') || {}).value,
     triangles: pos.length / 9,
     volume_mm3: +meshVolumeOf(pos).toFixed(3),
     bbox_min: r3(box.min), bbox_max: r3(box.max),
@@ -11856,6 +11873,189 @@ function zcBevelFaceLoop(tri, size, segs){
   if(dv >= 0 || openEdgeCount() > 0 || nonManifoldEdgeCount() > 0){ undo(true); throw new Error('the bevel did not close the body here'); }
   return {outline_points: m, volume_change_mm3: +dv.toFixed(3)};
 }
+// Нарисованные линии, которые после выреза или фаски повисли в воздухе
+// (контур круга над снятой фаской): середина и концы не лежат на сетке.
+// Линии на земле (z = 0) — законное построение, их не трогаем
+function dropAirGuides(){
+  const pos = mesh.geometry.attributes.position.array;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), tri = new THREE.Triangle(), q = new THREE.Vector3();
+  const box = new THREE.Box3();
+  const onMesh = P => {
+    for(let o=0;o<pos.length;o+=9){
+      a.fromArray(pos, o); b.fromArray(pos, o+3); c.fromArray(pos, o+6);
+      box.makeEmpty(); box.expandByPoint(a); box.expandByPoint(b); box.expandByPoint(c);
+      if(box.distanceToPoint(P) > 0.02) continue;
+      tri.set(a, b, c);
+      if(tri.closestPointToPoint(P, q).distanceTo(P) < 0.02) return true;
+    }
+    return false;
+  };
+  let dropped = 0;
+  for(let i=guides.length-1;i>=0;i--){
+    const g = guides[i];
+    if(Math.abs(g.a.z) < 0.01 && Math.abs(g.b.z) < 0.01) continue;
+    const mid = g.a.clone().add(g.b).multiplyScalar(0.5);
+    if(onMesh(mid) && onMesh(g.a) && onMesh(g.b)) continue;
+    scene.remove(g.line); g.line.geometry.dispose();
+    guides.splice(i, 1); dropped++;
+  }
+  if(dropped) extractEdges();
+  return dropped;
+}
+// Сквозной вырез области точной булевой (Through All во Fusion): призма
+// лоскута от 1 мм над гранью до выхода за тело по -n. В отличие от
+// zcCutThrough не нужна параллельная обратная грань, а область может быть с
+// отверстиями; тот остаётся запасным путём
+function zcCutThroughCSG(tri){
+  const pos = mesh.geometry.attributes.position.array;
+  const n = triNormalAt(tri).clone().normalize();
+  const patch = facePatchCached(tri);
+  const d0 = n.dot(new THREE.Vector3().fromArray(pos, tri*9));
+  let dmin = 0;
+  for(let i=0;i<pos.length;i+=3) dmin = Math.min(dmin, n.x*pos[i] + n.y*pos[i+1] + n.z*pos[i+2] - d0);
+  if(dmin > -0.01) throw new Error('nothing below this region to cut through');
+  const prism = buildPatchPrismRange(pos, patch.tris, n, dmin - 1, 1);
+  const r = zcApplySolid(prism, 'cut', false);
+  if(!(r.volume_change_mm3 < 0)){ undo(true); throw new Error('cut through removed nothing here'); }
+  if(r.open_edges || r.nonmanifold_edges){ undo(true); throw new Error('cut through did not close the body here'); }
+  delete r.solid_volume_mm3;
+  dropAirGuides(); r.lines = guides.length;
+  return Object.assign({face_area_mm2: +patch.area.toFixed(3)}, r);
+}
+// Фаска/скругление контуров грани точной булевой: вдоль каждого контура
+// вычитается кольцевое тело, сечение которого — профиль (от стенки на
+// глубине size до отступа size в грани) плюс запас над гранью и снаружи
+// стенки. Годится и для краёв отверстий (bevel по дырам сыра), которые
+// zcBevelFaceLoop не трогает. Контуры — из направленных граничных рёбер
+// лоскута: треугольники против часовой вокруг n, область слева от ребра,
+// внутрь грани — n × ребро и у внешнего контура, и у отверстий
+function zcBevelLoopsCSG(tri, size, segs, which){
+  const pos = mesh.geometry.attributes.position.array;
+  const n = triNormalAt(tri).clone().normalize();
+  const patch = facePatchCached(tri);
+  const Kp = o => keyOf(pos[o], pos[o+1], pos[o+2]);
+  const cnt = new Map();
+  for(const t of patch.tris) for(let e=0;e<3;e++){
+    const o1 = t*9+e*3, o2 = t*9+((e+1)%3)*3, k1 = Kp(o1), k2 = Kp(o2);
+    if(k1 === k2) continue;
+    const ek = k1 < k2 ? k1+'|'+k2 : k2+'|'+k1, r = cnt.get(ek);
+    if(r) r.c++; else cnt.set(ek, {c: 1, ka: k1, kb: k2, a: new THREE.Vector3().fromArray(pos, o1)});
+  }
+  const next = new Map();
+  for(const r of cnt.values()) if(r.c === 1) next.set(r.ka, r);
+  const loops = [], used = new Set();
+  for(const [k0] of next){
+    if(used.has(k0)) continue;
+    const L = []; let k = k0, guard = next.size + 2;
+    while(guard-- > 0 && !used.has(k)){ const r = next.get(k); if(!r) break; used.add(k); L.push(r.a); k = r.kb; }
+    if(k === k0 && L.length >= 3) loops.push(L);
+  }
+  if(!loops.length) throw new Error('the face region has no closed outline');
+  const area = L => { const w = new THREE.Vector3();
+    for(let i=0;i<L.length;i++){ const p = L[i], q = L[(i+1)%L.length];
+      w.x += (p.y-q.y)*(p.z+q.z); w.y += (p.z-q.z)*(p.x+q.x); w.z += (p.x-q.x)*(p.y+q.y); }
+    return w.dot(n) / 2; };
+  const outer = loops.filter(L => area(L) > 0).sort((a, b) => area(b) - area(a))[0];
+  const pick = loops.filter(L => which === 'all' || (which === 'holes' ? area(L) < 0 : L === outer));
+  if(!pick.length) throw new Error(which === 'holes' ? 'this face has no holes' : 'the face region has no outer outline');
+  // контуры не должны сойтись ближе двух размеров: кольца наложатся
+  const segDist = (p, a, b) => { const ab = new THREE.Vector3().subVectors(b, a), L2 = ab.lengthSq();
+    const t = L2 < 1e-12 ? 0 : Math.max(0, Math.min(1, new THREE.Vector3().subVectors(p, a).dot(ab) / L2));
+    return a.clone().addScaledVector(ab, t).distanceTo(p); };
+  for(const A of pick) for(const B of loops){
+    if(A === B) continue;
+    for(const p of A) for(let j=0;j<B.length;j++)
+      if(segDist(p, B[j], B[(j+1)%B.length]) < 2*size + 0.05) throw new Error('size ' + size + ' mm reaches another outline of the face');
+  }
+  const eUp = Math.max(0.5, size * 0.5);
+  const ring = [];
+  // лишние точки контура (Т-стыки от разбиения граней лежат на прямых
+  // участках: у отверстия Ø6 после выреза было 133 точки вместо 48) дают
+  // короткие шумные отрезки — биссектрисы гуляют, кольцо пересекает себя
+  const simplify = L => {
+    let pts = L.slice();
+    for(let changed = true; changed && pts.length > 3;){
+      changed = false;
+      for(let i=0;i<pts.length && pts.length > 3;i++){
+        const a = pts[(i-1+pts.length)%pts.length], b = pts[i], c = pts[(i+1)%pts.length];
+        const ac = new THREE.Vector3().subVectors(c, a), L2 = ac.lengthSq();
+        const off = L2 < 1e-12 ? 0 : new THREE.Vector3().subVectors(b, a).cross(ac).length() / Math.sqrt(L2);
+        // только точки на прямой в пределах допуска булевой: сдвиг настоящей
+        // вершины уводит кольцо из плоскости стенки — щепки и протечки
+        if(off < 1e-5){ pts.splice(i, 1); changed = true; i--; }
+      }
+    }
+    return pts;
+  };
+  for(const P0 of pick){
+    const P = simplify(P0);
+    const m = P.length;
+    // направления сторон у вершины — до соседей не ближе 0.05 мм: микроотрезок
+    // рядом с вершиной (точка врезки в 5 мкм от неё) крутит биссектрису, и
+    // фаска у отверстия Ø6 недобирала 2–7 % объёма
+    const far = (i, step) => { for(let g=1, j=i; g<m; g++){ j = (j + step + m) % m; if(P[j].distanceTo(P[i]) >= 0.05) return P[j]; } return P[(i + step + m) % m]; };
+    const miter = [];
+    for(let i=0;i<m;i++){
+      const ea = new THREE.Vector3().subVectors(P[i], far(i, -1)), eb = new THREE.Vector3().subVectors(far(i, 1), P[i]);
+      if(ea.length() < 1e-9 || eb.length() < 1e-9) throw new Error('degenerate outline');
+      const a = new THREE.Vector3().crossVectors(n, ea.normalize()), b = new THREE.Vector3().crossVectors(n, eb.normalize());
+      const bis = a.clone().add(b);
+      if(bis.length() < 1e-6) throw new Error('the outline turns back on itself');
+      bis.normalize();
+      const c = bis.dot(a);
+      if(c < 0.35) throw new Error('the outline has a corner sharper than 40° — too sharp to bevel');
+      miter.push(bis.multiplyScalar(size / c));
+    }
+    const reversed = f => { for(let i=0;i<m;i++){ const j = (i+1)%m; // микроотрезки — шум, не разворот
+      if(P[j].distanceTo(P[i]) < 0.05) continue;
+      if(new THREE.Vector3().subVectors(f(j), f(i)).dot(new THREE.Vector3().subVectors(P[j], P[i])) < 0) return true; } return false; };
+    if(reversed(i => P[i].clone().add(miter[i]))) throw new Error('size ' + size + ' mm is bigger than the rounded corners of the outline');
+    // запас наружу стенки: у маленького отверстия кольцо не должно перейти ось
+    let eOut = Math.min(0.5, size * 0.5);
+    for(let g=0; g<4 && reversed(i => P[i].clone().addScaledVector(miter[i], -eOut / size)); g++) eOut /= 2;
+    if(eOut < 0.1 || reversed(i => P[i].clone().addScaledVector(miter[i], -eOut / size)))
+      throw new Error('the hole is too small to bevel');
+    const prof = (i, k) => {
+      const phi = k / segs * Math.PI / 2;
+      const a = segs === 1 ? k : 1 - Math.cos(phi), b = segs === 1 ? 1 - k : 1 - Math.sin(phi);
+      return P[i].clone().addScaledVector(miter[i], a).addScaledVector(n, -size * b);
+    };
+    // Концы профиля чуть продлены за стенку и над гранью: кольцо пересекает
+    // их поперёк, а не касается ребром в самой плоскости (после прошлой
+    // булевой точки контура отходят от прямой на ~2e-5 — ровно на допуске,
+    // и шов у стенки протекал). У фаски — вдоль её же прямой (геометрия та
+    // же), у скругления, которое подходит к стенке и грани по касательной, —
+    // сдвиг на 2 мкм наружу
+    const dC = 0.05, dR = 0.002;
+    const sec = i => {
+      const S = [];
+      for(let k=0;k<=segs;k++) S.push(prof(i, k));
+      const mh = miter[i].clone().normalize();
+      if(segs === 1){
+        const dir = new THREE.Vector3().subVectors(S[1], S[0]).normalize();
+        S[0].addScaledVector(dir, -dC); S[1].addScaledVector(dir, dC);
+      } else {
+        S[0].addScaledVector(mh, -dR); S[segs].addScaledVector(n, dR);
+      }
+      const O = P[i].clone().addScaledVector(miter[i], -eOut / size);
+      S.push(S[segs].clone().addScaledVector(n, eUp), O.clone().addScaledVector(n, eUp), O.clone().addScaledVector(n, -size - dC));
+      return S;
+    };
+    const secs = P.map((_, i) => sec(i));
+    for(let i=0;i<m;i++){
+      const A = secs[i], B = secs[(i+1)%m], s = A.length;
+      for(let j=0;j<s;j++){ const jj = (j+1)%s; ring.push([A[j], A[jj], B[jj]], [A[j], B[jj], B[j]]); }
+    }
+  }
+  // обход колец — по знаку объёма каждого по отдельности не нужен: все
+  // сечения построены одинаково, zcApplySolid разворачивает целиком
+  const r = zcApplySolid(ring, 'cut', false);
+  if(!(r.volume_change_mm3 < 0)){ undo(true); throw new Error('the bevel removed nothing here'); }
+  if(r.open_edges || r.nonmanifold_edges){ undo(true); throw new Error('the bevel did not close the body here'); }
+  delete r.solid_volume_mm3;
+  dropAirGuides(); r.lines = guides.length;
+  return Object.assign({outlines: pick.length, outline_points: pick.reduce((s, L) => s + L.length, 0)}, r);
+}
 const ZC_COMMANDS = {
   get_state: {
     description: 'Current model: triangle count, volume (mm³), bounding box, open edges (0 = closed solid), drawn lines, undo steps.',
@@ -11938,7 +12138,7 @@ const ZC_COMMANDS = {
     }
   },
   cut_through: {
-    description: 'Cut the face region under a point straight through the body until it exits the opposite parallel face — a through hole in a plate (draw its outline first, e.g. draw_circle). The outline must lie inside both faces.',
+    description: 'Cut the face region under a point straight through the whole body along the face normal (Through All) — a through hole (draw its outline first, e.g. draw_circle). The region may have holes; the far side need not be parallel.',
     params: {point: Object.assign({description: 'a point inside the region, mm'}, zcVec),
              normal: Object.assign({description: 'optional face normal'}, zcVec)},
     required: ['point'],
@@ -11946,7 +12146,12 @@ const ZC_COMMANDS = {
       const t = zcFaceAt(zcV3(a.point, 'point'), a.normal ? zcV3(a.normal, 'normal').normalize() : null);
       if(t < 0) throw new Error('no face at this point');
       cachedPatch = null;
-      return zcCutThrough(t);
+      try{ return zcCutThroughCSG(t); }
+      catch(err){
+        if(/nothing below/.test(err.message)) throw err;
+        cachedPatch = null;
+        return zcCutThrough(t); // запасной путь: хирургия без булевых
+      }
     }
   },
   add_text: {
@@ -12046,11 +12251,12 @@ const ZC_COMMANDS = {
     }
   },
   bevel_outline: {
-    description: 'Chamfer (segments = 1, default) or round (segments ≥ 2) the whole outer outline of a face — straight edges and arcs together, e.g. the top edge of a box with rounded corners. The walls along the outline must be perpendicular to the face; holes inside the face are left as they are.',
+    description: 'Chamfer (segments = 1, default) or round (segments ≥ 2) whole outlines of a face — straight edges and arcs together, e.g. the top edge of a box with rounded corners or the rims of holes. outlines: outer (default), holes, or all. The walls along the outline should be perpendicular to the face and taller than size.',
     params: {point: Object.assign({description: 'a point on the face, mm'}, zcVec),
              normal: Object.assign({description: 'optional face normal'}, zcVec),
              size: {type: 'number', description: 'mm: inset on the face and drop on the walls'},
-             segments: {type: 'integer', description: '1 — chamfer (default), 2–32 — round'}},
+             segments: {type: 'integer', description: '1 — chamfer (default), 2–32 — round'},
+             outlines: {type: 'string', enum: ['outer', 'holes', 'all'], description: 'which outlines, default outer'}},
     required: ['point', 'size'],
     run(a){
       const size = +a.size;
@@ -12060,8 +12266,18 @@ const ZC_COMMANDS = {
       if(t < 0) throw new Error('no face at this point');
       if(activeTool) setActiveTool(null);
       cachedPatch = null;
-      const r = zcBevelFaceLoop(t, size, segs);
-      return Object.assign({kind: segs === 1 ? 'chamfer' : 'round'}, r, zcSummary());
+      const which = a.outlines || 'outer';
+      if(!['outer', 'holes', 'all'].includes(which)) throw new Error('outlines must be outer, holes or all');
+      const kind = segs === 1 ? 'chamfer' : 'round';
+      if(which === 'outer'){
+        try{ return Object.assign({kind}, zcBevelFaceLoop(t, size, segs), zcSummary()); }
+        catch(err){
+          // ошибки размера — ответ; прочие ограничения хирургии — к булевой
+          if(/sharper|bigger than|taller|no closed outline/.test(err.message)) throw err;
+          cachedPatch = null;
+        }
+      }
+      return Object.assign({kind}, zcBevelLoopsCSG(t, size, segs, which));
     }
   },
   undo: {
@@ -12080,7 +12296,23 @@ const ZC_COMMANDS = {
       const pos = mesh.geometry.attributes.position.array;
       const v0 = meshVolumeOf(pos);
       const out = planeCut(pos, P, n);
-      if(!out) throw new Error('the plane cut could not close the section (open or nested contour)');
+      if(!out){
+        // сечение не замкнулось одной петлёй (вложенные контуры, трубка) —
+        // точное вычитание полупространства: коробка за плоскостью
+        const box = new THREE.Box3();
+        for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+        const R = box.getSize(new THREE.Vector3()).length() + 10;
+        const C = box.getCenter(new THREE.Vector3()), O = C.clone().addScaledVector(n, n.dot(new THREE.Vector3().subVectors(P, C)));
+        const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize(), w = n.clone().cross(u);
+        const c = (a, b, h) => O.clone().addScaledVector(u, a*R).addScaledVector(w, b*R).addScaledVector(n, h*R);
+        const q = [[-1,-1],[1,-1],[1,1],[-1,1]], lo = q.map(([a, b]) => c(a, b, 0)), hi = q.map(([a, b]) => c(a, b, 1));
+        const tris = [[lo[0], lo[2], lo[1]], [lo[0], lo[3], lo[2]], [hi[0], hi[1], hi[2]], [hi[0], hi[2], hi[3]]];
+        for(let i=0;i<4;i++){ const j = (i+1)%4; tris.push([lo[i], lo[j], hi[j]], [lo[i], hi[j], hi[i]]); }
+        const r = zcApplySolid(tris, 'cut', false);
+        if(r.triangles === 0){ undo(true); throw new Error('the plane removes the whole body'); }
+        delete r.solid_volume_mm3;
+        return r;
+      }
       if(!out.length) throw new Error('the plane removes the whole body');
       pushUndo();
       setMeshFromArray(out);
