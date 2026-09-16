@@ -10945,24 +10945,77 @@ const ZC_COMMANDS = {
     description: 'Undo the last step (the same history as Ctrl+Z).',
     params: {}, run(){ if(!undoStack.length) throw new Error('nothing to undo'); undo(); return zcSummary(); }
   },
+  cut_plane: {
+    description: 'Slice the body with a plane and remove everything on the side the normal points to (like Split Body + delete in Fusion). Useful to cut corners at any angle, e.g. a tetrahedron from a cube.',
+    params: {point: Object.assign({description: 'a point on the cutting plane, mm'}, zcVec),
+             normal: Object.assign({description: 'points to the part to remove'}, zcVec)},
+    required: ['point', 'normal'],
+    run(a){
+      const P = zcV3(a.point, 'point'), n = zcV3(a.normal, 'normal');
+      if(n.length() < 1e-9) throw new Error('normal must not be zero');
+      n.normalize();
+      const pos = mesh.geometry.attributes.position.array;
+      const box = new THREE.Box3();
+      for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+      // квадрат в плоскости с запасом шире тела, призма — на всю толщину тела по нормали
+      const L = box.getSize(new THREE.Vector3()).length() + box.min.distanceTo(P) + box.max.distanceTo(P) + 10;
+      const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize();
+      const v = n.clone().cross(u);
+      const loop = [[-1,-1],[1,-1],[1,1],[-1,1]].map(([x,y]) => P.clone().addScaledVector(u, x*L).addScaledVector(v, y*L));
+      const v0 = meshVolumeOf(pos);
+      const snap = takeSnapshot();
+      const body = [];
+      for(let i=0;i<pos.length;i+=9)
+        body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]), new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
+                   new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
+      const res = csgSubtract(body, buildPrismTris(loop, n, L, 0));
+      const q = x => Math.round(x*1000)/1000, arr = [];
+      for(const t of res){
+        const ar = new THREE.Vector3().subVectors(t[1],t[0]).cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
+        if(ar < 1e-6) continue;
+        for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
+      }
+      if(!arr.length) throw new Error('the plane removes the whole body');
+      pushHistory(snap);
+      setMeshFromArray(new Float32Array(arr));
+      healAll();
+      if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+      clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
+      extractEdges();
+      return Object.assign({volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
+    }
+  },
   screenshot: {
-    description: 'Picture of the 3D view as the user sees it (JPEG).',
-    params: {}, image: true,
-    run(){
-      // одно 3D на весь холст: кадр цикла мог оставить окно-четвертинку квадро-вида
-      const w = view.clientWidth, h = view.clientHeight;
-      if(renderer.domElement.width !== Math.round(w * renderer.getPixelRatio())) renderer.setSize(w, h);
-      persp.aspect = w / Math.max(1, h); persp.updateProjectionMatrix();
-      // поза камеры — как в кадре цикла (во фоновой вкладке цикл стоит)
-      { const cp = Math.cos(pitch), sp = Math.sin(pitch);
-        persp.position.set(camTarget.x + camDist*cp*Math.cos(yaw), camTarget.y + camDist*cp*Math.sin(yaw), camTarget.z + camDist*sp);
-        persp.lookAt(camTarget); }
-      renderViewport(persp, 0, 0, w, h, VIEW_GRIDS.persp);
-      const src = renderer.domElement, k = Math.min(1, 900 / src.width);
-      const c = document.createElement('canvas');
-      c.width = Math.round(src.width * k); c.height = Math.round(src.height * k);
-      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
-      return {image: c.toDataURL('image/jpeg', 0.85).split(',')[1], mime: 'image/jpeg'};
+    description: 'Picture of the 3D view (JPEG). fit: frame the whole model first (moves the user view too); yaw/pitch in degrees turn the camera.',
+    params: {fit: {type: 'boolean'}, yaw: {type: 'number', description: 'degrees around Z'},
+             pitch: {type: 'number', description: 'degrees above the ground'},
+             width: {type: 'integer', description: 'px, default 1000'}, height: {type: 'integer', description: 'px, default 700'}},
+    image: true,
+    run(a){
+      if(a.yaw != null) yaw = +a.yaw * Math.PI / 180;
+      if(a.pitch != null) pitch = Math.max(-1.5, Math.min(1.5, +a.pitch * Math.PI / 180));
+      if(a.fit){
+        const pos = mesh.geometry.attributes.position.array, box = new THREE.Box3();
+        for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+        box.getCenter(camTarget);
+        const r = box.getSize(new THREE.Vector3()).length() / 2;
+        camDist = Math.max(20, Math.min(1200, r / Math.sin(persp.fov * Math.PI / 360) * 1.15));
+      }
+      // снимок своего размера: вкладка может быть узкой или фоновой (цикл стоит)
+      const W = Math.max(200, Math.min(2000, Math.round(+a.width || 1000)));
+      const H = Math.max(200, Math.min(2000, Math.round(+a.height || 700)));
+      const pr = renderer.getPixelRatio();
+      renderer.setPixelRatio(1);
+      renderer.setSize(W, H, false);
+      persp.aspect = W / H; persp.updateProjectionMatrix();
+      const cp = Math.cos(pitch), sp = Math.sin(pitch);
+      persp.position.set(camTarget.x + camDist*cp*Math.cos(yaw), camTarget.y + camDist*cp*Math.sin(yaw), camTarget.z + camDist*sp);
+      persp.lookAt(camTarget);
+      renderViewport(persp, 0, 0, W, H, VIEW_GRIDS.persp);
+      const data = renderer.domElement.toDataURL('image/jpeg', 0.88).split(',')[1];
+      renderer.setPixelRatio(pr);
+      resize(); // холст — обратно по размеру окна
+      return {image: data, mime: 'image/jpeg'};
     }
   }
 };
