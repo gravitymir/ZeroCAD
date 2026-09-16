@@ -441,6 +441,9 @@ fn tool_result(name: &str, r: Result<Json, String>) -> Json {
                 ]);
             }
             let res = v.get("result").cloned().unwrap_or(Json::Null);
+            if let Some(data) = res.get("stl_base64").and_then(Json::as_str) {
+                return save_stl(&res, data);
+            }
             let image = v.get("image").and_then(Json::as_bool) == Some(true);
             let content = match (image, res.get("image").and_then(Json::as_str)) {
                 (true, Some(data)) => Json::obj(vec![
@@ -453,6 +456,114 @@ fn tool_result(name: &str, r: Result<Json, String>) -> Json {
             Json::obj(vec![("content", Json::Arr(vec![content])), ("isError", Json::Bool(false))])
         }
     }
+}
+
+/// Экспорт STL: файл пишет сервер (вкладке браузера на диск нельзя) в папку
+/// `exports/` рядом с запуском; агенту — путь, размер и пригодность к печати
+fn save_stl(res: &Json, b64: &str) -> Json {
+    let text = |s: String| Json::obj(vec![("type", Json::str("text")), ("text", Json::Str(s))]);
+    let err = |s: String| Json::obj(vec![("content", Json::Arr(vec![text(s)])), ("isError", Json::Bool(true))]);
+    let Some(bytes) = base64_decode(b64) else { return err("export_stl: broken STL data from the editor".into()) };
+    if bytes.len() < 84 {
+        return err("export_stl: the model is empty".into());
+    }
+    let name = safe_file_name(res.get("name").and_then(Json::as_str).unwrap_or("zerocad"));
+    let dir = std::path::Path::new("exports");
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return err(format!("export_stl: cannot create {}: {e}", dir.display()));
+    }
+    let path = dir.join(format!("{name}.stl"));
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        return err(format!("export_stl: cannot write {}: {e}", path.display()));
+    }
+    let abs = std::fs::canonicalize(&path).unwrap_or(path.clone());
+    // canonicalize в Windows даёт \\?\C:\... — префикс для человека лишний
+    let abs_str = abs.display().to_string().trim_start_matches(r"\\?\").to_string();
+    let num = |k: &str| res.get(k).and_then(Json::as_f64).unwrap_or(0.0);
+    let open = num("open_edges");
+    let nonmanifold = num("nonmanifold_edges");
+    let printable = open == 0.0 && nonmanifold == 0.0;
+    let mut info = vec![
+        ("path", Json::Str(abs_str.clone())),
+        ("bytes", Json::Num(bytes.len() as f64)),
+        ("triangles", Json::Num(num("triangles"))),
+        ("volume_mm3", Json::Num(num("volume_mm3"))),
+        ("bbox_min", res.get("bbox_min").cloned().unwrap_or(Json::Null)),
+        ("bbox_max", res.get("bbox_max").cloned().unwrap_or(Json::Null)),
+        ("open_edges", Json::Num(open)),
+        ("nonmanifold_edges", Json::Num(nonmanifold)),
+        ("printable", Json::Bool(printable)),
+    ];
+    if !printable {
+        info.push((
+            "warning",
+            Json::str("the mesh is not a clean solid (open or shared edges) — a slicer may refuse or misprint it"),
+        ));
+    }
+    let uri = format!("file:///{}", abs_str.replace('\\', "/").trim_start_matches('/'));
+    Json::obj(vec![
+        (
+            "content",
+            Json::Arr(vec![
+                text(Json::obj(info).dump()),
+                Json::obj(vec![
+                    ("type", Json::str("resource_link")),
+                    ("uri", Json::Str(uri)),
+                    ("name", Json::Str(format!("{name}.stl"))),
+                    ("mimeType", Json::str("model/stl")),
+                ]),
+            ]),
+        ),
+        ("isError", Json::Bool(false)),
+    ])
+}
+
+/// имя файла: буквы, цифры, - и _ (остальное — _), не длиннее 64
+fn safe_file_name(raw: &str) -> String {
+    let s: String = raw
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .take(64)
+        .collect();
+    let s = s.trim_matches('_').to_string();
+    if s.is_empty() { "zerocad".to_string() } else { s }
+}
+
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let bytes: Vec<u8> = s.bytes().filter(|c| !c.is_ascii_whitespace()).collect();
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let pad = chunk.iter().rev().take_while(|&&c| c == b'=').count();
+        if pad > 2 {
+            return None;
+        }
+        let mut n = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            let v = if i >= 4 - pad { 0 } else { val(c)? };
+            n = (n << 6) | v;
+        }
+        out.push((n >> 16) as u8);
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(n as u8);
+        }
+    }
+    Some(out)
 }
 
 fn rpc_error(id: Json, code: i32, message: &str) -> String {
@@ -476,6 +587,17 @@ mod tests {
         let again = Json::parse(&v.dump()).unwrap();
         assert_eq!(again.dump(), v.dump());
         assert!(Json::parse("{\"a\":}").is_none());
+    }
+
+    #[test]
+    fn base64_and_names() {
+        assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(base64_decode("aGVsbG8h").unwrap(), b"hello!");
+        assert_eq!(base64_decode("aGk=").unwrap(), b"hi");
+        assert!(base64_decode("abc").is_none());
+        assert_eq!(safe_file_name("../../etc/passwd"), "etc_passwd");
+        assert_eq!(safe_file_name("xyz cube"), "xyz_cube");
+        assert_eq!(safe_file_name("..."), "zerocad");
     }
 
     #[test]

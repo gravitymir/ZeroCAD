@@ -11274,6 +11274,17 @@ const ZC_COMMANDS = {
         volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
     }
   },
+  export_stl: {
+    description: 'Export the model as a binary STL (millimetres) for 3D printing. The server saves it to its exports folder and returns the file path; the answer says whether the mesh is printable (closed, no edges shared by 3+ triangles).',
+    params: {name: {type: 'string', description: 'file name without extension (letters, digits, - and _), default: project name'}},
+    run(a){
+      const buf = new Uint8Array(buildSTL());
+      let bin = '';
+      for(let i=0;i<buf.length;i+=0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      const st = zcSummary();
+      return Object.assign({stl_base64: btoa(bin), name: String(a.name || projectName || 'zerocad'), bytes: buf.length}, st);
+    }
+  },
   undo: {
     description: 'Undo the last step (the same history as Ctrl+Z).',
     params: {}, run(){ if(!undoStack.length) throw new Error('nothing to undo'); undo(); return zcSummary(); }
