@@ -868,8 +868,7 @@ SketchUp и FreeCAD для FDM его тоже не выдают.
 
 ## Автотесты
 
-Три уровня; CI на GitHub (`.github/workflows/tests.yml`) гоняет первые два
-на каждый push.
+Три уровня, запускаются вручную (CI на GitHub не используем — просто push).
 
 ```bash
 cargo test
