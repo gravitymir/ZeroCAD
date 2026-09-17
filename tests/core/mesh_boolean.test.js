@@ -11,8 +11,12 @@ const core = loadCore(['meshBoolean']);
 const S = makeSolids(core.THREE);
 const {box, frustum, ngonArea, flat, toTris, volume, edgeStats, rng} = S;
 
+// Замкнутость — по ключу редактора (0.001 мм), как её видит редактор: он
+// сваривает вершины по ключу. Точка пересечения в углу треугольника
+// становится этим углом, и бит в бит номера у соседей из разных тел могут
+// разойтись на доли микрона — после сварки сетка та же
 const closed = (arr, msg) => {
-  const e = edgeStats(arr, true);
+  const e = edgeStats(arr, false);
   assert.equal(e.open, 0, (msg || '') + ': open edges');
   assert.equal(e.nonManifold, 0, (msg || '') + ': non-manifold edges');
 };
@@ -114,7 +118,7 @@ test('random pairs: closed results and V(A∪B) = V(B) + V(A−B)', () => {
     }
     try {
       const U = core.meshBoolean(A, B, 'union'), D = core.meshBoolean(A, B, 'subtract');
-      const eU = edgeStats(U, true), eD = edgeStats(D, true);
+      const eU = edgeStats(U, false), eD = edgeStats(D, false);
       const rel = Math.abs(volume(U) - volume(flat(B)) - volume(D)) / Math.max(1, volume(U));
       worst = Math.max(worst, rel);
       if(eU.open || eD.open || eD.nonManifold || (eU.nonManifold && !edgeTouch) || rel > 1e-6)

@@ -5582,9 +5582,9 @@ function openEdgesOfTris(tris){
   const cnt = new Map();
   for(const t of tris){
     const k = t.map(v => keyOf(v.x, v.y, v.z));
+    // выпадают только треугольники, схлопнутые ключом; игла нулевой площади с
+    // тремя разными ключами держит рёбра соседей — её выброс и давал «щели»
     if(k[0] === k[1] || k[1] === k[2] || k[0] === k[2]) continue;
-    // нулевой площади вызывающий код всё равно выбрасывает
-    if(new THREE.Vector3().subVectors(t[1], t[0]).cross(new THREE.Vector3().subVectors(t[2], t[0])).length() < 1e-6) continue;
     for(let e=0;e<3;e++){ const a = k[e], b = k[(e+1)%3], ek = a < b ? a+'|'+b : b+'|'+a; cnt.set(ek, (cnt.get(ek)||0) + 1); }
   }
   let open = 0; for(const c of cnt.values()) if(c === 1) open++;
@@ -5689,9 +5689,18 @@ function meshBoolean(aTris, bTris, op){
     }
     return -1;
   };
+  // Точки ПЕРЕСЕЧЕНИЯ в одной ячейке ключа редактора (0.001 мм) — одна точка:
+  // редактор сваривает вершины по ключу, и две такие точки дальше POOL друг от
+  // друга после сварки давали щепки и Т-стыки (второй V-зубец шестерни:
+  // результат замкнут бит в бит, а в редакторе — 15 щелей). Вершины самих
+  // тел так не сливаем — это рождало немногообразные рёбра у цилиндров
+  const keyId = new Map(), interKey = new Map();
+  let pooling = false;
   const pool = X => {
     const f0 = poolFind(X); if(f0 >= 0) return f0;
-    const id = P.length; P.push(X);
+    const kk = keyOf(X.x, X.y, X.z), same = interKey.get(kk);
+    if(same !== undefined) return same;
+    const id = P.length; P.push(X); if(pooling) interKey.set(kk, id);
     const k = hk(Math.floor(X.x / cellS), Math.floor(X.y / cellS), Math.floor(X.z / cellS));
     let L = hash.get(k); if(!L) hash.set(k, L = []); L.push(id);
     return id;
@@ -5699,7 +5708,6 @@ function meshBoolean(aTris, bTris, op){
   // вершины с одним ключом приложения (0.001 мм) — одна точка: сетка после
   // прошлых операций сварена по ключу, а позиции расходятся на доли микрона,
   // и без этого в точной топологии тела оставались щели (16 у отверстия Ø6)
-  const keyId = new Map();
   const index = tris => {
     const T = [];
     for(const t of tris){
@@ -5710,6 +5718,7 @@ function meshBoolean(aTris, bTris, op){
     return T;
   };
   const TA = index(aTris), TB = index(bTris);
+  pooling = true;
   const plane = T => T.map(([i, j, k]) => {
     const n = new THREE.Vector3().subVectors(P[j], P[i]).cross(new THREE.Vector3().subVectors(P[k], P[i]));
     const len = n.length(); if(len > 0) n.multiplyScalar(1/len);
@@ -5874,7 +5883,19 @@ function meshBoolean(aTris, bTris, op){
     const sg = [n.x, n.y, n.z][ax] >= 0 ? 1 : -1;
     const to2 = V => ax === 0 ? [V.y, sg * V.z] : ax === 1 ? [V.z, sg * V.x] : [V.x, sg * V.y];
     const loc = new Map(), X = [], G = [];
-    const L = id => { let l = loc.get(id); if(l === undefined){ l = X.length; X.push(to2(P[id])); G.push(id); loc.set(id, l); } return l; };
+    // точка в углу треугольника (ключ редактора совпал с его вершиной, но
+    // дальше допуска пула) — это сама вершина: иначе в одном месте две точки,
+    // обход граней ломается и треугольник пропадает целиком (третья V-канавка
+    // шестерни: 6.7 мм² стенки). Только свои углы: глобальная замена сливала
+    // точку на ребре рядом с вершиной и давала немногообразное ребро. Бит в
+    // бит с соседом из другого тела номера могут разойтись — редактор
+    // сваривает по ключу, и по ключу сетка замкнута
+    const cornerKey = new Map(tri.map(v => [keyOf(P[v].x, P[v].y, P[v].z), v]));
+    const L = id => {
+      const c = cornerKey.get(keyOf(P[id].x, P[id].y, P[id].z));
+      if(c !== undefined) id = c;
+      let l = loc.get(id); if(l === undefined){ l = X.length; X.push(to2(P[id])); G.push(id); loc.set(id, l); } return l;
+    };
     const edges = new Set();
     const addE = (u, v) => { if(u !== v) edges.add(u < v ? u+'_'+v : v+'_'+u); };
     for(let e=0;e<3;e++){
@@ -5884,7 +5905,8 @@ function meshBoolean(aTris, bTris, op){
       const ch = [i, ...(s ? [...s].sort((p, q) => new THREE.Vector3().subVectors(P[p], P[i]).dot(ds) - new THREE.Vector3().subVectors(P[q], P[i]).dot(ds)) : []), j];
       for(let c=0;c+1<ch.length;c++) addE(L(ch[c]), L(ch[c+1]));
     }
-    for(const [p, q] of segs) addE(L(p), L(q));
+    const segE = new Set(); // рёбра-линии пересечения (и их куски после деления)
+    for(const [p, q] of segs){ const u = L(p), v = L(q); if(u !== v){ addE(u, v); segE.add(u < v ? u+'_'+v : v+'_'+u); } }
     // рёбра на одной прямой, наложенные друг на друга (длинное поверх двух
     // коротких — у дна букв), делятся точками, лежащими на них
     for(const e of [...edges]){
@@ -5902,8 +5924,16 @@ function meshBoolean(aTris, bTris, op){
       edges.delete(e);
       mids.sort((a, b) => a[0] - b[0]);
       const ch = [u, ...mids.map(m => m[1]), v];
-      for(let c=0;c+1<ch.length;c++) addE(ch[c], ch[c+1]);
+      for(let c=0;c+1<ch.length;c++){
+        addE(ch[c], ch[c+1]);
+        if(segE.has(e)) segE.add(ch[c] < ch[c+1] ? ch[c]+'_'+ch[c+1] : ch[c+1]+'_'+ch[c]);
+      }
     }
+    // Линия пересечения, легшая вдоль существующего ребра, делится его
+    // промежуточными вершинами — границей между областями должны стать и
+    // куски: иначе через них область «внутри» срастается с «снаружи» (клин
+    // V-канавки во всю высоту грани шестерни не вырезался вовсе)
+    for(const e of segE) if(edges.has(e)){ const [u, v] = e.split('_').map(Number); constrPieces.add(EKey(G[u], G[v])); }
     const nb = X.map(() => []);
     for(const e of edges){ const [u, v] = e.split('_').map(Number); nb[u].push(v); nb[v].push(u); }
     for(let changed = true; changed;){ // висячие рёбра мешают обходу граней
@@ -6014,6 +6044,7 @@ function meshBoolean(aTris, bTris, op){
     return out;
   };
   const frags = []; // {ids, side, parent}
+  const constrPieces = new Set();
   const cut = (T, pl, segs, side) => T.forEach((t, i) => {
     const s = segs.get(i);
     const touched = s || t.some((v, e) => onEdge.has(EKey(v, t[(e+1)%3])));
@@ -6034,7 +6065,7 @@ function meshBoolean(aTris, bTris, op){
     }
     return null;
   });
-  const constr = new Set();
+  const constr = constrPieces;
   for(const M of [segA, segB]) for(const L of M.values()) for(const [p, q] of L) constr.add(EKey(p, q));
   const par = frags.map((_, i) => i);
   const root = i => { while(par[i] !== i){ par[i] = par[par[i]]; i = par[i]; } return i; };
@@ -7186,14 +7217,18 @@ function edgeFaceNormal(A, B){
   const dir = new THREE.Vector3().subVectors(B, A);
   if(dir.length() < 1e-6) return null;
   dir.normalize();
-  // треугольники у конца ребра, в чьей плоскости лежит направление ребра
+  // треугольники у конца ребра, в чьей плоскости лежит направление ребра.
+  // Конец может лежать не в вершине, а посреди ребра сетки (линия от точки на
+  // ребре) — касание треугольника любой его точкой, а не только вершиной
   const cand = [];
+  const tri = new THREE.Triangle(), cp = new THREE.Vector3();
   for(let t=0;t<pos.length/9;t++){
     const o = t*9;
-    let has = false;
-    for(let j=0;j<3;j++)
-      if(Math.hypot(pos[o+j*3]-A.x, pos[o+j*3+1]-A.y, pos[o+j*3+2]-A.z) < 0.012){ has = true; break; }
-    if(!has) continue;
+    if(Math.min(pos[o], pos[o+3], pos[o+6]) > A.x + 0.012 || Math.max(pos[o], pos[o+3], pos[o+6]) < A.x - 0.012 ||
+       Math.min(pos[o+1], pos[o+4], pos[o+7]) > A.y + 0.012 || Math.max(pos[o+1], pos[o+4], pos[o+7]) < A.y - 0.012 ||
+       Math.min(pos[o+2], pos[o+5], pos[o+8]) > A.z + 0.012 || Math.max(pos[o+2], pos[o+5], pos[o+8]) < A.z - 0.012) continue;
+    tri.set(new THREE.Vector3().fromArray(pos, o), new THREE.Vector3().fromArray(pos, o+3), new THREE.Vector3().fromArray(pos, o+6));
+    if(tri.closestPointToPoint(A, cp).distanceTo(A) > 0.012) continue;
     const w = new THREE.Vector3(pos[o+3]-pos[o], pos[o+4]-pos[o+1], pos[o+5]-pos[o+2])
       .cross(new THREE.Vector3(pos[o+6]-pos[o], pos[o+7]-pos[o+1], pos[o+8]-pos[o+2]));
     const ar = w.length();
@@ -7399,28 +7434,44 @@ function edgeSlideInfo(){
   if(L < 1e-6) return null;
   const u = new THREE.Vector3().subVectors(B, A).normalize();
   const pos = ed.snap.pos;
+  // Соседняя грань у конца линии. Раньше: треугольник с ВЕРШИНОЙ в 0.012 мм
+  // от конца, из них самый большой. Конец посреди ребра сетки не находил
+  // соседа (торец клина вставал поперёк — лишний вырез), а щепка у угла давала
+  // чужую нормаль. Теперь: треугольники, которых конец касается любой точкой,
+  // группы с почти одинаковой нормалью, побеждает наибольшая суммарная площадь,
+  // нормаль — среднее по площади
+  const tri = new THREE.Triangle(), cp = new THREE.Vector3();
   const kAt = E => {
-    let best = null, bestAr = 0;
+    const groups = [];
     for(let t=0;t<pos.length/9;t++){
       const o = t*9;
-      let has = false;
-      for(let j=0;j<3;j++)
-        if(Math.hypot(pos[o+j*3]-E.x, pos[o+j*3+1]-E.y, pos[o+j*3+2]-E.z) < 0.012){ has = true; break; }
-      if(!has) continue;
+      if(Math.min(pos[o], pos[o+3], pos[o+6]) > E.x + 0.012 || Math.max(pos[o], pos[o+3], pos[o+6]) < E.x - 0.012 ||
+         Math.min(pos[o+1], pos[o+4], pos[o+7]) > E.y + 0.012 || Math.max(pos[o+1], pos[o+4], pos[o+7]) < E.y - 0.012 ||
+         Math.min(pos[o+2], pos[o+5], pos[o+8]) > E.z + 0.012 || Math.max(pos[o+2], pos[o+5], pos[o+8]) < E.z - 0.012) continue;
+      tri.set(new THREE.Vector3().fromArray(pos, o), new THREE.Vector3().fromArray(pos, o+3), new THREE.Vector3().fromArray(pos, o+6));
+      if(tri.closestPointToPoint(E, cp).distanceTo(E) > 0.012) continue;
       const w = new THREE.Vector3(pos[o+3]-pos[o], pos[o+4]-pos[o+1], pos[o+5]-pos[o+2])
         .cross(new THREE.Vector3(pos[o+6]-pos[o], pos[o+7]-pos[o+1], pos[o+8]-pos[o+2]));
       const ar = w.length();
       if(ar < 1e-4) continue;
-      const n = w.multiplyScalar(1/ar);
+      const n = w.clone().multiplyScalar(1/ar);
       if(Math.abs(n.dot(N)) > 0.99 || Math.abs(n.dot(u)) < 0.05) continue; // своя грань / вдоль линии
-      if(ar > bestAr){ bestAr = ar; best = n; }
+      const c = new THREE.Vector3(pos[o]+pos[o+3]+pos[o+6], pos[o+1]+pos[o+4]+pos[o+7], pos[o+2]+pos[o+5]+pos[o+8]).multiplyScalar(ar / 3);
+      const g = groups.find(q => q.n.dot(n) > 0.999);
+      if(g){ g.sum.add(w); g.ar += ar; g.c.add(c); } else groups.push({n, sum: w.clone(), ar, c});
     }
+    groups.sort((p, q) => q.ar - p.ar);
+    const best = groups.length ? groups[0].sum.normalize() : null;
     if(!best) return {k: 0, n: null};
+    // точка самой соседней грани (центр масс треугольников группы): торец клина
+    // кладём в её плоскость, а не в плоскость через конец линии — конец бывает
+    // не точно в углу (привязка к сетке 0.1), и оставалась тонкая стенка
+    const onFace = groups[0].c.multiplyScalar(1 / groups[0].ar);
     const k = -N.dot(best) / u.dot(best);
-    return Math.abs(k) <= 5 ? {k, n: best} : {k: 0, n: null};
+    return Math.abs(k) <= 5 ? {k, n: best, p: onFace} : {k: 0, n: null};
   };
   const ra = kAt(A), rb = kAt(B);
-  ed.slide = {A, u, L, N, kA: ra.k, kB: rb.k, nA: ra.n, nB: rb.n};
+  ed.slide = {A, u, L, N, kA: ra.k, kB: rb.k, nA: ra.n, nB: rb.n, pA: ra.p, pB: rb.p};
   return ed.slide;
 }
 // точка внутри тела? чётность пересечений луча с треугольниками сетки
@@ -7440,29 +7491,50 @@ function pointInsideMesh(P, pos){
 // плоскости грани и вершина на глубине) плюс запас наружу, вдоль линии — до
 // плоскостей соседних граней у концов; если за соседней гранью пусто, клин
 // выходит за неё на запас и режет соседа ровным V-вырезом
-function edgeMoveCutPrism(s){
+function edgeMoveCutPrism(s, extra = 0){
   const ed = edgeDrag, fold = ed.fold, sl = ed.slide;
   if(!fold || !sl || s > -0.01) return null;
   const {A, u, L, N} = sl, side = fold.side;
   const m = Math.max(1, -s * 0.5);
-  // сечение (вдоль side, вдоль N), выпуклое, обход фиксируем по объёму ниже
-  const sec = [[fold.Lp, 0], [fold.Lp, m], [-fold.Ln, m], [-fold.Ln, 0], [0, s]];
+  // Сечение (вдоль side, вдоль N), выпуклое, обход фиксируем по объёму ниже.
+  // Стороны V продлены по своей же прямой за линии сгиба на e: раньше угол
+  // сечения стоял ровно на сгибе и уходил наружу по плоскости соседней грани —
+  // клин лежал в плоскостях верха и низа шестерни, а с щепками прошлой
+  // канавки это давало сотни крошечных областей и щели (вторая канавка на
+  // той же впадине). Форма канавки та же — клин пересекает соседей поперёк
+  const e = Math.max(1, -s * 0.5);
+  const ext = (a) => { const len = Math.hypot(a, -s); return [a + a / len * e, -s / len * e]; };
+  const [pa, pb] = ext(fold.Lp), [na, nb] = ext(-fold.Ln), top = Math.max(pb, nb) + m;
+  const sec = [[pa, pb], [pa, top], [na, top], [na, nb], [0, s]];
   const capT = (n, tEnd, a, b) => {
     if(!n) return tEnd;
     const un = u.dot(n);
     if(Math.abs(un) < 1e-6) return tEnd;
-    // точка сечения на плоскости соседа, проходящей через конец линии
-    return tEnd - (a * side.dot(n) + b * N.dot(n)) / un;
+    // точка сечения на плоскости соседа — через саму соседнюю грань, если она
+    // найдена (конец линии мог лечь не точно в угол), иначе через конец линии
+    const p = n === sl.nA ? sl.pA : n === sl.nB ? sl.pB : null;
+    const off = p ? n.dot(new THREE.Vector3().subVectors(p, A.clone().addScaledVector(u, tEnd))) : 0;
+    return tEnd + (off - a * side.dot(n) - b * N.dot(n)) / un;
   };
   const snapPos = ed.snap.pos;
   const margin = (n, tEnd, sign) => {
     if(!n) return 0;
-    // за соседом пусто? пробуем точку на середине глубины чуть за его плоскостью
-    const t = capT(n, tEnd, 0, s * 0.5) + sign * 0.3;
-    const Q = A.clone().addScaledVector(N, s * 0.5).addScaledVector(u, t);
-    return pointInsideMesh(Q, snapPos) ? 0 : Math.max(2, fold.Lp, fold.Ln, -s) * 1.5;
+    // За соседом пусто? Раньше — одна точка на середине глубины: если соседняя
+    // грань уже надрезана прошлой канавкой, точка падала в её пустоту, и клин
+    // уходил на 8 мм сквозь соседа (лишний вырез, разные объёмы у одинаковых
+    // зубьев). Теперь точки по всему сечению V — продлеваем, только если пусто везде
+    const probes = [[0, s * 0.5], [0, s * 0.9], [fold.Lp * 0.5, s * 0.25], [-fold.Ln * 0.5, s * 0.25],
+                    [fold.Lp * 0.2, s * 0.6], [-fold.Ln * 0.2, s * 0.6]];
+    for(const [a, b] of probes){
+      const t = capT(n, tEnd, a, b) + sign * 0.3;
+      const Q = A.clone().addScaledVector(side, a).addScaledVector(N, b).addScaledVector(u, t);
+      if(pointInsideMesh(Q, snapPos)) return 0;
+    }
+    return Math.max(2, fold.Lp, fold.Ln, -s) * 1.5;
   };
-  const mA = margin(sl.nA, 0, -1), mB = margin(sl.nB, L, +1);
+  // extra — торцы чуть за плоскостью соседа: при повторе, если торец лёг
+  // ровно на уже изменённую соседнюю грань и точная булева не прошла
+  const mA = margin(sl.nA, 0, -1) + extra, mB = margin(sl.nB, L, +1) + extra;
   const P = (a, b, t) => A.clone().addScaledVector(side, a).addScaledVector(N, b).addScaledVector(u, t);
   const S = sec.map(([a, b]) => P(a, b, capT(sl.nA, 0, a, b) - mA));
   const E = sec.map(([a, b]) => P(a, b, capT(sl.nB, L, a, b) + mB));
@@ -7539,26 +7611,45 @@ function finishEdgeMove(){
   if(ed && ed.nLock && ed.lastD && ed.normal && ed.snapPushed){
     const s = ed.lastD.dot(ed.normal);
     edgeSlideInfo();
-    const prism = edgeMoveCutPrism(s);
-    if(prism){
-      const moved = mesh.geometry.attributes.position.array.slice();
+    const moved = mesh.geometry.attributes.position.array.slice();
+    const vSnap = meshVolumeOf(ed.snap.pos), vFold = meshVolumeOf(moved);
+    // второй заход — торцы клина на 0.05 мм за плоскостью соседа: если торец
+    // лёг ровно на соседнюю грань, уже изменённую прошлой канавкой, почти
+    // совпадающие грани не дают точной булевой замкнуть результат
+    for(const extra of [0, 0.05]){
+      const prism = edgeMoveCutPrism(s, extra);
+      if(!prism) break;
       try{
         const sp = ed.snap.pos, body = [];
         for(let i=0;i<sp.length;i+=9)
           body.push([new THREE.Vector3(sp[i],sp[i+1],sp[i+2]), new THREE.Vector3(sp[i+3],sp[i+4],sp[i+5]),
                      new THREE.Vector3(sp[i+6],sp[i+7],sp[i+8])]);
-        const res = csgSubtract(body, prism);
+        // только точный путь: BSP на шестерне считал 17 с и рвал сетку (сотни
+        // щелей, дальше каждый зубец хуже); сгиб предпросмотра замкнут — лучше он
+        const res = exactBool(body, prism, 'subtract');
+        if(!res) throw new Error('exact wedge cut failed');
         const q = x => Math.round(x*1000)/1000, arr = [];
         for(const t of res){
-          const ar = new THREE.Vector3().subVectors(t[1],t[0]).cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
-          if(ar < 1e-6) continue;
+          const k = t.map(v => keyOf(v.x, v.y, v.z));
+          if(k[0] === k[1] || k[1] === k[2] || k[0] === k[2]) continue; // иглы не трогаем — см. openEdgesOfTris
           for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
         }
         setMeshFromArray(new Float32Array(arr));
         healAfterBool();
+        if(openEdgeCount() || nonManifoldEdgeCount()) throw new Error('wedge cut left gaps');
+        // замкнуто, но почти ничего не снято (классификация приняла клин за
+        // пустой) — это не канавка: сгиб предпросмотра снимал заметный объём
+        const vCut = meshVolumeOf(mesh.geometry.attributes.position.array);
+        if(vFold - vSnap < -1 && vCut - vSnap > (vFold - vSnap) * 0.5) throw new Error('wedge cut removed too little');
+        lastBoolPath = 'exact';
+        // линия канавки уехала со сгибом дальше выреза, хорды сверху частично
+        // срезаны — повисшие в воздухе линии убираем: край выреза теперь ребро
+        dropAirGuides();
+        break;
       }catch(err){
-        console.warn('edge cut failed', err);
+        console.warn('edge cut failed' + (extra ? ' (retry)' : ''), err);
         setMeshFromArray(moved); // остаётся сгиб
+        lastBoolPath = '';
       }
     }
   }
@@ -11493,7 +11584,6 @@ const zcV3 = (a, name) => {
     throw new Error(name + ' must be [x, y, z] in mm');
   return new THREE.Vector3(+a[0], +a[1], +a[2]);
 };
-const zcVec = {type: 'array', items: {type: 'number'}, minItems: 3, maxItems: 3};
 // Готовое замкнутое тело из треугольников (конус, тело вращения, труба) —
 // в модель: new заменяет её, join/cut — через BSP с лечением швов.
 // Ориентация — по знаку объёма, координаты округляются до 0.001 мм
@@ -12188,15 +12278,13 @@ function zcBevelLoopsCSG(tri, size, segs, which){
   dropAirGuides(); r.lines = guides.length;
   return Object.assign({outlines: pick.length, outline_points: pick.reduce((s, L) => s + L.length, 0)}, r);
 }
+// Реализация команд агента. Схема (описания и параметры) — в tools.js;
+// здесь только `run` и флаг `image`, имена обязаны совпадать.
 const ZC_COMMANDS = {
   get_state: {
-    description: 'Current model: triangle count, volume (mm³), bounding box, open edges (0 = closed solid), drawn lines, undo steps.',
-    params: {}, run: () => zcSummary()
+    run: () => zcSummary()
   },
   new_shape: {
-    description: 'Start a new model from a preset shape. Size is the cube side or the gear/sphere diameter in mm. Replaces the current model.',
-    params: {shape: {type: 'string', enum: ['cube', 'gear', 'sphere', 'pyramid']}, size: {type: 'number', description: 'mm'}},
-    required: ['shape'],
     async run(a){
       const kind = a.shape === 'gear' ? 'wheel' : a.shape;
       if(!['cube', 'wheel', 'sphere', 'pyramid'].includes(kind)) throw new Error('unknown shape ' + a.shape);
@@ -12212,8 +12300,6 @@ const ZC_COMMANDS = {
     }
   },
   draw_line: {
-    description: 'Draw a line segment. If both ends lie on one face, it splits the face into regions (like the SketchUp pencil); otherwise it is a construction line in the air.',
-    params: {from: zcVec, to: zcVec}, required: ['from', 'to'],
     run(a){
       const A = zcV3(a.from, 'from'), B = zcV3(a.to, 'to');
       const onFace = segmentOnSomeFace(A, B);
@@ -12225,10 +12311,6 @@ const ZC_COMMANDS = {
     }
   },
   draw_circle: {
-    description: 'Draw a circle (a polygon of segments) in the plane given by center and normal; on a face it splits out a round region.',
-    params: {center: zcVec, normal: zcVec, radius: {type: 'number', description: 'mm'},
-             segments: {type: 'integer', description: '3–360, default by size'}},
-    required: ['center', 'normal', 'radius'],
     run(a){
       const R = +a.radius;
       if(!(R >= 0.3)) throw new Error('radius must be at least 0.3 mm');
@@ -12241,13 +12323,6 @@ const ZC_COMMANDS = {
     }
   },
   extrude_face: {
-    description: 'Push/pull the face region under a point by a distance along its normal: positive adds material, negative cuts into the body (like E in the editor). The region is bounded by drawn lines and edges.',
-    params: {point: Object.assign({description: 'a point on the face, mm'}, zcVec),
-             normal: Object.assign({description: 'optional face normal to choose between faces meeting at the point'}, zcVec),
-             distance: {type: 'number', description: 'mm, + out of the face, − into the body'},
-             operation: {type: 'string', enum: ['auto', 'join', 'cut'], description: 'auto: into the body cuts, outward joins'},
-             end_scale: {type: 'number', description: 'tapered extrude (End size in the Extrude window): size of the end face relative to the base, scaled around the outline centre (0.05–5, default 1). Works outward and into the body, also for regions with holes.'}},
-    required: ['point', 'distance'],
     run(a){
       const d = +a.distance;
       if(!Number.isFinite(d) || Math.abs(d) < 0.05) throw new Error('distance must be a number of mm');
@@ -12274,10 +12349,6 @@ const ZC_COMMANDS = {
     }
   },
   cut_through: {
-    description: 'Cut the face region under a point straight through the whole body along the face normal (Through All) — a through hole (draw its outline first, e.g. draw_circle). The region may have holes; the far side need not be parallel.',
-    params: {point: Object.assign({description: 'a point inside the region, mm'}, zcVec),
-             normal: Object.assign({description: 'optional face normal'}, zcVec)},
-    required: ['point'],
     run(a){
       const t = zcFaceAt(zcV3(a.point, 'point'), a.normal ? zcV3(a.normal, 'normal').normalize() : null);
       if(t < 0) throw new Error('no face at this point');
@@ -12291,12 +12362,6 @@ const ZC_COMMANDS = {
     }
   },
   add_text: {
-    description: 'Put text on a face, centred at a point: depth > 0 embosses (raised letters), depth < 0 engraves, 0 only draws the letter outlines. Blocky 5×7 font; on vertical faces the text reads upright, on horizontal faces along +X.',
-    params: {center: Object.assign({description: 'centre of the text on the face, mm'}, zcVec),
-             normal: Object.assign({description: 'outward normal of that face'}, zcVec),
-             text: {type: 'string'}, height: {type: 'number', description: 'letter height, mm (≥ 3)'},
-             depth: {type: 'number', description: 'mm: + raised, − engraved, 0 outline'}},
-    required: ['center', 'normal', 'text', 'height', 'depth'],
     run(a){
       const n = zcV3(a.normal, 'normal');
       if(n.length() < 1e-9) throw new Error('normal must not be zero');
@@ -12317,8 +12382,6 @@ const ZC_COMMANDS = {
     }
   },
   export_stl: {
-    description: 'Export the model as a binary STL (millimetres) for 3D printing. The server saves it to its exports folder and returns the file path; the answer says whether the mesh is printable (closed, no edges shared by 3+ triangles).',
-    params: {name: {type: 'string', description: 'file name without extension (letters, digits, - and _), default: project name'}},
     run(a){
       const buf = new Uint8Array(buildSTL());
       let bin = '';
@@ -12328,11 +12391,6 @@ const ZC_COMMANDS = {
     }
   },
   bevel_edges: {
-    description: 'Chamfer (segments = 1) or round/fillet (segments ≥ 2) straight convex edges of the body — the same tool as Ctrl+B. Each edge is given by a point on it (not at a corner). size is the setback along each face from the edge; on a 90° edge the fillet radius equals size.',
-    params: {points: {type: 'array', items: zcVec, description: 'one point on each edge, mm'},
-             size: {type: 'number', description: 'mm, setback along the faces'},
-             segments: {type: 'integer', description: '1 — chamfer, 2–32 — round (default 8)'}},
-    required: ['points', 'size'],
     run(a){
       if(!Array.isArray(a.points) || !a.points.length) throw new Error('points must list at least one point on an edge');
       const size = +a.size;
@@ -12387,13 +12445,6 @@ const ZC_COMMANDS = {
     }
   },
   bevel_outline: {
-    description: 'Chamfer (segments = 1, default) or round (segments ≥ 2) whole outlines of a face — straight edges and arcs together, e.g. the top edge of a box with rounded corners or the rims of holes. outlines: outer (default), holes, or all. The walls along the outline should be perpendicular to the face and taller than size.',
-    params: {point: Object.assign({description: 'a point on the face, mm'}, zcVec),
-             normal: Object.assign({description: 'optional face normal'}, zcVec),
-             size: {type: 'number', description: 'mm: inset on the face and drop on the walls'},
-             segments: {type: 'integer', description: '1 — chamfer (default), 2–32 — round'},
-             outlines: {type: 'string', enum: ['outer', 'holes', 'all'], description: 'which outlines, default outer'}},
-    required: ['point', 'size'],
     run(a){
       const size = +a.size;
       if(!(size >= 0.1)) throw new Error('size must be at least 0.1 mm');
@@ -12407,14 +12458,9 @@ const ZC_COMMANDS = {
     }
   },
   undo: {
-    description: 'Undo the last step (the same history as Ctrl+Z).',
-    params: {}, run(){ if(!undoStack.length) throw new Error('nothing to undo'); undo(); return zcSummary(); }
+    run(){ if(!undoStack.length) throw new Error('nothing to undo'); undo(); return zcSummary(); }
   },
   cut_plane: {
-    description: 'Slice the body with a plane and remove everything on the side the normal points to (like Split Body + delete in Fusion). Useful to cut corners at any angle, e.g. a tetrahedron from a cube.',
-    params: {point: Object.assign({description: 'a point on the cutting plane, mm'}, zcVec),
-             normal: Object.assign({description: 'points to the part to remove'}, zcVec)},
-    required: ['point', 'normal'],
     run(a){
       const P = zcV3(a.point, 'point'), n = zcV3(a.normal, 'normal');
       if(n.length() < 1e-9) throw new Error('normal must not be zero');
@@ -12450,11 +12496,6 @@ const ZC_COMMANDS = {
     }
   },
   add_frustum: {
-    description: 'Solid truncated cone (or cylinder when r1 = r2) from point "from" (radius r1) to point "to" (radius r2). operation: join — merge with the body, cut — subtract it, new — replace the whole model with this solid.',
-    params: {from: zcVec, to: zcVec, r1: {type: 'number', description: 'mm at "from"'}, r2: {type: 'number', description: 'mm at "to"'},
-             segments: {type: 'integer', description: '3–256, default 48'},
-             operation: {type: 'string', enum: ['join', 'cut', 'new']}},
-    required: ['from', 'to', 'r1', 'r2'],
     run(a){
       const A = zcV3(a.from, 'from'), B = zcV3(a.to, 'to');
       const r1 = +a.r1, r2 = +a.r2, op = a.operation || 'join';
@@ -12481,11 +12522,6 @@ const ZC_COMMANDS = {
     }
   },
   add_revolve: {
-    description: 'Solid of revolution (Revolve / lathe): profile [[r, h], ...] is turned around the axis through "base" along "axis" (default Z). r is the distance from the axis, h the height along it; the profile must start and end on the axis (r = 0) and must not cross itself. Sample curves densely yourself. operation: join, cut or new.',
-    params: {profile: {type: 'array', items: {type: 'array', items: {type: 'number'}, minItems: 2, maxItems: 2}, minItems: 3},
-             base: zcVec, axis: zcVec, segments: {type: 'integer', description: '3–256, default 64'},
-             operation: {type: 'string', enum: ['join', 'cut', 'new']}},
-    required: ['profile'],
     run(a){
       const B = a.base ? zcV3(a.base, 'base') : new THREE.Vector3();
       const ax = a.axis ? zcV3(a.axis, 'axis') : new THREE.Vector3(0,0,1);
@@ -12527,12 +12563,6 @@ const ZC_COMMANDS = {
     }
   },
   add_sweep: {
-    description: 'Solid tube swept along a path (Sweep / pipe): an ellipse section follows the polyline "path" [[x,y,z], ...], ends capped. radius: mm, one number or one per path point; side_radius: the other semi-axis (default = radius), measured along "side" (a direction; default chosen automatically). The section is carried along the path without twisting. Sample curves densely and keep the radius below the bend radius. operation: join, cut or new.',
-    params: {path: {type: 'array', items: zcVec, minItems: 2},
-             radius: {description: 'number or array per path point'}, side_radius: {description: 'number or array per path point'},
-             side: zcVec, segments: {type: 'integer', description: '3–128, default 24'},
-             operation: {type: 'string', enum: ['join', 'cut', 'new']}},
-    required: ['path', 'radius'],
     run(a){
       if(!Array.isArray(a.path)) throw new Error('path must be [[x, y, z], ...]');
       const P = [], idx = [];
@@ -12575,11 +12605,38 @@ const ZC_COMMANDS = {
       return zcApplySolid(tris, a.operation || 'join');
     }
   },
+  move_edge: {
+    // тот же сдвиг ребра, что M + Shift/N + число в окне: startEdgeMove,
+    // ввод расстояния, finishEdgeMove (V-канавка — вырез клина точной булевой)
+    run(a){
+      const P = zcV3(a.point, 'point'), d = +a.distance;
+      if(!Number.isFinite(d) || Math.abs(d) < 0.05) throw new Error('distance must be a number of mm');
+      const near = (ch, Q) => ch.pts.some((B, i) => {
+        if(!i) return false;
+        const A = ch.pts[i-1], ab = new THREE.Vector3().subVectors(B, A), L2 = ab.lengthSq();
+        if(L2 < 1e-12) return false;
+        const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(Q, A).dot(ab) / L2));
+        return A.clone().addScaledVector(ab, t).distanceTo(Q) < 0.05;
+      });
+      // нарисованная линия важнее ребра сетки под ней — как при клике
+      const ch = chains.find(c => c.isGuide && near(c, P)) || chains.find(c => near(c, P));
+      if(!ch) throw new Error('no line or edge at this point');
+      if(edgeDrag) cancelEdgeMove();
+      const v0 = meshVolumeOf(mesh.geometry.attributes.position.array), u0 = undoStack.length;
+      clearEdgeSel(); toggleEdgeSel(ch);
+      startEdgeMove();
+      if(!edgeDrag) throw new Error('this line cannot be moved');
+      if(!edgeDrag.normal){ cancelEdgeMove(); throw new Error('the line does not lie on a face — nothing to move it perpendicular to'); }
+      edgeDrag.nKey = true; edgeDrag.nLock = true;
+      edgeDrag.mouseSign = d < 0 ? -1 : 1; edgeDrag.typed = String(Math.abs(d));
+      applyEdgeTyped();
+      finishEdgeMove();
+      clearEdgeSel(); hideChordHint();
+      return Object.assign({volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3),
+        history_steps: undoStack.length - u0}, zcSummary());
+    }
+  },
   screenshot: {
-    description: 'Picture of the 3D view (JPEG). fit: frame the whole model first (moves the user view too); yaw/pitch in degrees turn the camera.',
-    params: {fit: {type: 'boolean'}, yaw: {type: 'number', description: 'degrees around Z'},
-             pitch: {type: 'number', description: 'degrees above the ground'},
-             width: {type: 'integer', description: 'px, default 1000'}, height: {type: 'integer', description: 'px, default 700'}},
     image: true,
     run(a){
       if(a.yaw != null) yaw = +a.yaw * Math.PI / 180;
@@ -12609,13 +12666,21 @@ const ZC_COMMANDS = {
     }
   }
 };
-// описание для MCP tools/list — из того же реестра
+// Схема для MCP tools/list — из tools.js; здесь, в ZC_COMMANDS, только
+// реализация. Два списка разошлись бы молча, поэтому источник один, а
+// расхождение имён — сразу ошибка при загрузке (её видно в консоли вкладки).
 function zcToolList(){
-  return Object.entries(ZC_COMMANDS).map(([name, c]) => ({
-    name, description: c.description,
-    inputSchema: {type: 'object', properties: c.params, required: c.required || []}
-  }));
+  return ZC_TOOLS;
 }
+(function checkToolRegistry(){
+  const schema = ZC_TOOLS.map(t => t.name).sort(), impl = Object.keys(ZC_COMMANDS).sort();
+  const missing = schema.filter(n => !ZC_COMMANDS[n]);
+  const extra = impl.filter(n => !ZC_TOOLS.some(t => t.name === n));
+  if(missing.length || extra.length)
+    console.error('tools.js и ZC_COMMANDS разошлись:',
+      missing.length ? 'нет реализации: ' + missing.join(', ') : '',
+      extra.length ? 'нет схемы: ' + extra.join(', ') : '');
+})();
 // выполнить команду: один вызов — один шаг агента; метка «AI is drawing»
 async function zcRun(name, args){
   const c = ZC_COMMANDS[name];
@@ -12644,10 +12709,20 @@ function zcAgentBadge(name){
 // Agent link: страницу отдал наш сервер — слушаем его команды (SSE), ответ —
 // POST. Без сервера (расширение, файл) модуль молчит, редактор тот же
 if(HAS_SERVER && window.EventSource){
-  const es = new EventSource('/agent/events');
+  // Своя метка вкладки: команды сервер шлёт только ведущей — той, что открыли
+  // последней или в которую пользователь только что переключился. Без этого
+  // две открытые вкладки выполняли одну команду агента обе, и вторая модель
+  // менялась молча.
+  const zcTab = Math.floor(Math.random() * 1e15) + 1;
+  const es = new EventSource('/agent/events?tab=' + zcTab);
   es.addEventListener('open', () => {
     fetch('/agent/hello', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({build: window.ZC_BUILD, tools: zcToolList()})}).catch(() => {});
+      body: JSON.stringify({build: window.ZC_BUILD, tools: zcToolList(), tab: zcTab})}).catch(() => {});
+  });
+  // смотрим на эту вкладку — значит, рисовать агент должен в ней
+  window.addEventListener('focus', () => {
+    fetch('/agent/lead', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tab: zcTab})}).catch(() => {});
   });
   es.addEventListener('command', async ev => {
     let msg;

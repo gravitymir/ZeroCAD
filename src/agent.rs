@@ -8,6 +8,9 @@
 //!
 //! Список инструментов вкладка присылает сама (`POST /agent/hello`) из того же
 //! реестра команд, по которому работает редактор, — одно приложение, не два.
+//! Без вкладки его отдаёт `embedded_tools()` из вшитого `web/tools.js` — того
+//! же файла, что грузит вкладка: агент, подключившийся раньше пользователя,
+//! должен видеть команды, а не пустой список.
 //! Только std: без WebSocket и без JSON-крейтов (крошечный разбор ниже).
 
 use std::collections::HashMap;
@@ -262,12 +265,36 @@ fn parse_str(b: &[u8], i: &mut usize) -> Option<String> {
 
 // ---------------- мост к вкладке ----------------
 
+/// Открытая вкладка ZeroCAD: SSE-поток и её метка (её вкладка придумывает
+/// себе сама и повторяет в `hello` / `lead`, чтобы сервер мог их связать)
+struct Tab {
+    id: u64,
+    stream: TcpStream,
+}
+
+/// Вкладка не ответила за `timeout`, но считает дальше — JS однопоточный, и
+/// прервать булеву посреди счёта нельзя. Раньше следующая команда уходила
+/// поверх незаконченной; теперь мост говорит «занято», пока вкладка не
+/// пришлёт запоздавший ответ. Если не пришла и за это время — вкладка
+/// зависла, и мост разблокируется сам.
+const STUCK_AFTER: Duration = Duration::from_secs(600);
+
 struct Bridge {
     /// открытые вкладки ZeroCAD (SSE-потоки)
-    tabs: Vec<TcpStream>,
+    tabs: Vec<Tab>,
+    /// кому уходят команды агента: последняя открытая вкладка или та, в
+    /// которую пользователь переключился. Раньше команда уходила во все
+    /// сразу — две вкладки выполняли её обе, а агент видел один ответ
+    leader: Option<u64>,
     next_id: u64,
+    next_tab: u64,
     /// ответы вкладок по id команды
     results: HashMap<u64, Json>,
+    /// id команд, которых ещё кто-то ждёт: ответ на всё остальное —
+    /// опоздавший или от лишней вкладки, его надо выбросить, а не копить
+    pending: std::collections::HashSet<u64>,
+    /// команда, которую вкладка считает прямо сейчас: id, имя, когда начали
+    inflight: Option<(u64, String, Instant)>,
     /// инструменты из реестра команд вкладки
     tools: Option<Json>,
     build: String,
@@ -281,10 +308,24 @@ fn bridge() -> &'static (Mutex<Bridge>, Condvar) {
             std::thread::sleep(Duration::from_secs(15));
             let (m, _) = bridge();
             let mut st = m.lock().unwrap();
-            st.tabs.retain_mut(|s| s.write_all(b": ping\n\n").and_then(|_| s.flush()).is_ok());
+            st.tabs.retain_mut(|t| t.stream.write_all(b": ping\n\n").and_then(|_| t.stream.flush()).is_ok());
+            // ведущая вкладка закрылась — ведёт следующая (последняя открытая)
+            if st.leader.map_or(false, |id| !st.tabs.iter().any(|t| t.id == id)) {
+                st.leader = st.tabs.last().map(|t| t.id);
+            }
         });
         (
-            Mutex::new(Bridge { tabs: Vec::new(), next_id: 1, results: HashMap::new(), tools: None, build: String::new() }),
+            Mutex::new(Bridge {
+                tabs: Vec::new(),
+                leader: None,
+                next_id: 1,
+                next_tab: 1,
+                results: HashMap::new(),
+                pending: std::collections::HashSet::new(),
+                inflight: None,
+                tools: None,
+                build: String::new(),
+            }),
             Condvar::new(),
         )
     })
@@ -304,14 +345,58 @@ pub fn origin_ok(origin: Option<&str>) -> bool {
     }
 }
 
-/// GET /agent/events — вкладка подписывается на команды
-pub fn open_events(mut stream: TcpStream) {
+/// GET /agent/events?tab=N — вкладка подписывается на команды. Метку вкладка
+/// придумывает себе сама; без неё (старая страница из кеша) метку выдаёт
+/// сервер — вести такая вкладка сможет, а перехватывать по фокусу нет.
+pub fn open_events(mut stream: TcpStream, tab: Option<u64>) {
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n: zerocad agent link\n\n";
     if stream.write_all(head.as_bytes()).and_then(|_| stream.flush()).is_err() {
         return;
     }
     let (m, _) = bridge();
-    m.lock().unwrap().tabs.push(stream);
+    let mut st = m.lock().unwrap();
+    let id = tab.unwrap_or_else(|| {
+        st.next_tab += 1;
+        st.next_tab
+    });
+    // та же вкладка после F5 — не вторая копия
+    st.tabs.retain(|t| t.id != id);
+    st.tabs.push(Tab { id, stream });
+    // только что открытая вкладка и есть та, на которую смотрит пользователь
+    st.leader = Some(id);
+}
+
+/// POST /agent/lead — вкладка получила фокус и просит команды себе. Так агент
+/// всегда рисует в той вкладке, на которую пользователь смотрит.
+pub fn lead(body: &[u8]) -> bool {
+    let Some(v) = std::str::from_utf8(body).ok().and_then(Json::parse) else { return false };
+    let Some(id) = v.get("tab").and_then(Json::as_f64) else { return false };
+    let (m, _) = bridge();
+    let mut st = m.lock().unwrap();
+    let id = id as u64;
+    if st.tabs.iter().any(|t| t.id == id) {
+        st.leader = Some(id);
+    }
+    true
+}
+
+/// Схема команд, вшитая в бинарник (`web/tools.js` — тот же файл, что грузит
+/// вкладка). Нужна, чтобы `tools/list` был полным ещё до того, как пользователь
+/// откроет вкладку. Файл — чистые данные: берём массив от `const ZC_TOOLS` до
+/// последней `]`, комментарии сверху разбору не мешают.
+pub fn embedded_tools() -> Json {
+    static CACHE: OnceLock<Json> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let src = crate::TOOLS_JS;
+            src.find("const ZC_TOOLS")
+                .and_then(|i| src[i..].find('[').map(|j| i + j))
+                .zip(src.rfind(']'))
+                .filter(|(a, b)| a < b)
+                .and_then(|(a, b)| Json::parse(&src[a..=b]))
+                .unwrap_or(Json::Arr(vec![]))
+        })
+        .clone()
 }
 
 /// POST /agent/hello — вкладка прислала номер сборки и список инструментов
@@ -334,7 +419,17 @@ pub fn result(body: &[u8]) -> bool {
     let Some(v) = std::str::from_utf8(body).ok().and_then(Json::parse) else { return false };
     let Some(id) = v.get("id").and_then(Json::as_f64) else { return false };
     let (m, cv) = bridge();
-    m.lock().unwrap().results.insert(id as u64, v);
+    let mut st = m.lock().unwrap();
+    let id = id as u64;
+    // вкладка досчитала и свободна — даже если этого ответа уже никто не ждёт
+    if st.inflight.as_ref().map(|(i, _, _)| *i) == Some(id) {
+        st.inflight = None;
+    }
+    // ответ, которого никто не ждёт (опоздал после таймаута), раньше оседал
+    // в results навсегда — неограниченная утечка
+    if st.pending.contains(&id) {
+        st.results.insert(id, v);
+    }
     cv.notify_all();
     true
 }
@@ -343,25 +438,60 @@ pub fn result(body: &[u8]) -> bool {
 fn call_tab(tool: &str, args: &Json, timeout: Duration) -> Result<Json, String> {
     let (m, cv) = bridge();
     let mut st = m.lock().unwrap();
+    // предыдущая команда ещё считается: слать вторую поверх нельзя — вкладка
+    // однопоточная, и агент получил бы ответы вперемешку
+    if let Some((_, busy, since)) = st.inflight.clone() {
+        if since.elapsed() < STUCK_AFTER {
+            return Err(format!(
+                "ZeroCAD is still running '{busy}' ({} s so far). Wait for it to finish before sending another command.",
+                since.elapsed().as_secs()
+            ));
+        }
+        st.inflight = None; // вкладка зависла — освобождаем мост
+    }
     let id = st.next_id;
     st.next_id += 1;
     let msg = Json::obj(vec![("id", Json::Num(id as f64)), ("tool", Json::str(tool)), ("args", args.clone())]).dump();
     let frame = format!("event: command\ndata: {msg}\n\n");
-    st.tabs.retain_mut(|s| s.write_all(frame.as_bytes()).and_then(|_| s.flush()).is_ok());
-    if st.tabs.is_empty() {
-        return Err(no_tab_message());
-    }
-    let deadline = Instant::now() + timeout;
+    // Команда уходит ОДНОЙ вкладке — ведущей. Раньше кадр писался всем сразу,
+    // и две открытые вкладки выполняли одну команду обе: агент видел первый
+    // ответ, а вторая модель менялась молча.
     loop {
+        let Some(&Tab { id: lead_id, .. }) = st
+            .leader
+            .and_then(|l| st.tabs.iter().find(|t| t.id == l))
+            .or_else(|| st.tabs.last())
+        else {
+            st.leader = None;
+            return Err(no_tab_message());
+        };
+        st.leader = Some(lead_id);
+        let tab = st.tabs.iter_mut().find(|t| t.id == lead_id).expect("вкладка только что найдена");
+        if tab.stream.write_all(frame.as_bytes()).and_then(|_| tab.stream.flush()).is_ok() {
+            break;
+        }
+        st.tabs.retain(|t| t.id != lead_id); // закрылась между проверкой и отправкой
+        st.leader = None;
+    }
+    st.pending.insert(id);
+    st.inflight = Some((id, tool.to_string(), Instant::now()));
+    let deadline = Instant::now() + timeout;
+    let out = loop {
         if let Some(r) = st.results.remove(&id) {
-            return Ok(r);
+            st.inflight = None;
+            break Ok(r);
         }
         let now = Instant::now();
         if now >= deadline {
-            return Err(format!("ZeroCAD did not answer '{tool}' in {} s", timeout.as_secs()));
+            // inflight НЕ снимаем: вкладка всё ещё считает, и следующая
+            // команда должна получить внятное «занято», а не уйти поверх
+            break Err(format!("ZeroCAD did not answer '{tool}' in {} s", timeout.as_secs()));
         }
         st = cv.wait_timeout(st, deadline - now).unwrap().0;
-    }
+    };
+    st.pending.remove(&id);
+    st.results.remove(&id);
+    out
 }
 
 fn no_tab_message() -> String {
@@ -369,6 +499,11 @@ fn no_tab_message() -> String {
 }
 
 // ---------------- MCP ----------------
+
+/// Версии протокола MCP, которые мы понимаем; первая — предпочтительная.
+/// Разница для нас невелика (инструменты и `initialize` не менялись), но
+/// подтверждать версию, о которой мы ничего не знаем, нельзя.
+const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
 /// POST /mcp: один JSON-RPC запрос → (HTTP-статус, тело JSON или пусто)
 pub fn mcp(body: &[u8]) -> (&'static str, String) {
@@ -386,7 +521,12 @@ pub fn mcp(body: &[u8]) -> (&'static str, String) {
     let params = req.get("params").cloned().unwrap_or(Json::Obj(vec![]));
     let result = match method {
         "initialize" => {
-            let version = params.get("protocolVersion").and_then(Json::as_str).unwrap_or("2025-06-18");
+            // Договариваемся о версии, а не поддакиваем: раньше возвращали то,
+            // что прислал клиент, включая несуществующую версию, и он считал,
+            // что сервер её понимает. Незнакомую заменяем на свою новейшую —
+            // дальше решает клиент.
+            let asked = params.get("protocolVersion").and_then(Json::as_str).unwrap_or(PROTOCOL_VERSIONS[0]);
+            let version = if PROTOCOL_VERSIONS.contains(&asked) { asked } else { PROTOCOL_VERSIONS[0] };
             Json::obj(vec![
                 ("protocolVersion", Json::str(version)),
                 ("capabilities", Json::obj(vec![("tools", Json::obj(vec![("listChanged", Json::Bool(false))]))])),
@@ -397,22 +537,35 @@ pub fn mcp(body: &[u8]) -> (&'static str, String) {
                         "ZeroCAD is a mesh CAD editor running in the user's browser; the user watches every step live. \
                          Units are millimetres, Z is up, the ground is z=0. A cube of size S spans 0..S on each axis; \
                          a gear is centred on the Z axis. Faces are addressed by a point on the face (and optionally its normal). \
-                         Call get_state to check volume, bounding box and open_edges (0 means a closed solid) after each change, \
-                         and screenshot to see the model.",
+                         \n\nUsual route: start from new_shape, draw a closed outline on a face with draw_circle / \
+                         draw_line / add_text, then give it depth with extrude_face (a distance, + outward and − into the \
+                         body) or cut_through (all the way through the body). add_frustum, add_revolve and add_sweep add \
+                         whole solids instead and need no outline. bevel_edges and bevel_outline round or chamfer what \
+                         exists; undo steps back. \
+                         \n\nAfter every change call get_state and check open_edges == 0 — that is what makes the mesh a \
+                         closed solid and printable, and export_stl warns when it is not. Call screenshot to see the model \
+                         rather than assuming it looks right; pass fit to frame it. \
+                         \n\nThe model is the user's document: every command replaces or reshapes what is on their screen, \
+                         and new_shape throws the current model away. Say what you are about to change before you change it.",
                     ),
                 ),
             ])
         }
         "ping" => Json::obj(vec![]),
         "tools/list" => {
-            let (m, cv) = bridge();
-            let mut st = m.lock().unwrap();
-            // вкладка могла ещё не представиться — подождём её немного
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while st.tools.is_none() && Instant::now() < deadline {
-                st = cv.wait_timeout(st, deadline - Instant::now()).unwrap().0;
-            }
-            Json::obj(vec![("tools", st.tools.clone().unwrap_or(Json::Arr(vec![])))])
+            let (m, _) = bridge();
+            let st = m.lock().unwrap();
+            // Список живой вкладки важнее: она могла быть собрана иначе
+            // (расширение, старая сборка). Без вкладки — вшитый `web/tools.js`,
+            // тот же файл, что грузит вкладка.
+            //
+            // Раньше здесь ждали вкладку 5 с и отдавали пустой массив, если не
+            // дождались. Агент, запущенный раньше, чем пользователь открыл
+            // вкладку, видел ноль инструментов, кешировал это на сессию и
+            // считал, что ZeroCAD ничего не умеет; listChanged = false обещает,
+            // что список больше не поменяется, так что узнать правду было
+            // неоткуда. Теперь ответ всегда полный и мгновенный.
+            Json::obj(vec![("tools", st.tools.clone().unwrap_or_else(embedded_tools))])
         }
         "tools/call" => {
             let name = params.get("name").and_then(Json::as_str).unwrap_or("").to_string();
@@ -621,5 +774,32 @@ mod tests {
         // без вкладки инструмент отвечает понятной ошибкой, а не зависает
         let (_, b) = mcp(br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_state","arguments":{}}}"#);
         assert!(b.contains("\"isError\":true") && b.contains("not open in a browser"));
+    }
+
+    /// Вшитый `web/tools.js` разбирается, и `tools/list` без вкладки не пуст:
+    /// пустой список агент кеширует и решает, что ZeroCAD ничего не умеет.
+    #[test]
+    fn tools_list_without_tab() {
+        let Json::Arr(tools) = embedded_tools() else { panic!("tools.js не разобрался в массив") };
+        assert!(tools.len() >= 16, "инструментов всего {}", tools.len());
+        for t in &tools {
+            let name = t.get("name").and_then(Json::as_str).unwrap_or("");
+            assert!(!name.is_empty(), "инструмент без имени: {}", t.dump());
+            let desc = t.get("description").and_then(Json::as_str).unwrap_or("");
+            assert!(desc.len() > 20, "{name}: описание слишком короткое");
+            assert!(
+                t.get("inputSchema").and_then(|s| s.get("type")).and_then(Json::as_str) == Some("object"),
+                "{name}: нет inputSchema типа object"
+            );
+        }
+        // те же данные приходят и по MCP, пока вкладка не представилась
+        let (s, b) = mcp(br#"{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}"#);
+        assert_eq!(s, "200 OK");
+        assert!(!b.contains("\"tools\":[]"), "tools/list без вкладки пуст: {b}");
+        for name in ["get_state", "new_shape", "extrude_face", "screenshot"] {
+            assert!(b.contains(&format!("\"{name}\"")), "в tools/list нет {name}");
+        }
+        // «gear» — колесо-дозатор: без этой оговорки агент строит «шестерню»
+        assert!(b.contains("NOT a toothed gear"), "new_shape не предупреждает про gear");
     }
 }

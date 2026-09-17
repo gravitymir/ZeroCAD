@@ -8,7 +8,7 @@ const path = require('path');
 const vm = require('vm');
 
 const ROOT = path.join(__dirname, '..', '..');
-const APP = path.join(ROOT, 'web', 'app.js');
+const APP = process.env.ZC_APP || path.join(ROOT, 'web', 'app.js');
 
 function extract(src, name){
   const start = src.indexOf('\nfunction ' + name + '(');

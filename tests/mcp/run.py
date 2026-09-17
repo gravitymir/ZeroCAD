@@ -213,6 +213,35 @@ def extrude_end_size_draft():
 
 
 @case
+def gear_v_grooves_on_tooth_flanks():
+    # Сценарий пользователя: диск Ø140 на 180 сегментов, 6 зубьев (вершина R70,
+    # впадина R60), линия поперёк боковой грани на высоте 5.5 и move_edge −5.5.
+    # Раньше вторая канавка рвала сетку (BSP: сотни щелей, 17 с), третья
+    # подвешивала вкладку, оставались висящие линии
+    P = lambda deg, r, z=11: [round(r*math.cos(math.radians(deg)), 4), round(r*math.sin(math.radians(deg)), 4), z]
+    call('add_revolve', {'profile': [[0, 0], [70, 0], [70, 11], [0, 11]], 'segments': 180, 'operation': 'new'})
+    for k in range(6):
+        a = 60 * k
+        call('draw_line', {'from': P(a + 8, 70), 'to': P(a + 22, 60)})
+        call('draw_line', {'from': P(a + 22, 60), 'to': P(a + 38, 60)})
+        call('draw_line', {'from': P(a + 38, 60), 'to': P(a + 52, 70)})
+        closed(call('cut_through', {'point': P(a + 30, 67), 'normal': [0, 0, 1]}), f'gap {k}')
+    t, n = time.time(), 0
+    for k in range(3):  # две соседние грани одной впадины и следующий зуб
+        a = 60 * k
+        for t0, r0, t1, r1 in [(a + 8, 70, a + 22, 60), (a + 38, 60, a + 52, 70)]:
+            A, B = P(t0, r0, 5.5), P(t1, r1, 5.5)
+            call('draw_line', {'from': A, 'to': B})
+            d = call('move_edge', {'point': [(A[0]+B[0])/2, (A[1]+B[1])/2, 5.5], 'distance': -5.5})
+            n += 1
+            closed(d, f'groove {n}')
+            assert d.get('boolean') == 'exact', f'groove {n}: wedge not cut exactly'
+            # одинаковые грани — одинаковый вырез (449–453; разница — обод по 2°)
+            assert 440 < -d['volume_change_mm3'] < 460, f'groove {n}: removed {d["volume_change_mm3"]}'
+    assert time.time() - t < 30, f'6 grooves took {time.time() - t:.1f} s'
+
+
+@case
 def bevel_edges_tool():
     call('new_shape', {'shape': 'cube', 'size': 40})
     d = call('bevel_edges', {'points': [[20, 0, 40]], 'size': 4, 'segments': 1})

@@ -4,11 +4,12 @@
 //!
 //!   GET /                    -> страница (web/index.html, вшита в бинарник)
 //!   GET /app.js              -> редактор: ядро, команды, интерфейс
+//!   GET /tools.js            -> схема команд для агента (её же вшивает сервер)
 //!   GET /vendor/three.min.js -> three.js r128 (локально: расширениям CDN нельзя)
 //!   GET /api/wheel.stl?...   -> бинарный STL с параметрами из query
 //!   POST /mcp                -> MCP для AI-агента (agent.rs); команды исполняет
 //!                               открытая вкладка: GET /agent/events (SSE),
-//!                               POST /agent/hello, POST /agent/result
+//!                               POST /agent/hello, /agent/result, /agent/lead
 //!
 //! Параметры query: dia, thk, shaft, n, depth, mouth (дефолты — в geometry.rs).
 
@@ -23,6 +24,9 @@ use std::net::{TcpListener, TcpStream};
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
+/// Схема команд для агента: тот же файл, что грузит вкладка. Сервер разбирает
+/// его в `agent::embedded_tools()`, чтобы отвечать на `tools/list` без вкладки.
+pub const TOOLS_JS: &str = include_str!("../web/tools.js");
 const THREE_JS: &str = include_str!("../web/vendor/three.min.js");
 const BUILD: &str = env!("ZEROCAD_BUILD");
 static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
@@ -92,16 +96,29 @@ fn handle(stream: TcpStream) {
         return;
     }
     match path {
-        "/agent/events" => agent::open_events(stream),
-        "/agent/hello" | "/agent/result" => {
-            let ok = if path == "/agent/hello" { agent::hello(&body) } else { agent::result(&body) };
+        "/agent/events" => {
+            let tab = query
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("tab="))
+                .and_then(|v| v.parse::<u64>().ok());
+            agent::open_events(stream, tab);
+        }
+        "/agent/hello" | "/agent/result" | "/agent/lead" => {
+            let ok = match path {
+                "/agent/hello" => agent::hello(&body),
+                "/agent/result" => agent::result(&body),
+                _ => agent::lead(&body),
+            };
             let status = if ok { "204 No Content" } else { "400 Bad Request" };
             respond(&mut stream, status, "text/plain; charset=utf-8", &[], b"");
         }
         "/mcp" => {
             if request_line.starts_with("POST ") {
                 let (status, json) = agent::mcp(&body);
-                respond(&mut stream, status, "application/json", &[], json.as_bytes());
+                // charset обязателен не по RFC 8259 (JSON и так UTF-8), а ради
+                // наивных клиентов: без него PowerShell 5.1 читал ответ как
+                // latin-1 и показывал «â» вместо «−» прямо в описаниях команд
+                respond(&mut stream, status, "application/json; charset=utf-8", &[], json.as_bytes());
             } else {
                 // SSE-поток сервер→агент не нужен: все ответы — в теле POST
                 respond(&mut stream, "405 Method Not Allowed", "text/plain; charset=utf-8", &["Allow: POST".to_string()], b"");
@@ -123,6 +140,13 @@ fn handle(stream: TcpStream) {
             "text/javascript; charset=utf-8",
             &[],
             APP_JS.as_bytes(),
+        ),
+        "/tools.js" => respond(
+            &mut stream,
+            "200 OK",
+            "text/javascript; charset=utf-8",
+            &[],
+            TOOLS_JS.as_bytes(),
         ),
         "/vendor/three.min.js" => respond(
             &mut stream,
