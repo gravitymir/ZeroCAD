@@ -527,6 +527,28 @@ const ZC_TOOLS = [
     }
   },
   {
+    "name": "revolve_profile",
+    "description": "Revolve a flat closed profile given in 3D around an axis — the same builder as the user's Revolve tool (G,O). The axis must lie in the plane of the profile and the profile on one side of it (points on the axis are fine). |angle| < 360 makes a sector with flat ends.",
+    "inputSchema": {"type": "object", "properties": {
+      "profile": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 3},
+      "axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "axis_direction": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "angle": {"type": "number", "description": "degrees, default 360; negative turns the other way"},
+      "segments": {"type": "integer", "description": "per full turn, default 64"},
+      "operation": {"type": "string", "enum": ["join", "cut", "new"], "description": "default join"}
+    }, "required": ["profile", "axis_point", "axis_direction"]}
+  },
+  {
+    "name": "sweep_profile",
+    "description": "Sweep a flat closed profile given in 3D along a polyline path — the same builder as the user's Sweep tool (G,W). The profile is carried without twisting from the path end nearest to it; corners are mitred (no sharper than 30°). closed: the path is a loop (no end caps).",
+    "inputSchema": {"type": "object", "properties": {
+      "profile": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 3},
+      "path": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 2},
+      "closed": {"type": "boolean"},
+      "operation": {"type": "string", "enum": ["join", "cut", "new"], "description": "default join"}
+    }, "required": ["profile", "path"]}
+  },
+  {
     "name": "move_edge",
     "description": "Move a drawn line or an edge of the body perpendicular to the face it lies on (M, then Shift or N, then a distance in the editor). Pushed into the body (distance < 0) it becomes a V groove: the neighbouring face strips fold in and the wedge is cut out, e.g. a line drawn across a face from edge to edge at mid-height, moved -5.5, notches that face. Pulled outward it raises a ridge. Draw the line first with draw_line.",
     "inputSchema": {

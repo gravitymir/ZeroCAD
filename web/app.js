@@ -2069,7 +2069,7 @@ const tapeTool = {
 // Ошибки и предупреждения. Если открыто окно или палитра, блок встаёт над
 // ним той же ширины (места сверху мало — под ним), иначе — у курсора.
 // Держится 2.8 с
-const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'cylPopup', 'rotPopup',
+const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'cylPopup', 'profPopup', 'rotPopup',
   'arrPopup', 'txtPopup', 'divPopup', 'vpanel', 'popup'];
 function warnTip(msg){
   const box = document.getElementById('warnBox');
@@ -2391,6 +2391,425 @@ for(const inp of [rot_a, rot_n]){
 rot_ok.addEventListener('click', ()=>{ if(activeTool === rotTool) rotTool.apply(rotTool.angle); });
 rot_cancel.addEventListener('click', ()=>setActiveTool(null));
 
+// ---------- Revolve (G,O) и Sweep (G,W): тело из профиля ----------
+// Профиль — замкнутый плоский контур: выбранные линии/рёбра (B, Ctrl+клик)
+// или контур области грани под кликом (нарисованный на грани прямоугольник,
+// круг; лист в воздухе после F). Revolve вращает его вокруг оси (Revolve во
+// Fusion), Sweep ведёт вдоль пути (Sweep во Fusion, Follow Me в SketchUp).
+// Лист-профиль в воздухе при применении поглощается телом, как грань у
+// Follow Me. Тело объединяется или вычитается точной булевой (zcApplySolid).
+
+// Треугольники тела — согласованно по соседству (общее ребро обходится
+// навстречу), наружу — по знаку объёма. Построители ниже не следят за
+// обходом торцов и боковин — это делает один проход здесь
+function orientSolid(tris){
+  const K = v => keyOf(v.x, v.y, v.z);
+  const good = tris.filter(t => { const k = t.map(K); return k[0] !== k[1] && k[1] !== k[2] && k[0] !== k[2]; });
+  const edges = new Map();
+  good.forEach((t, i) => { for(let e=0;e<3;e++){
+    const a = K(t[e]), b = K(t[(e+1)%3]), ek = a < b ? a+'|'+b : b+'|'+a;
+    let L = edges.get(ek); if(!L) edges.set(ek, L = []); L.push({i, fwd: a < b});
+  }});
+  const flip = new Array(good.length).fill(null);
+  for(let s=0;s<good.length;s++){
+    if(flip[s] !== null) continue;
+    flip[s] = false;
+    const stack = [s];
+    while(stack.length){
+      const i = stack.pop(), t = good[i];
+      for(let e=0;e<3;e++){
+        const a = K(t[e]), b = K(t[(e+1)%3]), ek = a < b ? a+'|'+b : b+'|'+a;
+        const fwd = (a < b) !== flip[i];
+        for(const o of edges.get(ek)){
+          if(o.i === i || flip[o.i] !== null) continue;
+          flip[o.i] = (o.fwd === fwd); // сосед должен идти навстречу
+          stack.push(o.i);
+        }
+      }
+    }
+  }
+  let out = good.map((t, i) => flip[i] ? [t[0], t[2], t[1]] : t);
+  let vol = 0; for(const [p, q, r] of out) vol += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
+  if(vol < 0) out = out.map(t => [t[0], t[2], t[1]]);
+  return out;
+}
+// точки контура на одной прямой с соседями — лишние (круг после врезки: сотни)
+function simplifyLoop(loop, closed = true){
+  let pts = loop.slice();
+  for(let changed = true; changed && pts.length > 3;){
+    changed = false;
+    for(let i = closed ? 0 : 1; i < pts.length - (closed ? 0 : 1) && pts.length > 3; i++){
+      const a = pts[(i-1+pts.length)%pts.length], b = pts[i], c = pts[(i+1)%pts.length];
+      const ac = new THREE.Vector3().subVectors(c, a), L2 = ac.lengthSq();
+      const off = L2 < 1e-12 ? 0 : new THREE.Vector3().subVectors(b, a).cross(ac).length() / Math.sqrt(L2);
+      if(a.distanceTo(b) < 1e-4 || off < 1e-4){ pts.splice(i, 1); changed = true; i--; }
+    }
+  }
+  return pts;
+}
+function loopPlaneNormal(loop){
+  const n = new THREE.Vector3();
+  for(let i=0;i<loop.length;i++){ const p = loop[i], q = loop[(i+1)%loop.length];
+    n.x += (p.y-q.y)*(p.z+q.z); n.y += (p.z-q.z)*(p.x+q.x); n.z += (p.x-q.x)*(p.y+q.y); }
+  return n.length() > 1e-9 ? n.normalize() : null;
+}
+// профиль из области грани под треугольником: один контур; лист — поглощается
+function profileFromRegion(tri){
+  const pos = mesh.geometry.attributes.position.array;
+  cachedPatch = null;
+  const patch = facePatchAt(tri);
+  const loop = patchOutlineLoop(pos, patch.tris);
+  if(!loop) throw new Error('the profile region must have one outline without holes');
+  return {loop: simplifyLoop(loop), consume: patchIsSheet(pos, patch.tris) ? patch.tris.slice() : null,
+          area: patch.area || 0, patch};
+}
+function profileFromLoop(loop){
+  const pts = simplifyLoop(loop), n = loopPlaneNormal(pts);
+  if(!n) throw new Error('the selected contour is degenerate');
+  const d0 = n.dot(pts[0]);
+  if(pts.some(p => Math.abs(n.dot(p) - d0) > 0.05)) throw new Error('the selected contour is not flat');
+  return {loop: pts, consume: null, area: 0};
+}
+// Revolve: профиль в плоскости оси, по одну сторону от неё; точки на оси —
+// полюса. |angle| < 360 — сектор с торцами; знак угла — в какую сторону
+function revolveLoopTris(loop, A, dir, angleDeg, seg){
+  const d = (angleDeg < 0 ? dir.clone().negate() : dir.clone()).normalize();
+  angleDeg = Math.abs(angleDeg);
+  const full = angleDeg >= 359.999;
+  const ang = Math.max(0.1, Math.min(360, angleDeg)) * Math.PI / 180;
+  const eps = 0.01;
+  const hr = loop.map(p => { const w = new THREE.Vector3().subVectors(p, A); const h = w.dot(d); w.addScaledVector(d, -h); return {h, w}; });
+  let e1 = null;
+  for(const x of hr) if(x.w.length() > eps){ e1 = x.w.clone().normalize(); break; }
+  if(!e1) throw new Error('the profile lies on the axis');
+  const e2 = new THREE.Vector3().crossVectors(d, e1);
+  const prof = hr.map(({h, w}) => {
+    const r = w.dot(e1), off = w.dot(e2);
+    if(Math.abs(off) > 0.05) throw new Error('the axis must lie in the plane of the profile');
+    if(r < -eps) throw new Error('the profile crosses the axis — it must lie on one side of it');
+    return {h, r: Math.max(0, r)};
+  });
+  const steps = Math.max(3, Math.round(Math.max(3, seg) * (full ? 1 : ang / (2*Math.PI))));
+  const nRing = full ? steps : steps + 1;
+  const pole = prof.map(pr => pr.r < 1e-6 ? A.clone().addScaledVector(d, pr.h) : null);
+  const ring = prof.map((pr, i) => pole[i] ? null : Array.from({length: nRing}, (_, j) => {
+    const th = j / steps * (full ? 2*Math.PI : ang);
+    return A.clone().addScaledVector(d, pr.h).addScaledVector(e1, pr.r*Math.cos(th)).addScaledVector(e2, pr.r*Math.sin(th));
+  }));
+  const at = (i, j) => pole[i] || ring[i][j];
+  const tris = [], m = prof.length;
+  for(let i=0;i<m;i++){
+    const i2 = (i+1) % m;
+    for(let j=0;j<steps;j++){
+      const j2 = full ? (j+1) % steps : j+1;
+      const a = at(i, j), b = at(i2, j), c = at(i2, j2), e = at(i, j2);
+      if(b !== c) tris.push([a, b, c]);
+      if(a !== e) tris.push([a, c, e]);
+    }
+  }
+  if(!full){
+    for(const j of [0, steps]) for(const t of earClip(prof.map((_, i) => at(i, j)))) tris.push(t);
+  }
+  return orientSolid(tris);
+}
+// Sweep: сечение переносится вдоль пути без закрутки (поворот от прежней
+// касательной к новой); на изломе — стык «на ус»: поперёк биссектрисы
+// сечение растянуто на 1/cos половины угла, стенки остаются параллельными
+function sweepLoopTris(loop, path, closedPath){
+  const n = path.length;
+  if(n < 2) throw new Error('the path needs at least 2 points');
+  const T = [], miterC = [], bend = [];
+  for(let k=0;k<n;k++){
+    const hasIn = closedPath || k > 0, hasOut = closedPath || k < n - 1;
+    const din = hasIn ? new THREE.Vector3().subVectors(path[k], path[(k-1+n)%n]).normalize() : null;
+    const dout = hasOut ? new THREE.Vector3().subVectors(path[(k+1)%n], path[k]).normalize() : null;
+    const t = (din && dout) ? din.clone().add(dout) : (din || dout).clone();
+    if(t.length() < 1e-6) throw new Error('the path turns back on itself');
+    t.normalize(); T.push(t);
+    if(din && dout){
+      const c = t.dot(din);
+      if(c < 0.26) throw new Error('the path has a corner sharper than 30°');
+      const b = dout.clone().sub(din); b.addScaledVector(t, -b.dot(t));
+      miterC.push(c); bend.push(b.length() > 1e-9 ? b.normalize() : null);
+    } else { miterC.push(1); bend.push(null); }
+  }
+  const R = [new THREE.Quaternion()];
+  for(let k=1;k<n;k++) R.push(new THREE.Quaternion().setFromUnitVectors(T[k-1], T[k]).multiply(R[k-1]));
+  const rel = loop.map(p => new THREE.Vector3().subVectors(p, path[0]));
+  const rings = [];
+  for(let k=0;k<n;k++) rings.push(rel.map(q => {
+    const o = q.clone().applyQuaternion(R[k]);
+    if(bend[k]) o.addScaledVector(bend[k], o.dot(bend[k]) * (1 / miterC[k] - 1));
+    return o.add(path[k]);
+  }));
+  const tris = [], m = loop.length, last = closedPath ? n : n - 1;
+  for(let k=0;k<last;k++){
+    const A = rings[k], B = rings[(k+1)%n];
+    for(let i=0;i<m;i++){ const i2 = (i+1) % m; tris.push([A[i], A[i2], B[i2]], [A[i], B[i2], B[i]]); }
+  }
+  if(!closedPath) for(const r of [rings[0], rings[n-1]]) for(const t of earClip(r)) tris.push(t);
+  return orientSolid(tris);
+}
+// путь из выбранных линий/рёбер: одна цепочка (или замкнутая петля)
+function pathFromSelection(){
+  if(!edgeSel.length) return null;
+  const K = p => keyOf(p.x, p.y, p.z);
+  const segs = edgeSel.map(s => ({pts: s.pts, used: false}));
+  const deg = new Map();
+  for(const s of segs) for(const p of [s.pts[0], s.pts[s.pts.length-1]]) deg.set(K(p), (deg.get(K(p)) || 0) + 1);
+  if([...deg.values()].some(d => d > 2)) throw new Error('the path branches — select one chain of lines');
+  const ends = [...deg.entries()].filter(([, d]) => d === 1).map(([k]) => k);
+  if(ends.length !== 0 && ends.length !== 2) throw new Error('the path lines are not connected');
+  let startK = ends.length ? ends[0] : K(segs[0].pts[0]);
+  const pts = [];
+  let curK = startK;
+  for(;;){
+    const s = segs.find(x => !x.used && (K(x.pts[0]) === curK || K(x.pts[x.pts.length-1]) === curK));
+    if(!s) break;
+    s.used = true;
+    const ord = K(s.pts[0]) === curK ? s.pts : [...s.pts].reverse();
+    for(const p of (pts.length ? ord.slice(1) : ord)) pts.push(p.clone());
+    curK = K(ord[ord.length-1]);
+    if(!ends.length && curK === startK) break;
+  }
+  if(segs.some(x => !x.used)) throw new Error('the path lines are not connected');
+  const closed = !ends.length;
+  if(closed) pts.pop(); // последняя = первой
+  return {pts, closed};
+}
+// начало пути — у профиля: открытый путь разворачиваем, замкнутый — сдвигаем
+function orientPathToProfile(path, loop){
+  const c = loop.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / loop.length);
+  let pts = path.pts.slice();
+  if(path.closed){
+    // старт петли — в проекции центра профиля на путь (профиль посреди стороны)
+    let best = null;
+    for(let i=0;i<pts.length;i++){
+      const A = pts[i], B = pts[(i+1)%pts.length], d = new THREE.Vector3().subVectors(B, A), L2 = d.lengthSq();
+      const t = L2 < 1e-12 ? 0 : Math.max(0, Math.min(1, new THREE.Vector3().subVectors(c, A).dot(d) / L2));
+      const X = A.clone().addScaledVector(d, t), dist = X.distanceTo(c);
+      if(!best || dist < best.dist) best = {i, t, X, dist};
+    }
+    const n = pts.length;
+    if(best.t > 1e-6 && best.t < 1 - 1e-6){ pts.splice(best.i + 1, 0, best.X); pts = pts.slice(best.i + 1).concat(pts.slice(0, best.i + 1)); }
+    else { const k = (best.i + (best.t >= 0.5 ? 1 : 0)) % n; pts = pts.slice(k).concat(pts.slice(0, k)); }
+  } else if(pts[pts.length-1].distanceTo(c) < pts[0].distanceTo(c)) pts.reverse();
+  // лишние точки на прямой — прочь, кроме стартовой (в ней лежит профиль)
+  const first = pts[0], rest = simplifyLoop(pts, path.closed);
+  if(!rest.includes(first)){
+    const out = [first];
+    for(const p of rest) out.push(p);
+    return {pts: out, closed: path.closed};
+  }
+  const k = rest.indexOf(first);
+  return {pts: rest.slice(k).concat(rest.slice(0, k)), closed: path.closed};
+}
+// применить тело из профиля: одна запись истории — до поглощения листа
+function applyProfileSolid(tris, op, consume){
+  const snap = takeSnapshot();
+  if(consume && consume.length){
+    const drop = new Set(consume), pos = mesh.geometry.attributes.position.array, keep = [];
+    for(let t=0;t<pos.length/9;t++) if(!drop.has(t)) for(let j=0;j<9;j++) keep.push(pos[t*9+j]);
+    setMeshFromArray(new Float32Array(keep));
+  }
+  let r;
+  try{ r = zcApplySolid(tris, op); }
+  catch(err){ setMeshFromArray(snap.pos); extractEdges(); throw err; }
+  undoStack[undoStack.length-1] = snap;
+  if(Math.abs(r.volume_change_mm3) < 1e-3 && !(consume && consume.length)){
+    undo(true);
+    throw new Error(op === 'cut' ? 'nothing to cut — the solid is outside the body' : 'nothing to add — the body is already there');
+  }
+  return r;
+}
+const profTool = {
+  kind: 'revolve', stage: 'profile', profile: null, axis: null, path: null, op: 'auto', ctrl: false,
+  ghostG: null, axisLine: null, profLine: null, hoverLine: null, tris: null, err: '', timer: 0,
+  get hud(){
+    return this.kind === 'revolve'
+      ? 'REVOLVE · click the profile region (or select a contour first) → click the axis line or X/Y/Z · angle in the window · Enter — apply · Esc — back'
+      : 'SWEEP · path = the selected lines · click the profile region · Enter — apply · Esc';
+  },
+  start(kind){ // из аккорда: Sweep требует выбранный путь
+    this.kind = kind; this.profile = null; this.axis = null; this.path = null;
+    if(kind === 'sweep'){
+      try{ this.path = pathFromSelection(); }catch(err){ warnTip(err.message); return; }
+      if(!this.path){ warnTip('Select the path lines first (click, Ctrl+click), then G,W'); return; }
+      this.stage = 'profile';
+    } else {
+      const lp = edgeSelLoop();
+      if(lp){
+        try{ this.profile = profileFromLoop(lp); }catch(err){ warnTip(err.message); return; }
+        this.stage = 'axis';
+      } else this.stage = 'profile';
+    }
+    setActiveTool(this);
+  },
+  on(){
+    this.op = 'auto'; this.ctrl = false; this.tris = null; this.err = '';
+    pf_title.textContent = this.kind === 'revolve' ? 'Revolve' : 'Sweep';
+    pf_revolve.hidden = this.kind !== 'revolve';
+    pf_hint.textContent = this.kind === 'revolve'
+      ? 'Profile: a closed shape drawn on a face (click its region) or a selected closed contour of lines (B). Axis: click a straight line or edge in the plane of the profile, or press X/Y/Z for a world axis through the origin. The profile must lie on one side of the axis. Angle under 360 makes a sector with flat ends; a negative angle turns the other way. A sheet profile in the air is absorbed into the solid.'
+      : 'Path: the lines selected before G,W (one chain, open or closed). Profile: click the closed region to sweep — usually drawn across the start of the path. The profile is carried along the path without twisting; at corners the walls meet in a miter. A sheet profile in the air is absorbed into the solid.';
+    if(this.kind === 'sweep') this.showPathLine();
+    profPopup.style.left = '16px'; profPopup.style.top = '48px';
+    profPopup.hidden = false;
+    if(this.stage !== 'profile' && this.profile) this.afterProfile();
+    this.ui();
+  },
+  off(){
+    clearTimeout(this.timer);
+    this.kill(); hidePatch(); ppPatch = null; tipHide();
+    for(const k of ['axisLine', 'profLine', 'hoverLine']) if(this[k]){ scene.remove(this[k]); this[k].geometry.dispose(); this[k] = null; }
+    profPopup.hidden = true; releaseToolInput();
+  },
+  kill(){ if(this.ghostG){ scene.remove(this.ghostG); this.ghostG.geometry.dispose(); this.ghostG = null; } },
+  modChange(e){ const c = !!(e.ctrlKey || e.metaKey); if(c !== this.ctrl){ this.ctrl = c; this.preview(true); } },
+  opNow(){ return this.op !== 'auto' ? this.op : this.ctrl ? 'cut' : 'join'; },
+  line(pts, color){
+    const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({color, depthTest: false}));
+    l.renderOrder = 6; scene.add(l); return l;
+  },
+  showPathLine(){
+    if(this.axisLine){ scene.remove(this.axisLine); this.axisLine.geometry.dispose(); }
+    const pts = this.path.pts.slice(); if(this.path.closed) pts.push(pts[0]);
+    this.axisLine = this.line(pts, 0xf5c542);
+  },
+  setAxis(A, d, label){
+    this.axis = {A: A.clone(), d: d.clone().normalize(), label};
+    if(this.axisLine){ scene.remove(this.axisLine); this.axisLine.geometry.dispose(); }
+    const L = 200;
+    this.axisLine = this.line([A.clone().addScaledVector(this.axis.d, -L), A.clone().addScaledVector(this.axis.d, L)], 0x4da3ff);
+    this.stage = 'ready'; this.preview(true);
+  },
+  afterProfile(){
+    const lp = this.profile.loop.slice(); lp.push(lp[0]);
+    if(this.profLine){ scene.remove(this.profLine); this.profLine.geometry.dispose(); }
+    this.profLine = this.line(lp, 0x6aff3d);
+    if(this.kind === 'sweep'){ this.path = orientPathToProfile(this.path, this.profile.loop); this.stage = 'ready'; this.preview(true); }
+    else if(!this.axis) this.stage = 'axis';
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    if(this.stage === 'profile'){
+      const h = raycastFace(q);
+      if(!h){ warnTip('Click the region to use as the profile'); return; }
+      try{ this.profile = profileFromRegion(h.faceIndex); }catch(err){ warnTip(err.message); return; }
+      showPatch(this.profile.patch, 0x6aff3d);
+      this.afterProfile(); this.ui(); tipHide();
+      return;
+    }
+    if(this.stage === 'axis'){
+      const pe = pickEdge(q);
+      if(!pe){ warnTip('Click a straight line or edge for the axis, or press X/Y/Z'); return; }
+      const pts = pe.chain.pts, A = pts[0], B = pts[pts.length-1], d = new THREE.Vector3().subVectors(B, A);
+      if(d.length() < 0.1 || pts.some(p => new THREE.Vector3().subVectors(p, A).cross(d).length() / d.length() > 0.05)){
+        warnTip('The axis must be a straight line'); return;
+      }
+      if(this.hoverLine){ scene.remove(this.hoverLine); this.hoverLine.geometry.dispose(); this.hoverLine = null; }
+      this.setAxis(A, d, pe.chain.isGuide ? 'line' : 'edge');
+      tipHide();
+    }
+  },
+  move(e, q){
+    if(!q.inside) return;
+    if(this.stage === 'profile'){
+      const h = raycastFace(q);
+      if(!h){ hidePatch(); tipHide(); return; }
+      cachedPatch = null;
+      const patch = facePatchAt(h.faceIndex);
+      showPatch(patch, 0x6aff3d);
+      tipAt(e, 'Profile · region ' + (Math.round((patch.area || 0)*10)/10) + ' mm² · click');
+      return;
+    }
+    if(this.stage === 'axis'){
+      const pe = pickEdge(q);
+      if(this.hoverLine){ scene.remove(this.hoverLine); this.hoverLine.geometry.dispose(); this.hoverLine = null; }
+      if(pe){ this.hoverLine = this.line(pe.chain.pts, 0x4da3ff); tipAt(e, 'Axis · ' + (pe.chain.isGuide ? 'line' : 'edge') + ' · click'); }
+      else tipAt(e, 'Axis · click a straight line or edge · or X/Y/Z');
+    }
+  },
+  key(e){
+    const k = e.key.toLowerCase();
+    if(this.kind === 'revolve' && (this.stage === 'axis' || this.stage === 'ready') && (k === 'x' || k === 'y' || k === 'z')){
+      e.preventDefault();
+      this.setAxis(new THREE.Vector3(), new THREE.Vector3(k === 'x' ? 1 : 0, k === 'y' ? 1 : 0, k === 'z' ? 1 : 0), k.toUpperCase() + ' axis');
+      return true;
+    }
+    if(e.key === 'Enter' && this.stage === 'ready'){ e.preventDefault(); this.commit(); return true; }
+    return false;
+  },
+  esc(){
+    if(this.stage === 'ready' && this.kind === 'revolve'){
+      this.stage = 'axis'; this.axis = null; this.kill(); this.tris = null; this.err = '';
+      if(this.axisLine){ scene.remove(this.axisLine); this.axisLine.geometry.dispose(); this.axisLine = null; }
+      this.ui(); return true;
+    }
+    if((this.stage === 'axis' || this.stage === 'ready') && this.profile && this.profile.patch){
+      this.stage = 'profile'; this.profile = null; this.axis = null; this.kill(); this.tris = null; this.err = ''; hidePatch();
+      for(const k of ['axisLine', 'profLine']) if(this[k] && (k === 'profLine' || this.kind === 'revolve')){ scene.remove(this[k]); this[k].geometry.dispose(); this[k] = null; }
+      this.ui(); return true;
+    }
+    return false;
+  },
+  params(){
+    const a = parseFloat(String(pf_angle.value).replace(',', '.'));
+    const s = parseInt(pf_segs.value, 10);
+    return {angle: Number.isFinite(a) && Math.abs(a) >= 0.1 ? Math.max(-360, Math.min(360, a)) : 360, segs: s >= 3 ? Math.min(256, s) : 64};
+  },
+  build(){
+    const p = this.params();
+    if(this.kind === 'revolve') return revolveLoopTris(this.profile.loop, this.axis.A, this.axis.d, p.angle, p.segs);
+    return sweepLoopTris(this.profile.loop, this.path.pts, this.path.closed);
+  },
+  preview(now){
+    clearTimeout(this.timer);
+    if(this.stage !== 'ready'){ this.err = ''; this.kill(); this.tris = null; this.ui(); return; }
+    const run = () => {
+      this.kill(); this.tris = null; this.err = '';
+      try{
+        this.tris = this.build();
+        const arr = [];
+        for(const t of this.tris) for(const v of t) arr.push(v.x, v.y, v.z);
+        const cut = this.opNow() === 'cut';
+        const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(arr), 3));
+        this.ghostG = new THREE.Mesh(g, new THREE.MeshBasicMaterial({color: cut ? 0xff5a5a : 0x2ecc40, transparent: true,
+          opacity: cut ? 0.22 : 0.3, depthWrite: false, depthTest: !cut, side: THREE.DoubleSide}));
+        this.ghostG.renderOrder = 5;
+        scene.add(this.ghostG);
+      }catch(err){ this.tris = null; this.err = err.message; }
+      this.ui();
+    };
+    if(now) run(); else this.timer = setTimeout(() => { if(activeTool === this) run(); }, 80);
+  },
+  ui(){
+    const st = {profile: 'pick the profile', axis: 'pick the axis', ready: this.opNow() === 'cut' ? 'cut' : 'join'}[this.stage];
+    pf_state.textContent = st;
+    for(const [id, o] of [['pf_auto', 'auto'], ['pf_join', 'join'], ['pf_cut', 'cut']]) document.getElementById(id).classList.toggle('on', this.op === o);
+    pf_hint.hidden = !hintsChk.checked;
+    pf_ok.disabled = !(this.stage === 'ready' && this.tris);
+    pf_info.style.color = this.err ? '#ff6b6b' : '';
+    if(this.err){ pf_info.textContent = this.err; return; }
+    if(this.stage === 'profile'){ pf_info.textContent = this.kind === 'sweep'
+      ? 'Path: ' + this.path.pts.length + ' points' + (this.path.closed ? ', closed' : '') + ' · click the profile region' : 'Click the profile region'; return; }
+    if(this.stage === 'axis'){ pf_info.textContent = 'Profile: ' + this.profile.loop.length + ' points · click the axis'; return; }
+    if(this.tris){
+      let v = 0; for(const [p, q, r] of this.tris) v += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
+      pf_info.innerHTML = (this.kind === 'revolve' ? 'Around the ' + this.axis.label : 'Along ' + this.path.pts.length + ' points') + ' · '
+        + Math.round(Math.abs(v)).toLocaleString('en-US').replace(/,/g, ' ') + ' mm³ · <b>' + (this.opNow() === 'cut' ? 'Cut' : 'Join') + '</b>';
+    }
+  },
+  commit(){
+    if(this.stage !== 'ready' || !this.tris){ warnTip('Finish the profile' + (this.kind === 'revolve' ? ' and the axis' : '')); return; }
+    const tris = this.tris, op = this.opNow(), consume = this.profile.consume;
+    this.kill();
+    try{ applyProfileSolid(tris, op, consume); }
+    catch(err){ warnTip(err.message); this.preview(true); return; }
+    clearEdgeSel();
+    setActiveTool(null);
+  }
+};
 // Усечённый конус (цилиндр при r1 = r2) от A (радиус r1) к B (r2), замкнутый;
 // один построитель для G,U и MCP add_frustum
 function frustumTris(A, B, r1, r2, seg){
@@ -3956,6 +4375,24 @@ const cylPopup = document.getElementById('cylPopup'), cyl_d = document.getElemen
   document.getElementById('cyl_cancel').addEventListener('click', () => { if(activeTool === cylTool) setActiveTool(null); });
   makeGripDrag(cylPopup);
 }
+const profPopup = document.getElementById('profPopup'), pf_title = document.getElementById('pf_title'), pf_state = document.getElementById('pf_state'),
+      pf_revolve = document.getElementById('pf_revolve'), pf_angle = document.getElementById('pf_angle'), pf_segs = document.getElementById('pf_segs'),
+      pf_info = document.getElementById('pf_info'), pf_hint = document.getElementById('pf_hint'), pf_ok = document.getElementById('pf_ok');
+{
+  for(const el of [pf_angle, pf_segs]){
+    el.addEventListener('input', () => { if(activeTool === profTool) profTool.preview(); });
+    el.addEventListener('keydown', e => {
+      if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === profTool){ profTool.preview(true); profTool.commit(); } }
+      if(e.key === 'Escape') releaseToolInput();
+      e.stopPropagation();
+    });
+  }
+  for(const [id, o] of [['pf_auto', 'auto'], ['pf_join', 'join'], ['pf_cut', 'cut']])
+    document.getElementById(id).addEventListener('click', () => { if(activeTool !== profTool) return; profTool.op = o; profTool.preview(true); });
+  pf_ok.addEventListener('click', () => { if(activeTool === profTool) profTool.commit(); });
+  document.getElementById('pf_cancel').addEventListener('click', () => { if(activeTool === profTool) setActiveTool(null); });
+  makeGripDrag(profPopup);
+}
 const slicePopup = document.getElementById('slicePopup'), sl_off = document.getElementById('sl_off'),
       sl_state = document.getElementById('sl_state'), sl_info = document.getElementById('sl_info'),
       sl_ok = document.getElementById('sl_ok'), sl_flip = document.getElementById('sl_flip'), sl_hint = document.getElementById('sl_hint');
@@ -4687,6 +5124,8 @@ function showChordHint(){
     row('E', 'Extrude face ±mm', !!ppPatch) +
     row('S', 'Slice the body with a plane', true) +
     row('U', 'Cylinder / cone on a face', true) +
+    row('O', 'Revolve a profile around an axis', true) +
+    row('W', 'Sweep a profile along the selected lines', edgeSel.length > 0) +
     row('V', 'Vertex X/Y/Z', !!sel) +
     '<div style="opacity:.55">Esc — cancel</div>';
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 400) + 'px';
@@ -9847,6 +10286,17 @@ window.addEventListener('keydown', e=>{
     rotTool.items = it; setActiveTool(rotTool);
     return;
   }
+  // G,O — Revolve (тело вращения профиля), G,W — Sweep (профиль вдоль пути);
+  // раньше O — отступа грани
+  for(const [code, ch, kind] of [['KeyO', 'o', 'revolve'], ['KeyW', 'w', 'sweep']]){
+    if((e.code===code || e.key.toLowerCase()===ch) && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
+       && document.activeElement.tagName!=='INPUT'){
+      e.preventDefault(); chordG = 0; hideChordHint();
+      if(activeTool === profTool && profTool.kind === kind) setActiveTool(null);
+      else { setActiveTool(null); profTool.start(kind); }
+      return;
+    }
+  }
   // G,U — цилиндр/конус на грани (Create → Cylinder во Fusion)
   if((e.code==='KeyU' || e.key.toLowerCase()==='u') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
      && document.activeElement.tagName!=='INPUT'){
@@ -13022,6 +13472,31 @@ const ZC_COMMANDS = {
         tris.push([P[0], rings[0][j], rings[0][i]]); tris.push([P[n-1], rings[n-1][i], rings[n-1][j]]);
       }
       return zcApplySolid(tris, a.operation || 'join');
+    }
+  },
+  revolve_profile: {
+    // тот же построитель, что G,O в редакторе (revolveLoopTris)
+    run(a){
+      if(!Array.isArray(a.profile) || a.profile.length < 3) throw new Error('profile must be [[x, y, z], ...] with at least 3 points');
+      const prof = profileFromLoop(a.profile.map(q => zcV3(q, 'profile point')));
+      const d = zcV3(a.axis_direction, 'axis_direction');
+      if(d.length() < 1e-9) throw new Error('axis_direction must not be zero');
+      const angle = a.angle == null ? 360 : +a.angle;
+      if(!(Math.abs(angle) >= 0.1 && Math.abs(angle) <= 360)) throw new Error('angle must be 0.1…360 degrees, negative — the other way');
+      const seg = Math.max(3, Math.min(256, Math.round(+a.segments || 64)));
+      return applyProfileSolid(revolveLoopTris(prof.loop, zcV3(a.axis_point, 'axis_point'), d, angle, seg), a.operation || 'join', null);
+    }
+  },
+  sweep_profile: {
+    // тот же построитель, что G,W в редакторе (sweepLoopTris)
+    run(a){
+      if(!Array.isArray(a.profile) || a.profile.length < 3) throw new Error('profile must be [[x, y, z], ...] with at least 3 points');
+      if(!Array.isArray(a.path) || a.path.length < 2) throw new Error('path must be [[x, y, z], ...] with at least 2 points');
+      const prof = profileFromLoop(a.profile.map(q => zcV3(q, 'profile point')));
+      const closed = !!a.closed;
+      const pts = a.path.map(q => zcV3(q, 'path point')).filter((p, i, arr) => !i || p.distanceTo(arr[i-1]) > 1e-4);
+      const path = orientPathToProfile({pts, closed}, prof.loop);
+      return applyProfileSolid(sweepLoopTris(prof.loop, path.pts, path.closed), a.operation || 'join', null);
     }
   },
   move_edge: {

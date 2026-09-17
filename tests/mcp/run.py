@@ -213,6 +213,32 @@ def extrude_end_size_draft():
 
 
 @case
+def revolve_and_sweep_profiles():
+    # Revolve (G,O) и Sweep (G,W) пользователя — тем же ядром: revolve_profile
+    # и sweep_profile. Прямоугольник на верхней грани куба вокруг линии на ней:
+    # над гранью — половина шайбы; квадрат вдоль L-пути и вдоль петли
+    k64 = 64 / (2 * math.pi) * math.sin(2 * math.pi / 64)
+    rect = [[15, 25, 40], [25, 25, 40], [25, 30, 40], [15, 30, 40]]
+    for angle in [360, 180]:
+        call('new_shape', {'shape': 'cube', 'size': 40})
+        d = call('revolve_profile', {'profile': rect, 'axis_point': [0, 20, 40], 'axis_direction': [1, 0, 0], 'angle': angle, 'segments': 64})
+        closed(d, f'revolve {angle}'); exact(d, f'revolve {angle}')
+        near(d['volume_change_mm3'], math.pi * 75 * 10 * k64 / 2, 0.05, f'revolve {angle}')
+    try:  # −180 — в другую сторону, целиком внутрь тела: добавлять нечего
+        call('revolve_profile', {'profile': rect, 'axis_point': [0, 20, 40], 'axis_direction': [1, 0, 0], 'angle': -180, 'segments': 64})
+    except McpError as e:
+        assert 'nothing to add' in str(e), str(e)
+    else:
+        raise AssertionError('revolve -180 must go into the body')
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    d = call('sweep_profile', {'profile': rect, 'path': [[20, 27.5, 40], [20, 27.5, 60], [45, 27.5, 60]]})
+    closed(d, 'sweep L'); exact(d, 'sweep L'); near(d['volume_change_mm3'], 50 * 45, 0.01, 'sweep L')
+    d = call('sweep_profile', {'profile': [[20, 38, 18], [20, 38, 22], [20, 42, 22], [20, 42, 18]],
+                               'path': [[0, 40, 20], [40, 40, 20], [40, 60, 20], [0, 60, 20]], 'closed': True, 'operation': 'cut'})
+    closed(d, 'sweep ring cut'); exact(d, 'sweep ring cut'); near(d['volume_change_mm3'], -2 * 4 * 40, 0.01, 'sweep ring cut')
+
+
+@case
 def gear_v_grooves_on_tooth_flanks():
     # Сценарий пользователя: диск Ø140 на 180 сегментов, 6 зубьев (вершина R70,
     # впадина R60), линия поперёк боковой грани на высоте 5.5 и move_edge −5.5.
