@@ -7445,6 +7445,110 @@ function beginPatchExtrude(patch){
 // уборка после выдавливания: вырожденные треугольники и «нулевые пары»
 // (совпадающие треугольники противоположной ориентации — внутренние
 // перегородки от выдавливания туда-обратно) удаляются
+// Иглы после булевой: треугольники со сторонами вроде 0.046 × 2.5 × 2.5.
+// Нормаль такой щепки — шум, поэтому её края рисуются лишними рёбрами и
+// дробят длинное ребро на куски. Лечение — схлопывание короткого ребра
+// (edge collapse, как в mesh decimation): его концы сливаются в один, а два
+// треугольника при ребре вырождаются и выпадают. Схлопываем только там, где
+// это не рвёт сетку: у концов ребра общих соседей должно быть ровно столько,
+// сколько треугольников на ребре (link condition) — иначе получится
+// немногообразный стык
+function collapseShortEdges(pos, maxLen = 0.05, maxPasses = 6, maxDV = 1e-3){
+  const K = (x, y, z) => keyOf(x, y, z);
+  let cur = pos;
+  for(let pass = 0; pass < maxPasses; pass++){
+    const nT = cur.length / 9;
+    const keyAt = new Array(nT * 3), P = new Map();     // ключ -> точка
+    for(let t = 0; t < nT; t++) for(let j = 0; j < 3; j++){
+      const o = t*9 + j*3, k = K(cur[o], cur[o+1], cur[o+2]);
+      keyAt[t*3 + j] = k;
+      if(!P.has(k)) P.set(k, [cur[o], cur[o+1], cur[o+2]]);
+    }
+    // соседи вершины и треугольники ребра
+    const nb = new Map(), edges = new Map();
+    const add = (m, k, v) => { let s = m.get(k); if(!s) m.set(k, s = new Set()); s.add(v); };
+    for(let t = 0; t < nT; t++) for(let e = 0; e < 3; e++){
+      const a = keyAt[t*3 + e], b = keyAt[t*3 + (e+1)%3];
+      if(a === b) continue;
+      add(nb, a, b); add(nb, b, a);
+      const ek = a < b ? a+'|'+b : b+'|'+a;
+      add(edges, ek, t);
+    }
+    // треугольники при вершине — по ним считаем, на сколько сдвинется объём
+    const triAt = new Map();
+    for(let t = 0; t < nT; t++) for(let j = 0; j < 3; j++) add(triAt, keyAt[t*3 + j], t);
+    const det = (p, q, r) => p[0]*(q[1]*r[2] - q[2]*r[1]) - p[1]*(q[0]*r[2] - q[2]*r[0]) + p[2]*(q[0]*r[1] - q[1]*r[0]);
+    // объём, который уедет, если вершину A подтянуть к B (треугольники,
+    // где A есть, а B нет — остальные вырождаются и выпадают)
+    const moveVol = (a, b) => {
+      const pa = P.get(a), pb = P.get(b);
+      let dv = 0;
+      for(const t of triAt.get(a) || []){
+        const k = [keyAt[t*3], keyAt[t*3+1], keyAt[t*3+2]];
+        // треугольники с обоими концами тоже считаем: после схлопывания у них
+        // две вершины совпадают и объём обнуляется — формула это и даёт
+        const i = k.indexOf(a), q = P.get(k[(i+1)%3]), r = P.get(k[(i+2)%3]);
+        dv += (det(pb, q, r) - det(pa, q, r)) / 6;
+      }
+      return Math.abs(dv);
+    };
+    // короткие рёбра по возрастанию длины; тянем ту вершину, от которой тело
+    // почти не меняется (лишнюю точку на ребре — к углу, а не наоборот)
+    const cand = [];
+    for(const [ek, ts] of edges){
+      const [a, b] = ek.split('|'), pa = P.get(a), pb = P.get(b);
+      const L = Math.hypot(pa[0]-pb[0], pa[1]-pb[1], pa[2]-pb[2]);
+      if(L > maxLen) continue;
+      const va = moveVol(a, b), vb = moveVol(b, a);
+      const keepB = va <= vb;
+      if(Math.min(va, vb) > maxDV) continue; // это не игла, а тонкая деталь
+      cand.push({a: keepB ? a : b, b: keepB ? b : a, L, ts});
+    }
+    if(!cand.length) break;
+    cand.sort((x, y) => x.L - y.L);
+    const map = new Map(), touched = new Set();
+    for(const {a, b, ts} of cand){
+      if(touched.has(a) || touched.has(b)) continue;
+      // общие соседи = вершины напротив ребра, по одной на треугольник
+      const na = nb.get(a), nbb = nb.get(b);
+      let common = 0;
+      for(const k of na) if(nbb.has(k)) common++;
+      if(common !== ts.size) continue;              // иначе рвём сетку
+      map.set(a, b);
+      touched.add(a); touched.add(b);
+      for(const k of na) touched.add(k);
+      for(const k of nbb) touched.add(k);
+    }
+    if(!map.size) break;
+    const out = [];
+    for(let t = 0; t < nT; t++){
+      const k = [0, 1, 2].map(j => { const kk = keyAt[t*3 + j]; return map.get(kk) || kk; });
+      if(k[0] === k[1] || k[1] === k[2] || k[0] === k[2]) continue; // выродился — выпал
+      for(let j = 0; j < 3; j++){
+        const p = P.get(k[j]);
+        out.push(p[0], p[1], p[2]);
+      }
+    }
+    cur = new Float32Array(out);
+  }
+  return cur;
+}
+// чистка после булевой: схлопываем микрорёбра, но откатываемся, если сетка
+// перестала быть замкнутой или объём поплыл
+function tidySlivers(maxLen = 0.05){
+  const before = mesh.geometry.attributes.position.array;
+  const keep = before.slice(), v0 = meshVolumeOf(before);
+  const out = collapseShortEdges(before, maxLen);
+  if(out.length >= before.length) return 0;
+  setMeshFromArray(out);
+  cleanupMesh();
+  const pos = mesh.geometry.attributes.position.array;
+  if(openEdgeCount() || nonManifoldEdgeCount() || Math.abs(meshVolumeOf(pos) - v0) > 0.01){
+    setMeshFromArray(keep);
+    return 0;
+  }
+  return (before.length - pos.length) / 9;
+}
 function cleanupMesh(){
   const pos = mesh.geometry.attributes.position.array;
   const nT = pos.length/9;
@@ -9954,9 +10058,15 @@ function finishEdgeMove(){
     // второй заход — торцы клина на 0.05 мм за плоскостью соседа: если торец
     // лёг ровно на соседнюю грань, уже изменённую прошлой канавкой, почти
     // совпадающие грани не дают точной булевой замкнуть результат
-    for(const extra of [0, 0.05]){
+    // торцы клина, легшие ровно на грани тела, — вырождение: точная булева
+    // возвращала тело нетронутым («срезано» 0.011 мм³ вместо 565), и раньше
+    // оставался сгиб — те самые артефакты. Повтор с торцами чуть дальше
+    for(const extra of [0, 0.05, 0.2]){
       const prism = edgeMoveCutPrism(s, extra);
       if(!prism) break;
+      let vPrism = 0;
+      for(const [p, q, r] of prism) vPrism += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
+      vPrism = Math.abs(vPrism);
       try{
         const sp = ed.snap.pos, body = [];
         for(let i=0;i<sp.length;i+=9)
@@ -9979,8 +10089,10 @@ function finishEdgeMove(){
         // пустой) — это не канавка: сгиб предпросмотра снимал заметный объём
         const vCut = meshVolumeOf(mesh.geometry.attributes.position.array);
         if(vFold - vSnap < -1 && vCut - vSnap > (vFold - vSnap) * 0.5) throw new Error('wedge cut removed too little');
-        if(vFold === vSnap && vCut - vSnap > -1e-3) throw new Error('wedge cut removed nothing');
+        // сняло меньше 2% объёма клина — булева не увидела пересечения
+        if(vCut - vSnap > -0.02 * vPrism) throw new Error('wedge cut removed nothing');
         lastBoolPath = 'exact';
+        tidySlivers(); // иглы от булевой: их края рисовались лишними рёбрами
         markNewFoldEdges(ed.snap.pos, true); // пологое дно канавки и излом от торца — видимыми рёбрами
         // линия канавки уехала со сгибом дальше выреза, хорды сверху частично
         // срезаны — повисшие в воздухе линии убираем: край выреза теперь ребро
@@ -9990,7 +10102,7 @@ function finishEdgeMove(){
         console.warn('edge cut failed' + (extra ? ' (retry)' : ''), err);
         setMeshFromArray(moved); // остаётся сгиб (у Straight — исходная сетка)
         lastBoolPath = '';
-        if(extra && ed.folded === false) warnTip('The groove did not cut here — try Follow face ends or another depth');
+        if(extra === 0.2 && ed.folded === false) warnTip('The groove did not cut here — try Follow face ends or another depth');
       }
     }
   }
@@ -10822,14 +10934,20 @@ async function saveProject(saveAs){
       await wr.write(blob); await wr.close();
       projectName = projectHandle.name.replace(/\.zcad$/i, '');
       setProjectDirty(false);
+      // повторный Save пишет в тот же файл молча, без диалога — со стороны
+      // выглядит как «кнопка не работает». Говорим, куда сохранили
+      warnTip('Saved: ' + projectHandle.name);
       return;
     }catch(err){
       if(err && err.name === 'AbortError') return; // закрыли диалог — ничего не делаем
+      console.warn('save failed', err);
+      warnTip('Could not write the file (' + (err && err.name || 'error') + ') — saving as a download');
       projectHandle = null;                        // нет доступа — обычная загрузка
     }
   }
   downloadBlob(blob, projectName + '.zcad');
   setProjectDirty(false);
+  warnTip('Saved to Downloads: ' + projectName + '.zcad');
 }
 function loadProjectText(text, name){
   try{ loadProjectData(JSON.parse(text), name); }
@@ -14010,7 +14128,7 @@ function zcApplySolid(tris, op, round = true){
   pushHistory(snap);
   if(op === 'new') restoreGuides([]);
   setMeshFromArray(out);
-  if(op !== 'new'){ cleanupMesh(); if(openEdgeCount() > 0) healAll(); markNewFoldEdges(pos); }
+  if(op !== 'new'){ cleanupMesh(); if(openEdgeCount() > 0) healAll(); tidySlivers(); markNewFoldEdges(pos); }
   if(!modified){ modified = true; s_mod.textContent = 'yes'; }
   clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
   extractEdges();
