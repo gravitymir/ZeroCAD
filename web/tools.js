@@ -373,6 +373,23 @@ const ZC_TOOLS = [
     }
   },
   {
+    "name": "add_hole",
+    "description": "Drill a hole in a face — the same builder as the user's Hole window (G,D). point: the centre on a face (+ normal when the point is on an edge); the hole goes along the face normal into the body. type simple (default), counterbore (a flat seat for a cheese head) or countersink (a cone for a flat head, angle 90 by default); head_diameter and head_depth (counterbore) or angle (countersink). depth in mm, or through: true to go right through. tip: a 118 degree drill point instead of a flat bottom. Clearance and head sizes for M3…M6 screws: M3 3.4/6.0/6.5x3, M4 4.5/8.0/8.0x4, M5 5.5/10/10x5, M6 6.6/12/11x6 (hole / countersink head / counterbore).",
+    "inputSchema": {"type": "object", "properties": {
+      "point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "diameter": {"type": "number", "description": "mm"},
+      "depth": {"type": "number", "description": "mm from the face"},
+      "through": {"type": "boolean"},
+      "type": {"type": "string", "enum": ["simple", "counterbore", "countersink"]},
+      "head_diameter": {"type": "number", "description": "mm"},
+      "head_depth": {"type": "number", "description": "mm, counterbore only"},
+      "angle": {"type": "number", "description": "degrees, countersink only (default 90)"},
+      "tip": {"type": "boolean", "description": "118 degree drill point"},
+      "segments": {"type": "integer"}
+    }, "required": ["point", "diameter"]}
+  },
+  {
     "name": "add_frustum",
     "description": "Solid truncated cone (or cylinder when r1 = r2) from point \"from\" (radius r1) to point \"to\" (radius r2). operation: join — merge with the body, cut — subtract it, new — replace the whole model with this solid.",
     "inputSchema": {

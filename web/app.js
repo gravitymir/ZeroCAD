@@ -2069,7 +2069,7 @@ const tapeTool = {
 // Ошибки и предупреждения. Если открыто окно или палитра, блок встаёт над
 // ним той же ширины (места сверху мало — под ним), иначе — у курсора.
 // Держится 2.8 с
-const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'cylPopup', 'profPopup', 'mirPopup', 'xfPopup', 'shellPopup', 'rotPopup',
+const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'cylPopup', 'holePopup', 'profPopup', 'mirPopup', 'xfPopup', 'shellPopup', 'rotPopup',
   'arrPopup', 'txtPopup', 'divPopup', 'vpanel', 'popup'];
 function warnTip(msg){
   const box = document.getElementById('warnBox');
@@ -3923,6 +3923,161 @@ function frustumTris(A, B, r1, r2, seg){
   }
   return tris;
 }
+// ---------- G,D — отверстие с зенковкой и цековкой (Hole во Fusion) ----------
+// Профиль отверстия в координатах (радиус, глубина от грани) вращается вокруг
+// нормали грани — тем же построителем, что Revolve (revolveLoopTris), и
+// вычитается точной булевой. Типы: simple — сквозное или глухое, counterbore
+// — цековка под цилиндрическую головку, countersink — зенковка под потайную.
+// Пресеты — зазор и головка под винты М3…М6 (DIN 74 / ISO 7046, 90°)
+const HOLE_PRESETS = {
+  M3: {d: 3.4, head: 6.0, cb: 6.5, cbh: 3.0},
+  M4: {d: 4.5, head: 8.0, cb: 8.0, cbh: 4.0},
+  M5: {d: 5.5, head: 10.0, cb: 10.0, cbh: 5.0},
+  M6: {d: 6.6, head: 12.0, cb: 11.0, cbh: 6.0}
+};
+// (радиус, глубина вниз от грани) по параметрам; e — выход над гранью
+function holeProfileRH(o, e){
+  const r = o.d / 2, D = o.depth, out = [[0, e]];
+  if(o.type === 'counterbore'){
+    const rh = o.head / 2, hh = o.headDepth;
+    if(!(rh > r)) throw new Error('the counterbore must be wider than the hole');
+    if(!(hh > 0 && hh < D)) throw new Error('the counterbore depth must be between 0 and the hole depth');
+    out.push([rh, e], [rh, -hh], [r, -hh]);
+  } else if(o.type === 'countersink'){
+    const rh = o.head / 2, half = Math.max(15, Math.min(175, o.angle)) / 2 * Math.PI / 180;
+    if(!(rh > r)) throw new Error('the countersink must be wider than the hole');
+    const dc = (rh - r) / Math.tan(half);
+    if(!(dc < D)) throw new Error('the countersink is deeper than the hole');
+    // над гранью — стенка того же диаметра: иначе на самой грани конус уже
+    // задуманной головки (Ø11.2 вместо Ø12 при выходе 0.5 мм)
+    out.push([rh, e], [rh, 0], [r, -dc]);
+  } else out.push([r, e]);
+  // дно: плоское или конус сверла 118°
+  if(o.tip) out.push([r, -D], [0, -D - r / Math.tan(59 * Math.PI / 180)]);
+  else out.push([r, -D], [0, -D]);
+  return out;
+}
+// тело выреза: профиль вращается вокруг нормали грани через точку P
+function holeCutTris(P, n, o){
+  const d = n.clone().normalize();
+  const e = 0.1 + (o.through ? 0.4 : 0);          // выход над гранью — чистый рез
+  const rh = holeProfileRH(o, e);
+  const u = (Math.abs(d.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(d).normalize();
+  const loop = rh.map(([r, h]) => P.clone().addScaledVector(u, r).addScaledVector(d, h));
+  const seg = o.segments || autoCircSegs(Math.max(o.d / 2, (o.type === 'simple' ? 0 : o.head / 2)));
+  return revolveLoopTris(loop, P, d, 360, seg);
+}
+// сквозное: глубина до выхода из габарита тела плюс запас
+function holeThroughDepth(P, n){
+  const pos = mesh.geometry.attributes.position.array, box = new THREE.Box3();
+  for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+  const c = box.getCenter(new THREE.Vector3()), R = box.getSize(new THREE.Vector3()).length() / 2 + 1;
+  return Math.max(1, R + c.clone().sub(P).dot(n.clone().negate()) + 1);
+}
+const holeTool = {
+  hud: 'HOLE · click the center on a face (snaps to vertices, midpoints, centers) · Ø, depth and head in the window · M3…M6 — presets · Enter — apply · Esc — back',
+  stage: 0, P: null, n: null, ghostG: null, err: '',
+  on(){
+    this.stage = 0; this.P = null; this.n = null; this.err = '';
+    holePopup.style.left = '16px'; holePopup.style.top = '48px';
+    holePopup.hidden = false;
+    this.ui();
+  },
+  off(){ this.kill(); ghost.visible = false; tipHide(); holePopup.hidden = true; releaseToolInput(); },
+  kill(){ this.ghostG = killGroup(this.ghostG); },
+  num(el, min){ const v = parseFloat(String(el.value).replace(',', '.')); return Number.isFinite(v) && v >= (min || 0) ? v : null; },
+  opts(){
+    const type = ho_type;
+    const d = this.num(ho_d, 0.2), head = this.num(ho_hd, 0.2), angle = this.num(ho_ang, 15) || 90;
+    const headDepth = this.num(ho_hh, 0.1), depth = this.num(ho_h, 0.1);
+    return {type, d: d || 0, head: head || 0, angle, headDepth: headDepth || 0,
+            depth: ho_through ? (this.P ? holeThroughDepth(this.P, this.n) : 0) : (depth || 0),
+            through: ho_through, tip: ho_tipOn && !ho_through, segments: 0};
+  },
+  build(){
+    const o = this.opts();
+    if(!(o.d >= 0.2)) throw new Error('set the hole Ø (at least 0.2 mm)');
+    if(!o.through && !(o.depth >= 0.1)) throw new Error('set the depth, or switch Through on');
+    return holeCutTris(this.P, this.n, o);
+  },
+  draw(){
+    this.kill(); this.err = '';
+    if(this.stage !== 1) return;
+    let tris;
+    try{ tris = this.build(); }catch(err){ this.err = err.message; return; }
+    const arr = [];
+    for(const t of tris) for(const p of t) arr.push(p.x, p.y, p.z);
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(arr), 3));
+    const group = new THREE.Group();
+    group.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({color: 0xff5a5a, transparent: true, opacity: 0.28,
+      depthWrite: false, depthTest: false, side: THREE.DoubleSide})));
+    group.renderOrder = 5;
+    scene.add(group); this.ghostG = group;
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    if(this.stage === 0){
+      const pk = pickOnFace(q);
+      if(!pk || pk.ground){ warnTip('Click a face of the body for the hole centre'); return; }
+      this.P = pk.pos.clone(); this.n = pk.n.clone().normalize();
+      ghost.visible = false; this.stage = 1;
+      this.draw(); this.ui();
+      return;
+    }
+    this.commit();
+  },
+  move(e, q){
+    if(!q.inside) return;
+    if(this.stage === 0){ showPickGhost(e, q, 'Hole centre · '); return; }
+    tipAt(e, 'Ø <b>' + this.opts().d.toFixed(1) + '</b> mm · click to drill');
+  },
+  key(e){
+    if(e.key === 'Enter' && this.stage === 1){ e.preventDefault(); this.commit(); return true; }
+    return false;
+  },
+  esc(){
+    if(this.stage === 0) return false;
+    this.stage = 0; this.P = null; this.kill(); this.ui(); tipHide();
+    return true;
+  },
+  ui(){
+    ho_state.textContent = this.stage === 0 ? 'pick the centre' : ho_type;
+    for(const [id, t] of [['ho_simple', 'simple'], ['ho_cbore', 'counterbore'], ['ho_csink', 'countersink']])
+      document.getElementById(id).classList.toggle('on', ho_type === t);
+    document.getElementById('ho_thru').classList.toggle('on', ho_through);
+    document.getElementById('ho_tip').classList.toggle('on', ho_tipOn && !ho_through);
+    ho_rows_head.hidden = ho_type === 'simple';
+    ho_row_cb.hidden = ho_type !== 'counterbore';
+    ho_row_cs.hidden = ho_type !== 'countersink';
+    ho_h.disabled = ho_through;
+    ho_hint.hidden = !hintsChk.checked;
+    ho_ok.disabled = !(this.stage === 1 && !this.err);
+    ho_info.style.color = this.err ? '#ff6b6b' : '';
+    if(this.err){ ho_info.textContent = this.err; return; }
+    if(this.stage === 0){ ho_info.textContent = 'Click the hole centre on a face'; return; }
+    const o = this.opts();
+    const what = o.type === 'simple' ? 'Hole' : o.type === 'counterbore' ? 'Counterbore' : 'Countersink';
+    ho_info.innerHTML = what + ' Ø<b>' + o.d.toFixed(1) + '</b>' + (o.type === 'simple' ? '' : ' · head Ø' + o.head.toFixed(1))
+      + ' · ' + (o.through ? '<b>through</b>' : 'depth <b>' + o.depth.toFixed(1) + '</b> mm');
+  },
+  commit(){
+    if(this.stage !== 1) return;
+    let tris;
+    try{ tris = this.build(); }catch(err){ warnTip(err.message); return; }
+    this.kill();
+    let res;
+    try{ res = zcApplySolid(tris, 'cut'); }
+    catch(err){ warnTip('Hole failed here: ' + err.message); this.draw(); return; }
+    if(Math.abs(res.volume_change_mm3) < 1e-3){
+      undo(true);
+      warnTip('Nothing to drill here — the hole is outside the body');
+      this.draw(); return;
+    }
+    // следующее отверстие — сразу с центра, размеры в полях остаются
+    this.stage = 0; this.P = null;
+    this.ui();
+  }
+};
 // ---------- G,U — цилиндр/конус на грани (Create → Cylinder во Fusion) ----------
 // центр на грани (привязки как у окружности) → радиус мышью → высота вдоль
 // нормали; наружу — Join, в тело — Cut (как Extrude; зажатый Ctrl — Cut).
@@ -5486,6 +5641,36 @@ const mirPopup = $id('mirPopup'), mir_state = $id('mir_state'), mir_off = $id('m
   $id('mir_cancel').addEventListener('click', () => { if(activeTool === mirTool) setActiveTool(null); });
   makeGripDrag(mirPopup);
 }
+let ho_type = 'simple', ho_through = false, ho_tipOn = false;
+const holePopup = $id('holePopup'), ho_state = $id('ho_state'), ho_d = $id('ho_d'), ho_h = $id('ho_h'),
+      ho_hd = $id('ho_hd'), ho_hh = $id('ho_hh'), ho_ang = $id('ho_ang'), ho_rows_head = $id('ho_rows_head'),
+      ho_row_cb = $id('ho_row_cb'), ho_row_cs = $id('ho_row_cs'), ho_info = $id('ho_info'), ho_hint = $id('ho_hint'), ho_ok = $id('ho_ok');
+{
+  const refresh = () => { if(activeTool !== holeTool) return; holeTool.draw(); holeTool.ui(); };
+  for(const el of [ho_d, ho_h, ho_hd, ho_hh, ho_ang]){
+    el.addEventListener('input', refresh);
+    el.addEventListener('keydown', e => {
+      if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === holeTool) holeTool.commit(); }
+      if(e.key === 'Escape') releaseToolInput();
+      e.stopPropagation();
+    });
+  }
+  for(const [id, t] of [['ho_simple', 'simple'], ['ho_cbore', 'counterbore'], ['ho_csink', 'countersink']])
+    $id(id).addEventListener('click', () => { ho_type = t; refresh(); });
+  $id('ho_thru').addEventListener('click', () => { ho_through = !ho_through; refresh(); });
+  $id('ho_tip').addEventListener('click', () => { ho_tipOn = !ho_tipOn; refresh(); });
+  // пресеты: зазор под винт и головка (М3…М6)
+  for(const m of Object.keys(HOLE_PRESETS)) $id('ho_' + m.toLowerCase()).addEventListener('click', () => {
+    const P = HOLE_PRESETS[m];
+    ho_d.value = P.d;
+    ho_hd.value = ho_type === 'counterbore' ? P.cb : P.head;
+    ho_hh.value = P.cbh; ho_ang.value = 90;
+    refresh();
+  });
+  ho_ok.addEventListener('click', () => { if(activeTool === holeTool) holeTool.commit(); });
+  $id('ho_cancel').addEventListener('click', () => { if(activeTool === holeTool) setActiveTool(null); });
+  makeGripDrag(holePopup);
+}
 const shellPopup = $id('shellPopup'), sh_t = $id('sh_t'), sh_state = $id('sh_state'), sh_info = $id('sh_info'),
       sh_hint = $id('sh_hint'), sh_ok = $id('sh_ok');
 {
@@ -6275,6 +6460,7 @@ function showChordHint(){
     row('E', 'Extrude face ±mm', !!ppPatch) +
     row('S', 'Slice the body with a plane', true) +
     row('U', 'Cylinder / cone on a face', true) +
+    row('D', 'Hole: simple, counterbore, countersink', true) +
     row('O', 'Revolve a profile around an axis', true) +
     row('W', 'Sweep a profile along the selected lines', edgeSel.length > 0) +
     row('F', 'Loft between two profiles', true) +
@@ -11485,6 +11671,13 @@ window.addEventListener('keydown', e=>{
       return;
     }
   }
+  // G,D — отверстие с зенковкой/цековкой (Hole во Fusion)
+  if((e.code==='KeyD' || e.key.toLowerCase()==='d') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    setActiveTool(activeTool === holeTool ? null : holeTool);
+    return;
+  }
   // G,U — цилиндр/конус на грани (Create → Cylinder во Fusion)
   if((e.code==='KeyU' || e.key.toLowerCase()==='u') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
      && document.activeElement.tagName!=='INPUT'){
@@ -12548,11 +12741,14 @@ canvas.addEventListener('pointermove', e=>{
         rubber = new THREE.Line(rg, rubMat);
         if(rubMat.isLineDashedMaterial) rubber.computeLineDistances();
         scene.add(rubber);
-        if(perpSnap && perpSnap.kind === 'perpendicular' && lineHostDir){
-          const L = lineStart.distanceTo(pos);
-          if(L > 0.3)
-            showAngleMark(lineStart, lineHostDir,
-              new THREE.Vector3().subVectors(pos, lineStart).normalize(), L);
+        // знак прямого угла — по самому углу, а не по тому, кто поймал точку:
+        // на вершине или середине ребра магнит другой (perpSnap пуст), но линия
+        // по-прежнему под 90°, и знак должен стоять до самого клика
+        if(lineHostDir){
+          const d90 = new THREE.Vector3().subVectors(pos, lineStart), L = d90.length();
+          const perp90 = L > 0.3 && Math.abs(d90.dot(lineHostDir)) / L < 0.0044; // ±0.25°
+          if(perp90 || (perpSnap && perpSnap.kind === 'perpendicular' && L > 0.3))
+            showAngleMark(lineStart, lineHostDir, d90.normalize(), L);
         }
         msg += '<br>L '+lineStart.distanceTo(pos).toFixed(1)+' mm';
         if(lineHostDir){ // живой угол к ребру-хозяину (как в Sketcher)
@@ -14566,6 +14762,29 @@ const ZC_COMMANDS = {
       n.normalize();
       const dv = applySlice(P, n);
       return Object.assign({volume_change_mm3: +dv.toFixed(3)}, zcSummary());
+    }
+  },
+  add_hole: {
+    // то же отверстие, что окно G,D: профиль вращается вокруг нормали грани
+    run(a){
+      const P = zcV3(a.point, 'point');
+      const n = a.normal ? zcV3(a.normal, 'normal') : null;
+      const tri = zcFaceAt(P, n ? n.clone().normalize() : null);
+      if(tri < 0) throw new Error('no face at this point');
+      const N = n && n.length() > 1e-9 ? n.clone().normalize() : triNormalAt(tri).clone().normalize();
+      const type = a.type || 'simple';
+      if(!['simple', 'counterbore', 'countersink'].includes(type)) throw new Error('type must be simple, counterbore or countersink');
+      const o = {
+        type, d: +a.diameter, head: +a.head_diameter || 0, headDepth: +a.head_depth || 0,
+        angle: a.angle == null ? 90 : +a.angle, tip: !!a.tip, through: !!a.through,
+        depth: 0, segments: a.segments ? Math.max(3, Math.min(256, Math.round(+a.segments))) : 0
+      };
+      if(!(o.d >= 0.2)) throw new Error('diameter must be at least 0.2 mm');
+      o.depth = o.through ? holeThroughDepth(P, N) : +a.depth;
+      if(!o.through && !(o.depth >= 0.1)) throw new Error('give depth in mm or through: true');
+      const r = zcApplySolid(holeCutTris(P, N, o), 'cut');
+      if(Math.abs(r.volume_change_mm3) < 1e-3){ undo(true); throw new Error('nothing to drill here — the hole is outside the body'); }
+      return Object.assign({boolean: lastBoolPath}, r);
     }
   },
   add_frustum: {

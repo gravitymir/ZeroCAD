@@ -333,6 +333,47 @@ def gear_v_grooves_on_tooth_flanks():
 
 
 @case
+def hole_simple_counterbore_countersink():
+    # Отверстие (G,D) — add_hole: глухое, сквозное, цековка и зенковка 90/82°,
+    # конус сверла 118°, на боковой грани; пресеты М3…М6 — те же числа
+    frustum = lambda r1, r2, h, n=48: h / 3 * (ngon(r1, n) + math.sqrt(ngon(r1, n) * ngon(r2, n)) + ngon(r2, n))
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    d = call('add_hole', {'point': [20, 20, 40], 'diameter': 6, 'depth': 10, 'segments': 48})
+    closed(d, 'blind'); exact(d, 'blind'); near(d['volume_change_mm3'], -ngon(3) * 10, 0.05, 'blind hole')
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    d = call('add_hole', {'point': [20, 20, 40], 'diameter': 6, 'through': True, 'segments': 48})
+    closed(d, 'through'); near(d['volume_change_mm3'], -ngon(3) * 40, 0.1, 'through hole')
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    d = call('add_hole', {'point': [20, 20, 40], 'diameter': 6.6, 'through': True, 'type': 'counterbore',
+                          'head_diameter': 11, 'head_depth': 6, 'segments': 48})
+    closed(d, 'counterbore'); near(d['volume_change_mm3'], -(ngon(5.5) * 6 + ngon(3.3) * 34), 0.1, 'counterbore')
+    for ang in (90, 82):
+        call('new_shape', {'shape': 'cube', 'size': 40})
+        d = call('add_hole', {'point': [20, 20, 40], 'diameter': 6.6, 'through': True, 'type': 'countersink',
+                              'head_diameter': 12, 'angle': ang, 'segments': 48})
+        dc = 2.7 / math.tan(math.radians(ang / 2))
+        closed(d, f'countersink {ang}')
+        near(d['volume_change_mm3'], -(frustum(6, 3.3, dc) + ngon(3.3) * (40 - dc)), 0.15, f'countersink {ang}')
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    d = call('add_hole', {'point': [20, 20, 40], 'diameter': 6, 'depth': 10, 'tip': True, 'segments': 48})
+    closed(d, 'drill tip')
+    near(d['volume_change_mm3'], -(ngon(3) * 10 + frustum(3, 0, 3 / math.tan(math.radians(59)))), 0.05, 'drill tip 118')
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    d = call('add_hole', {'point': [0, 20, 20], 'diameter': 5, 'depth': 12, 'segments': 48})
+    closed(d, 'side'); near(d['volume_change_mm3'], -ngon(2.5) * 12, 0.05, 'hole in a side face')
+    for args, msg in ((
+        {'point': [20, 20, 40], 'diameter': 6, 'depth': 10, 'type': 'counterbore', 'head_diameter': 4, 'head_depth': 3}, 'wider than the hole'),
+        ({'point': [20, 20, 40], 'diameter': 6.6, 'depth': 2, 'type': 'countersink', 'head_diameter': 12}, 'deeper than the hole'),
+        ({'point': [200, 20, 40], 'diameter': 6, 'depth': 10}, 'no face at this point')):
+        try:
+            call('add_hole', args)
+        except McpError as e:
+            assert msg in str(e), str(e)
+        else:
+            raise AssertionError(f'must be refused: {msg}')
+
+
+@case
 def loft_between_two_profiles():
     # Loft (G,F) — loft_profiles: призма, усечённая пирамида, наклонная призма
     # по Кавальери, переходник круг → круг; вырез лофтом между кругом на крыше
