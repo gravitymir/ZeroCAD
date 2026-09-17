@@ -297,7 +297,11 @@ let hardEdges = [];      // [{a:Vector3, b:Vector3}]
 let faceTester = null;
 function getFaceTester(){
   if(faceTester) return faceTester;
-  const pos = mesh ? mesh.geometry.attributes.position.array : new Float32Array(0);
+  faceTester = makeFaceTester(mesh ? mesh.geometry.attributes.position.array : new Float32Array(0));
+  return faceTester;
+}
+// то же для любого набора треугольников (снимок до операции)
+function makeFaceTester(pos){
   const CELL = 5, grid = new Map();
   const cell = (x,y,z) => Math.floor(x/CELL) + ',' + Math.floor(y/CELL) + ',' + Math.floor(z/CELL);
   for(let t=0;t<pos.length/9;t++){
@@ -311,7 +315,7 @@ function getFaceTester(){
   }
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
   const v0 = new THREE.Vector3(), v1 = new THREE.Vector3(), v2 = new THREE.Vector3(), nrm = new THREE.Vector3();
-  faceTester = P => {
+  const test = P => {
     for(const t of (grid.get(cell(P.x, P.y, P.z)) || [])){
       const o = t*9;
       A.fromArray(pos, o); B.fromArray(pos, o+3); C.fromArray(pos, o+6);
@@ -329,7 +333,50 @@ function getFaceTester(){
     }
     return false;
   };
-  return faceTester;
+  return test;
+}
+// Пологий излом, появившийся от операции, сам по себе не рисуется (порог
+// 35°, как Auto Smooth в Blender) — грань выглядит целой, хотя это уже два
+// ската. Помечаем жёстким ребро, которого не было и у которого ОДНА грань
+// лежит на старой поверхности, а вторая — новая (стенка выреза). У цилиндра
+// и конуса обе грани новые, их сегменты остаются гладкими
+function markNewFoldEdges(prevPos, allNew){
+  if(!prevPos || !prevPos.length) return 0;
+  const pos = mesh.geometry.attributes.position.array;
+  const onOld = makeFaceTester(prevPos);
+  const EK = (arr, o1, o2) => {
+    const k1 = keyOf(arr[o1],arr[o1+1],arr[o1+2]), k2 = keyOf(arr[o2],arr[o2+1],arr[o2+2]);
+    return k1 < k2 ? k1+'|'+k2 : k2+'|'+k1;
+  };
+  const oldEdges = new Set();
+  for(let o=0;o<prevPos.length;o+=9) for(let e=0;e<3;e++) oldEdges.add(EK(prevPos, o+e*3, o+((e+1)%3)*3));
+  const C = new THREE.Vector3(), eMap = new Map();
+  for(let o=0;o<pos.length;o+=9){
+    const n = new THREE.Vector3(pos[o+3]-pos[o], pos[o+4]-pos[o+1], pos[o+5]-pos[o+2])
+      .cross(new THREE.Vector3(pos[o+6]-pos[o], pos[o+7]-pos[o+1], pos[o+8]-pos[o+2]));
+    if(n.length() < 1e-9) continue;
+    n.normalize();
+    C.set((pos[o]+pos[o+3]+pos[o+6])/3, (pos[o+1]+pos[o+4]+pos[o+7])/3, (pos[o+2]+pos[o+5]+pos[o+8])/3);
+    const old = onOld(C);
+    for(let e=0;e<3;e++){
+      const o1 = o+e*3, o2 = o+((e+1)%3)*3, k = EK(pos, o1, o2);
+      let L = eMap.get(k);
+      if(!L) eMap.set(k, L = {n: [], old: [], A: new THREE.Vector3(pos[o1],pos[o1+1],pos[o1+2]),
+                              B: new THREE.Vector3(pos[o2],pos[o2+1],pos[o2+2])});
+      L.n.push(n); L.old.push(old);
+    }
+  }
+  let added = 0;
+  for(const [k, L] of eMap){
+    if(L.n.length !== 2 || oldEdges.has(k)) continue;
+    const dt = L.n[0].dot(L.n[1]);
+    if(dt < FEATURE_COS || dt > 0.99999) continue; // и так видно / складки нет
+    // обе грани новые: у цилиндра и конуса это соседние сегменты, их не
+    // трогаем; у выреза клином (allNew) стенки плоские — дно канавки показываем
+    if(L.old[0] === L.old[1] && !(allNew && !L.old[0] && !L.old[1])) continue;
+    hardEdges.push({a: L.A, b: L.B}); added++;
+  }
+  return added;
 }
 // Линия в воздухе — ярко-красная: чёрная на тёмном фоне сцены не видна, а
 // красная ещё и честно говорит, что эта часть не лежит на теле
@@ -9539,6 +9586,7 @@ document.getElementById('em_follow').addEventListener('click', () => setEdgeEnd(
 document.getElementById('em_straight').addEventListener('click', () => setEdgeEnd('straight'));
 function cancelEdgeMove(){
   if(!edgeDrag) return;
+  killEdgeGhost();
   const pushed = edgeDrag.snapPushed;
   edgeDrag = null; setAxisLock(null); snapDot.visible = false;
   closeEmPopup();
@@ -9795,6 +9843,30 @@ function edgeMoveCutPrism(s, extra = 0){
   if(vol < 0) for(const t of tris){ const x = t[1]; t[1] = t[2]; t[2] = x; }
   return tris;
 }
+// Предпросмотр канавки с торцами Straight: сгибать сетку нельзя — конец линии
+// уходит в тело и тащит за собой треугольники соседней грани, они складываются
+// «ножницами». Показываем то же, что у цилиндра и отверстия: красный призрак
+// тела, которое будет вырезано, а сетка остаётся нетронутой до применения
+let edgeGhost = null;
+function killEdgeGhost(){
+  if(edgeGhost){ scene.remove(edgeGhost); edgeGhost.traverse(o => { if(o.geometry) o.geometry.dispose(); }); edgeGhost = null; }
+}
+function showEdgeGhost(s){
+  killEdgeGhost();
+  let tris = null;
+  try{ tris = edgeMoveCutPrism(s); }catch(err){ return; }
+  if(!tris) return;
+  const arr = [];
+  for(const t of tris) for(const p of t) arr.push(p.x, p.y, p.z);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(arr), 3));
+  const group = new THREE.Group();
+  group.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({color: 0xff5a5a, transparent: true, opacity: 0.26,
+    depthWrite: false, depthTest: false, side: THREE.DoubleSide})));
+  group.renderOrder = 5;
+  scene.add(group);
+  edgeGhost = group;
+}
 function applyEdgeDelta(d, e){
   if(!edgeDrag.snapPushed){
     pushHistory(edgeDrag.snap);
@@ -9832,6 +9904,16 @@ function applyEdgeDelta(d, e){
     const np = edgeDrag.pts0[i].clone().add(disp(edgeDrag.pts0[i], 1));
     for(const bi of edgeDrag.idx[i]){ posE[bi]=np.x; posE[bi+1]=np.y; posE[bi+2]=np.z; }
   }
+  // канавка с торцами Straight: сетку не гнём, показываем призрак выреза
+  const sN = edgeDrag.normal ? d.dot(edgeDrag.normal) : 0;
+  if(edgeDrag.nLock && edgeDrag.endMode === 'straight' && sN < -0.01){
+    posE.set(edgeDrag.snap.pos);
+    edgeDrag.folded = false;
+    showEdgeGhost(sN);
+  } else {
+    edgeDrag.folded = true;
+    killEdgeGhost();
+  }
   mesh.geometry.attributes.position.needsUpdate = true;
   normalsThrottled();
   updateEmPopup(d);
@@ -9857,6 +9939,7 @@ function finishEdgeMove(){
   if(ed && ed.nLock && ed.lastD && ed.normal && ed.snapPushed){
     const s = ed.lastD.dot(ed.normal);
     edgeSlideInfo();
+    killEdgeGhost();
     const moved = mesh.geometry.attributes.position.array.slice();
     const vSnap = meshVolumeOf(ed.snap.pos), vFold = meshVolumeOf(moved);
     // второй заход — торцы клина на 0.05 мм за плоскостью соседа: если торец
@@ -9887,15 +9970,18 @@ function finishEdgeMove(){
         // пустой) — это не канавка: сгиб предпросмотра снимал заметный объём
         const vCut = meshVolumeOf(mesh.geometry.attributes.position.array);
         if(vFold - vSnap < -1 && vCut - vSnap > (vFold - vSnap) * 0.5) throw new Error('wedge cut removed too little');
+        if(vFold === vSnap && vCut - vSnap > -1e-3) throw new Error('wedge cut removed nothing');
         lastBoolPath = 'exact';
+        markNewFoldEdges(ed.snap.pos, true); // пологое дно канавки и излом от торца — видимыми рёбрами
         // линия канавки уехала со сгибом дальше выреза, хорды сверху частично
         // срезаны — повисшие в воздухе линии убираем: край выреза теперь ребро
         dropAirGuides();
         break;
       }catch(err){
         console.warn('edge cut failed' + (extra ? ' (retry)' : ''), err);
-        setMeshFromArray(moved); // остаётся сгиб
+        setMeshFromArray(moved); // остаётся сгиб (у Straight — исходная сетка)
         lastBoolPath = '';
+        if(extra && ed.folded === false) warnTip('The groove did not cut here — try Follow face ends or another depth');
       }
     }
   }
@@ -13915,7 +14001,7 @@ function zcApplySolid(tris, op, round = true){
   pushHistory(snap);
   if(op === 'new') restoreGuides([]);
   setMeshFromArray(out);
-  if(op !== 'new'){ cleanupMesh(); if(openEdgeCount() > 0) healAll(); }
+  if(op !== 'new'){ cleanupMesh(); if(openEdgeCount() > 0) healAll(); markNewFoldEdges(pos); }
   if(!modified){ modified = true; s_mod.textContent = 'yes'; }
   clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
   extractEdges();
