@@ -12,6 +12,12 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    // Пересобирать метку, когда меняются исходники ИЛИ коммит: без этих строк
+    // Cargo брал прежний ZEROCAD_BUILD, и страница показывала старый номер,
+    // хотя код внутри был новый (b217 вместо b220 — не понять, что запущено)
+    for p in ["web", "src", "Cargo.toml", ".git/HEAD", ".git/index"] {
+        println!("cargo:rerun-if-changed={p}");
+    }
     let count = git(&["rev-list", "--count", "HEAD"]).unwrap_or_else(|| "0".into());
     let hash = git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "dev".into());
     let secs = SystemTime::now()
