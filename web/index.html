@@ -240,23 +240,23 @@
   #exPopup #ex_through:disabled,#exPopup #ex_taper:disabled{opacity:.4;cursor:default}
   #bevPopup .prow[hidden]{display:none}
   /* окна Slice (G,S) и Cylinder (G,U): как окно фаски */
-  #slicePopup,#cylPopup,#profPopup,#mirPopup,#xfPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
+  #slicePopup,#cylPopup,#profPopup,#mirPopup,#xfPopup,#shellPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
     padding:14px 16px;font-size:12px;width:320px;box-sizing:border-box}
-  #slicePopup[hidden],#cylPopup[hidden],#profPopup[hidden],#pf_revolve[hidden],#xf_rows_move[hidden],#xf_rows_scale[hidden],#mirPopup[hidden],#xfPopup[hidden]{display:none}
-  #slicePopup .prow,#cylPopup .prow,#profPopup .prow,#mirPopup .prow,#xfPopup .prow{display:flex;align-items:center;gap:10px;margin:4px 0;color:var(--muted);font-size:19px}
-  #slicePopup .plab,#cylPopup .plab,#profPopup .plab,#mirPopup .plab,#xfPopup .plab{display:inline-block;min-width:70px}
-  #slicePopup input,#cylPopup input,#profPopup input,#mirPopup input,#xfPopup input{font-size:22px;padding:6px 10px;width:110px;background:var(--panel2);color:var(--text);
+  #slicePopup[hidden],#cylPopup[hidden],#profPopup[hidden],#pf_revolve[hidden],#xf_rows_move[hidden],#xf_rows_scale[hidden],#mirPopup[hidden],#xfPopup[hidden],#shellPopup[hidden]{display:none}
+  #slicePopup .prow,#cylPopup .prow,#profPopup .prow,#mirPopup .prow,#xfPopup .prow,#shellPopup .prow{display:flex;align-items:center;gap:10px;margin:4px 0;color:var(--muted);font-size:19px}
+  #slicePopup .plab,#cylPopup .plab,#profPopup .plab,#mirPopup .plab,#xfPopup .plab,#shellPopup .plab{display:inline-block;min-width:70px}
+  #slicePopup input,#cylPopup input,#profPopup input,#mirPopup input,#xfPopup input,#shellPopup input{font-size:22px;padding:6px 10px;width:110px;background:var(--panel2);color:var(--text);
     border:1px solid #6b7483;border-radius:6px;transition:border-color .1s,box-shadow .1s}
-  #slicePopup input:hover,#cylPopup input:hover,#profPopup input:hover,#mirPopup input:hover,#xfPopup input:hover{border-color:#aab3c2}
-  #slicePopup input:focus,#cylPopup input:focus,#profPopup input:focus,#mirPopup input:focus,#xfPopup input:focus{border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
-  #slicePopup input:disabled,#slicePopup button:disabled,#cylPopup input:disabled,#cylPopup button:disabled,#profPopup input:disabled,#profPopup button:disabled,#mirPopup input:disabled,#xfPopup input:disabled,#mirPopup button:disabled,#xfPopup button:disabled{opacity:.45;cursor:default}
-  #slicePopup button,#cylPopup button,#profPopup button,#mirPopup button,#xfPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
+  #slicePopup input:hover,#cylPopup input:hover,#profPopup input:hover,#mirPopup input:hover,#xfPopup input:hover,#shellPopup input:hover{border-color:#aab3c2}
+  #slicePopup input:focus,#cylPopup input:focus,#profPopup input:focus,#mirPopup input:focus,#xfPopup input:focus,#shellPopup input:focus{border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
+  #slicePopup input:disabled,#slicePopup button:disabled,#cylPopup input:disabled,#cylPopup button:disabled,#profPopup input:disabled,#profPopup button:disabled,#mirPopup input:disabled,#xfPopup input:disabled,#mirPopup button:disabled,#xfPopup button:disabled,#shellPopup input:disabled,#shellPopup button:disabled{opacity:.45;cursor:default}
+  #slicePopup button,#cylPopup button,#profPopup button,#mirPopup button,#xfPopup button,#shellPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
-  #slicePopup button.lp,#cylPopup button.lp,#profPopup button.lp,#mirPopup button.lp,#xfPopup button.lp{padding:6px 8px;font-size:15px}
-  #slicePopup button.lp.on,#cylPopup button.lp.on,#profPopup button.lp.on,#mirPopup button.lp.on,#xfPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
-  #slicePopup #sl_ok,#cylPopup #cyl_ok,#profPopup #pf_ok,#mirPopup #mir_ok,#xfPopup #xf_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
-  #slicePopup .pinfo,#cylPopup .pinfo,#profPopup .pinfo,#mirPopup .pinfo,#xfPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
-  #slicePopup .phint,#cylPopup .phint,#profPopup .phint,#mirPopup .phint,#xfPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
+  #slicePopup button.lp,#cylPopup button.lp,#profPopup button.lp,#mirPopup button.lp,#xfPopup button.lp,#shellPopup button.lp{padding:6px 8px;font-size:15px}
+  #slicePopup button.lp.on,#cylPopup button.lp.on,#profPopup button.lp.on,#mirPopup button.lp.on,#xfPopup button.lp.on,#shellPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
+  #slicePopup #sl_ok,#cylPopup #cyl_ok,#profPopup #pf_ok,#mirPopup #mir_ok,#xfPopup #xf_ok,#shellPopup #sh_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
+  #slicePopup .pinfo,#cylPopup .pinfo,#profPopup .pinfo,#mirPopup .pinfo,#xfPopup .pinfo,#shellPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
+  #slicePopup .phint,#cylPopup .phint,#profPopup .phint,#mirPopup .phint,#xfPopup .phint,#shellPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
   #bevPopup .plab{display:inline-block;min-width:70px}
   #bevPopup button.lp{padding:6px 8px;font-size:15px}
   #bevPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
@@ -439,6 +439,14 @@
       <div class="prow linecmd" id="line_alt"><span class="key">Alt+click</span> — new start: break the line here</div>
       <div class="phint" id="line_hint">Click the start, then the end — it snaps to vertices, midpoints, axes and angles. Type the length or the angle to fix it: before the end, the cursor only picks the side; after placing, a new length or angle redraws the line from its start (Enter); while you type, a dashed preview shows the new end. The angle is measured to the edge the line starts from (or to the axis), 90° — red. In a polyline, Alt+click puts a new start without a segment from the previous point. OK — finish the tool, Cancel or Esc — exit without the unfinished line.</div>
       <div class="prow" style="margin-top:8px;gap:10px"><button id="line_ok">OK</button><button id="line_cancel">Cancel</button></div>
+    </div>
+    <div id="shellPopup" hidden>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Shell</b><span id="sh_state" style="font-size:14px">pick a body</span></div>
+      <div class="prow"><span class="plab">Thickness</span><input id="sh_t" type="number" step="0.1" min="0.1" value="2"> mm</div>
+      <div class="pinfo" id="sh_info">&nbsp;</div>
+      <div class="phint" id="sh_hint">Click the body to hollow (with one body in the model this step is skipped; Enter — the whole model). Click faces to leave them open — they turn orange; click again to close. The red ghost is the cavity. Without open faces the cavity is closed inside: for printing add a hole to drain resin or powder. The wall keeps its thickness at corners and on curved sides. Esc — undo the last open face / back</div>
+      <div class="prow" style="gap:10px;margin-top:8px"><button id="sh_ok" disabled>OK</button><button id="sh_cancel">Cancel</button></div>
     </div>
     <div id="mirPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>

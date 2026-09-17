@@ -527,6 +527,15 @@ const ZC_TOOLS = [
     }
   },
   {
+    "name": "shell_body",
+    "description": "Hollow a body with an even wall — the same as the user's Shell window (G,H). thickness in mm; open_faces: flat faces to remove, each by a point on it (+ normal when the point is on an edge) — a whole flat face opens even if lines split it. No open faces leaves a closed cavity inside. body_point: a point on the body; omit it for the whole model. Fails if the wall is thicker than a thin part of the body.",
+    "inputSchema": {"type": "object", "properties": {
+      "thickness": {"type": "number"},
+      "open_faces": {"type": "array", "items": {"type": "object", "properties": {"point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}}, "required": ["point"]}},
+      "body_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+    }, "required": ["thickness"]}
+  },
+  {
     "name": "mirror_body",
     "description": "Mirror a body across a plane — the same as the user's Mirror window (G,I). body_point: a point on the surface of the body (a connected part of the mesh); omit it for the whole model. mode join (default) keeps the original and unites it with the mirrored copy (a half part becomes whole); flip moves the body to the other side. Lines on the body follow it.",
     "inputSchema": {"type": "object", "properties": {

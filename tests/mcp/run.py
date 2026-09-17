@@ -270,6 +270,40 @@ def mirror_move_copy_scale_body():
 
 
 @case
+def shell_hollow_parts():
+    # Shell (G,H) — shell_body: коробка с открытой крышей и закрытая полость,
+    # стакан из цилиндра, куб с бобышкой (вогнутое ребро), колесо-дозатор с
+    # V-карманами 12° (узкие сегменты обода у карманов исчезают) и отказ,
+    # когда остриё кармана упирается в стенку втулки
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    d = call('shell_body', {'thickness': 2, 'open_faces': [{'point': [20, 20, 40]}]})
+    closed(d, 'open box'); exact(d, 'open box'); near(d['volume_mm3'], 64000 - 36*36*38, 1e-3, 'open box')
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    d = call('shell_body', {'thickness': 2})
+    closed(d, 'closed box'); near(d['volume_mm3'], 64000 - 36**3, 1e-3, 'closed box')
+    call('add_frustum', {'from': [0, 0, 0], 'to': [0, 0, 30], 'r1': 20, 'r2': 20, 'segments': 64, 'operation': 'new'})
+    a, A = 20 * math.cos(math.pi / 64), 64 * 400 * math.sin(2 * math.pi / 64) / 2
+    d = call('shell_body', {'thickness': 2, 'open_faces': [{'point': [0, 0, 30]}]})
+    closed(d, 'cup'); near(d['volume_mm3'], A*30 - A*((a-2)/a)**2*28, 0.05, 'cup')
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    call('add_frustum', {'from': [20, 20, 40], 'to': [20, 20, 55], 'r1': 10, 'r2': 10, 'segments': 48})
+    a, A = 10 * math.cos(math.pi / 48), 48 * 100 * math.sin(2 * math.pi / 48) / 2
+    d = call('shell_body', {'thickness': 2, 'open_faces': [{'point': [20, 20, 0]}]})
+    closed(d, 'boss'); near(d['volume_change_mm3'], -(36*36*38 + A*((a-2)/a)**2*15), 0.05, 'boss')
+    for t in (1, 1.5):
+        call('new_shape', {'shape': 'gear', 'size': 60})
+        d = call('shell_body', {'thickness': t, 'open_faces': [{'point': [15, 15, 11]}]})
+        closed(d, f'gear {t}'); exact(d, f'gear {t}')
+    call('new_shape', {'shape': 'gear', 'size': 60})
+    try:
+        call('shell_body', {'thickness': 2, 'open_faces': [{'point': [15, 15, 11]}]})
+    except McpError as e:
+        assert 'does not fit' in str(e), str(e)
+    else:
+        raise AssertionError('gear wall 2 mm must be refused: the pocket tip reaches the hub')
+
+
+@case
 def gear_v_grooves_on_tooth_flanks():
     # Сценарий пользователя: диск Ø140 на 180 сегментов, 6 зубьев (вершина R70,
     # впадина R60), линия поперёк боковой грани на высоте 5.5 и move_edge −5.5.

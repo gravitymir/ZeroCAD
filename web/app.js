@@ -2069,7 +2069,7 @@ const tapeTool = {
 // Ошибки и предупреждения. Если открыто окно или палитра, блок встаёт над
 // ним той же ширины (места сверху мало — под ним), иначе — у курсора.
 // Держится 2.8 с
-const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'cylPopup', 'profPopup', 'mirPopup', 'xfPopup', 'rotPopup',
+const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'cylPopup', 'profPopup', 'mirPopup', 'xfPopup', 'shellPopup', 'rotPopup',
   'arrPopup', 'txtPopup', 'divPopup', 'vpanel', 'popup'];
 function warnTip(msg){
   const box = document.getElementById('warnBox');
@@ -2868,6 +2868,508 @@ const xfTool = {
     this.ghostG = killGroup(this.ghostG); this.killRubber();
     try{ applyBodyTransform(this.tris, m, this.copy); }
     catch(err){ warnTip((this.mode === 'move' ? 'Move' : 'Scale') + ' failed: ' + err.message); this.draw(); return; }
+    setActiveTool(null);
+  }
+};
+
+// ---------- G,H — Shell: полая деталь (Shell во Fusion, Solidify в Blender) ----------
+// Внутреннее тело — плоские грани детали, сдвинутые внутрь на толщину
+// стенки (shellInnerTris). У открытых граней плоскость, наоборот, уходит
+// НАРУЖУ — внутреннее тело прорезает их насквозь. Итог — точная булева: тело минус
+// внутреннее тело (без открытых граней — замкнутая полость внутри)
+
+// Плоские грани тела: треугольники, сцепленные рёбрами и лежащие в плоскости
+// первого (затравки) — нормаль до 0.8°, отступ до 0.02 мм; линии на грани её
+// не делят. Иглы нулевой площади примыкают к соседу
+function planarPatches(pos, tris){
+  const list = tris || Array.from({length: pos.length / 9}, (_, i) => i);
+  const nrm = t => { const o = t*9;
+    return new THREE.Vector3(pos[o+3]-pos[o], pos[o+4]-pos[o+1], pos[o+5]-pos[o+2])
+      .cross(new THREE.Vector3(pos[o+6]-pos[o], pos[o+7]-pos[o+1], pos[o+8]-pos[o+2])); };
+  const EK = (t, e) => { const o1 = t*9+e*3, o2 = t*9+((e+1)%3)*3;
+    const k1 = keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2 = keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+    return k1 < k2 ? k1+'|'+k2 : k2+'|'+k1; };
+  const edges = new Map();
+  for(const t of list) for(let e=0;e<3;e++){ const ek = EK(t, e); let L = edges.get(ek); if(!L) edges.set(ek, L = []); L.push(t); }
+  // затравки — по убыванию площади: плоскость грани берётся от крупного треугольника
+  const area = new Map(list.map(t => [t, nrm(t).length()]));
+  const order = [...list].sort((a, b) => area.get(b) - area.get(a));
+  const patchOf = new Map(), patches = [];
+  for(const seed of order){
+    if(patchOf.has(seed)) continue;
+    const n0 = nrm(seed);
+    const id = patches.length, P = {tris: [seed], n: null};
+    patches.push(P); patchOf.set(seed, id);
+    if(n0.length() < 1e-9){ P.n = new THREE.Vector3(0, 0, 1); continue; }
+    n0.normalize();
+    const d0 = n0.x*pos[seed*9] + n0.y*pos[seed*9+1] + n0.z*pos[seed*9+2];
+    const on = t => {
+      const n = nrm(t), L = n.length();
+      if(L >= 1e-9 && n.dot(n0) / L < 0.9999) return false;
+      for(let j=0;j<3;j++) if(Math.abs(n0.x*pos[t*9+j*3] + n0.y*pos[t*9+j*3+1] + n0.z*pos[t*9+j*3+2] - d0) > 0.02) return false;
+      return true;
+    };
+    const stack = [seed];
+    while(stack.length){
+      const t = stack.pop();
+      for(let e=0;e<3;e++) for(const u of edges.get(EK(t, e)))
+        if(!patchOf.has(u) && on(u)){ patchOf.set(u, id); P.tris.push(u); stack.push(u); }
+    }
+    P.n = n0;
+  }
+  return {patchOf, patches};
+}
+// грань под треугольником — для выбора открытых граней (окно и MCP)
+function coplanarFaceTris(pos, seed, tris){
+  const {patchOf, patches} = planarPatches(pos, tris);
+  return patches[patchOf.get(seed)].tris.slice();
+}
+// Контуры плоской грани: рёбра, не общие с другим треугольником грани, в
+// порядке обхода треугольников (внешний — против часовой вокруг нормали,
+// дыры — по часовой). null — контур касается сам себя в вершине
+function patchLoops(pos, tris){
+  const K = o => keyOf(pos[o], pos[o+1], pos[o+2]);
+  const dir = new Map();
+  for(const t of tris) for(let e=0;e<3;e++){
+    const o1 = t*9+e*3, o2 = t*9+((e+1)%3)*3, a = K(o1), b = K(o2);
+    if(a === b) continue;
+    const back = a + '>' + b, fwd = b + '>' + a;
+    if(dir.has(fwd)){ const L = dir.get(fwd); L.n--; if(!L.n) dir.delete(fwd); }
+    else { const L = dir.get(back); if(L) L.n++; else dir.set(back, {a, b, o: o1, n: 1}); }
+  }
+  const next = new Map();
+  for(const E of dir.values()){
+    if(E.n !== 1) return null;
+    if(next.has(E.a)) return null;
+    next.set(E.a, E);
+  }
+  const loops = [], used = new Set();
+  for(const [k0] of next){
+    if(used.has(k0)) continue;
+    const L = [];
+    let k = k0;
+    while(!used.has(k)){
+      const E = next.get(k);
+      if(!E) return null;
+      used.add(k);
+      L.push({k, p: new THREE.Vector3(pos[E.o], pos[E.o+1], pos[E.o+2])});
+      k = E.b;
+    }
+    if(k !== k0) return null;
+    loops.push(L);
+  }
+  return loops;
+}
+// Многоугольник с дырами в плоскости n → треугольники (против часовой вокруг
+// n). Дыры пришиваются к внешнему контуру мостом до ближайшей видимой
+// вершины, потом отрезаются уши. Точки на рёбрах остаются вершинами — у
+// соседних граней не появляется Т-стыков
+function polygonWithHolesTris(outer, holes, n){
+  const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize();
+  const v = n.clone().cross(u);
+  const P2 = p => ({p, x: p.dot(u), y: p.dot(v)});
+  const area2 = L => { let s = 0; for(let i=0;i<L.length;i++){ const a = L[i], b = L[(i+1)%L.length]; s += a.x*b.y - b.x*a.y; } return s; };
+  let poly = outer.map(P2);
+  const hs = holes.map(h => h.map(P2)).sort((A, B) => Math.max(...B.map(q => q.x)) - Math.max(...A.map(q => q.x)));
+  const crossSeg = (a, b, c, d) => {
+    const o = (p, q, r) => (q.x-p.x)*(r.y-p.y) - (q.y-p.y)*(r.x-p.x);
+    const same = (p, q) => Math.abs(p.x-q.x) < 1e-9 && Math.abs(p.y-q.y) < 1e-9;
+    if(same(a, c) || same(a, d) || same(b, c) || same(b, d)) return false;
+    const d1 = o(a, b, c), d2 = o(a, b, d), d3 = o(c, d, a), d4 = o(c, d, b);
+    return ((d1 > 1e-12 && d2 < -1e-12) || (d1 < -1e-12 && d2 > 1e-12)) && ((d3 > 1e-12 && d4 < -1e-12) || (d3 < -1e-12 && d4 > 1e-12));
+  };
+  for(let hi=0; hi<hs.length; hi++){
+    const H = hs[hi];
+    let mi = 0; H.forEach((q, i) => { if(q.x > H[mi].x) mi = i; });
+    const M = H[mi];
+    const cand = poly.map((q, i) => ({i, d: (q.x-M.x)**2 + (q.y-M.y)**2})).sort((a, b) => a.d - b.d);
+    let pick = -1;
+    const segs = [];
+    for(let i=0;i<poly.length;i++) segs.push([poly[i], poly[(i+1)%poly.length]]);
+    for(let j=hi;j<hs.length;j++) for(let i=0;i<hs[j].length;i++) segs.push([hs[j][i], hs[j][(i+1)%hs[j].length]]);
+    for(const c of cand){
+      const Q = poly[c.i];
+      if(!segs.some(([a, b]) => crossSeg(M, Q, a, b))){ pick = c.i; break; }
+    }
+    if(pick < 0) throw new Error('cannot join a hole of a face');
+    const ring = H.slice(mi).concat(H.slice(0, mi), [H[mi]]);
+    poly = poly.slice(0, pick + 1).concat(ring, [poly[pick]], poly.slice(pick + 1));
+  }
+  const same = (p, q) => Math.abs(p.x-q.x) < 1e-9 && Math.abs(p.y-q.y) < 1e-9;
+  const cr = (a, b, c) => (b.x-a.x)*(c.y-a.y) - (b.y-a.y)*(c.x-a.x);
+  const idx = poly.map((_, i) => i), out = [];
+  for(const strict of [false, true]){
+    let guard = idx.length * idx.length + 10;
+    while(idx.length > 3 && guard-- > 0){
+      let cut = false;
+      for(let i=0;i<idx.length;i++){
+        const A = poly[idx[(i+idx.length-1)%idx.length]], B = poly[idx[i]], C = poly[idx[(i+1)%idx.length]];
+        const s = cr(A, B, C);
+        if(s <= 1e-12) continue;
+        let ok = true;
+        for(const j of idx){
+          const Q = poly[j];
+          if(Q === A || Q === B || Q === C || same(Q, A) || same(Q, B) || same(Q, C)) continue;
+          const e = strict ? 1e-12 : -1e-12;
+          if(cr(A, B, Q) > e && cr(B, C, Q) > e && cr(C, A, Q) > e){ ok = false; break; }
+        }
+        if(!ok) continue;
+        out.push([A.p, B.p, C.p]);
+        idx.splice((i+idx.length)%idx.length, 1); cut = true; break;
+      }
+      if(!cut) break;
+    }
+    if(idx.length <= 3) break;
+  }
+  if(idx.length === 3 && cr(poly[idx[0]], poly[idx[1]], poly[idx[2]]) > 1e-12) out.push([poly[idx[0]].p, poly[idx[1]].p, poly[idx[2]].p]);
+  else if(idx.length > 3) throw new Error('cannot triangulate a face');
+  const want = area2(outer.map(P2)) + holes.reduce((s, h) => s + area2(h.map(P2)), 0);
+  const got = out.reduce((s, [a, b, c]) => s + area2([P2(a), P2(b), P2(c)]), 0);
+  return {tris: out, want, got};
+}
+// Внутреннее тело оболочки: tris — треугольники тела, open — открытые из них,
+// t — стенка, ext — насколько открытые грани уходят наружу. Каждая плоская
+// грань сдвигается внутрь на t (открытая — наружу на ext): вершина решает
+// n·x = d + цель для всех граней вокруг (наименьшие квадраты с весом по
+// углу — угол коробки выходит точно, стенка цилиндра ровной толщины, «even
+// thickness» в Blender), затем грань строится заново из сдвинутых контуров.
+// Грань уже стенки (сегмент обода у кармана, угол скругления) при сдвиге
+// исчезает, как в настоящих CAD: ребро контура, развернувшееся назад,
+// схлопывается — его концы сливаются в одну вершину, у которой свои
+// плоскости, а грань, где осталось меньше трёх вершин, выпадает. Грань,
+// которая всё равно вывернулась, — ошибка: стенка толще детали
+function shellInnerTris(pos, tris, open, t, ext){
+  const openSet = new Set(open || []);
+  const {patchOf, patches} = planarPatches(pos, tris);
+  const goalOf = patches.map(P => P.tris.some(x => openSet.has(x)) ? ext : -t);
+  const K = o => keyOf(pos[o], pos[o+1], pos[o+2]);
+  // вершины по ключу: исходная точка, плоскости вокруг с весом по углу
+  const vIdx = new Map(), vP = [], vPl = [];
+  for(const tr of tris){
+    const o = tr*9, P = [0, 1, 2].map(j => new THREE.Vector3(pos[o+j*3], pos[o+j*3+1], pos[o+j*3+2]));
+    const id = patchOf.get(tr);
+    for(let j=0;j<3;j++){
+      const k = K(o + j*3);
+      let vi = vIdx.get(k);
+      if(vi === undefined){ vi = vP.length; vIdx.set(k, vi); vP.push(P[j]); vPl.push(new Map()); }
+      const w = new THREE.Vector3().subVectors(P[(j+1)%3], P[j]).angleTo(new THREE.Vector3().subVectors(P[(j+2)%3], P[j]));
+      if(w > 1e-6) vPl[vi].set(id, (vPl[vi].get(id) || 0) + w);
+    }
+  }
+  const planeD = patches.map(P => { const o = P.tris[0]*9; return P.n.x*pos[o] + P.n.y*pos[o+1] + P.n.z*pos[o+2]; });
+  // группы слитых вершин (union-find)
+  const parent = vP.map((_, i) => i);
+  const find = i => { while(parent[i] !== i){ parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  const loopsOf = patches.map(P => {
+    const L = patchLoops(pos, P.tris);
+    return L ? L.map(loop => loop.map(x => vIdx.get(x.k))) : null;
+  });
+  const gone = new Uint8Array(patches.length);
+  const loopArea = (L, n) => { const c = new THREE.Vector3();
+    for(let i=0;i<L.length;i++) c.add(new THREE.Vector3().crossVectors(L[i], L[(i+1)%L.length])); return c.dot(n) / 2; };
+  // внешний контур грани — с наибольшей положительной площадью
+  const outerOf = patches.map((P, id) => {
+    if(!loopsOf[id]) return -1;
+    let best = 0, ba = -Infinity;
+    loopsOf[id].forEach((L, i) => { const a = loopArea(L.map(vi => vP[vi]), P.n); if(a > ba){ ba = a; best = i; } });
+    return best;
+  });
+  const tooThick = () => new Error('the wall of ' + t + ' mm does not fit here — a thin part or a sharp inner corner (a narrow V needs up to 10 walls of room) collides with another wall');
+  let X = null;
+  const solve = () => {
+    // члены групп: исходные точки (опора) и плоскости невыпавших граней
+    const acc = new Map();
+    for(let i=0;i<vP.length;i++){
+      const g = find(i);
+      let a = acc.get(g); if(!a){ a = {x0: new THREE.Vector3(), c: 0, pl: new Map()}; acc.set(g, a); }
+      a.x0.add(vP[i]); a.c++;
+      for(const [id, w] of vPl[i]) if(!gone[id]) a.pl.set(id, (a.pl.get(id) || 0) + w);
+    }
+    X = new Map();
+    for(const [g, a] of acc){
+      const x0 = a.x0.multiplyScalar(1 / a.c);
+      // (Σ w n nᵀ + λI) d = Σ w (d_i + цель − n·x0) n — λ крошечный: посреди
+      // грани или на ребре матрица вырождена, решение — ближайшее к опоре
+      let a00=0, a01=0, a02=0, a11=0, a12=0, a22=0, r0=0, r1=0, r2=0, tw=0;
+      for(const [id, w] of a.pl){
+        const n = patches[id].n, b = planeD[id] + goalOf[id] - n.dot(x0);
+        a00 += w*n.x*n.x; a01 += w*n.x*n.y; a02 += w*n.x*n.z; a11 += w*n.y*n.y; a12 += w*n.y*n.z; a22 += w*n.z*n.z;
+        r0 += w*b*n.x; r1 += w*b*n.y; r2 += w*b*n.z; tw += w;
+      }
+      if(!(tw > 0)){ X.set(g, x0); continue; }
+      const lam = 1e-9 * tw;
+      const m = new THREE.Matrix3().set(a00+lam, a01, a02, a01, a11+lam, a12, a02, a12, a22+lam);
+      if(Math.abs(m.determinant()) < 1e-30) throw new Error('cannot offset a vertex');
+      const d = new THREE.Vector3(r0, r1, r2).applyMatrix3(m.invert());
+      // вогнутый V-угол законно уводит вершину далеко (карман 12° — 9.6 стенки)
+      if(d.length() > 60 * Math.max(t, ext)) throw new Error('the wall of ' + t + ' mm does not fit into a sharp corner here');
+      X.set(g, x0.add(d));
+    }
+  };
+  // контур грани из групп: соседние одинаковые схлопнуты
+  const groupLoop = loop => {
+    const out = [];
+    for(const vi of loop){ const g = find(vi); if(out[out.length-1] !== g) out.push(g); }
+    while(out.length > 1 && out[0] === out[out.length-1]) out.pop();
+    return out;
+  };
+  // грань, у которой внешний контур схлопнулся, выпадает до пересчёта вершин
+  const updateGone = () => {
+    for(let id=0; id<patches.length; id++)
+      if(!gone[id] && loopsOf[id] && groupLoop(loopsOf[id][outerOf[id]]).length < 3) gone[id] = 1;
+  };
+  for(let iter=0; ; iter++){
+    if(iter > 400) throw tooThick();
+    updateGone();
+    solve();
+    let changed = false;
+    for(let id=0; id<patches.length; id++){
+      if(gone[id] || !loopsOf[id]) continue;
+      for(let li=0; li<loopsOf[id].length; li++){
+        const loop = loopsOf[id][li], gl = groupLoop(loop);
+        if(gl.length < 3){ if(li === outerOf[id]){ gone[id] = 1; changed = true; break; } continue; }
+        // ребро, развернувшееся назад, — схлопнуть; сравниваем с исходным
+        // направлением между центрами групп
+        const orig = new Map();
+        let merged = false;
+        for(const vi of loop){ const g = find(vi); const e = orig.get(g); if(e){ e.add(vP[vi]); e.c++; } else { const v = vP[vi].clone(); v.c = 1; orig.set(g, v); } }
+        for(let i=0;i<gl.length;i++){
+          const a = gl[i], b = gl[(i+1)%gl.length];
+          const oa = orig.get(a).clone().multiplyScalar(1 / orig.get(a).c), ob = orig.get(b).clone().multiplyScalar(1 / orig.get(b).c);
+          const e0 = ob.sub(oa), e1 = X.get(b).clone().sub(X.get(a));
+          if(e0.dot(e1) < 0){ parent[find(a)] = find(b); changed = merged = true; }
+        }
+        if(merged) continue;
+        // сдвинутый контур пересёк сам себя (край кармана срезал несколько
+        // сегментов обода) — участок между пересёкшимися рёбрами, меньший
+        // из двух, схлопывается в одну вершину
+        const n = patches[id].n, u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize(), v = n.clone().cross(u);
+        const Q = gl.map(g => { const p = X.get(g); return [p.dot(u), p.dot(v)]; }), m = gl.length;
+        const o = (p, q, r) => (q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0]);
+        const bx = Q.map((p, i) => { const q = Q[(i+1)%m]; return [Math.min(p[0], q[0]), Math.max(p[0], q[0]), Math.min(p[1], q[1]), Math.max(p[1], q[1])]; });
+        let hit = null;
+        // участок — не больше нескольких толщин стенки: дальние пересечения —
+        // стенка толще детали, их не лечим
+        const reach = 8 * Math.max(t, ext);
+        const chainOf = (i, j) => (j - i) <= m - (j - i) ? gl.slice(i + 1, j + 1) : gl.slice(j + 1).concat(gl.slice(0, i + 1));
+        const small = ch => {
+          if(ch.length > Math.max(3, m / 3)) return false;
+          const pts = [];
+          for(const vi of loop) if(ch.includes(find(vi))) pts.push(vP[vi]);
+          for(const a of pts) for(const b of pts) if(a.distanceTo(b) > reach) return false;
+          return true;
+        };
+        for(let i=0; i<m && !hit; i++) for(let j=i+2; j<m; j++){
+          if(i === 0 && j === m-1) continue;
+          if(bx[i][1] < bx[j][0] || bx[j][1] < bx[i][0] || bx[i][3] < bx[j][2] || bx[j][3] < bx[i][2]) continue;
+          const A = Q[i], B = Q[(i+1)%m], C = Q[j], D = Q[(j+1)%m];
+          const d1 = o(A, B, C), d2 = o(A, B, D), d3 = o(C, D, A), d4 = o(C, D, B), e = 1e-12;
+          if(((d1 > e && d2 < -e) || (d1 < -e && d2 > e)) && ((d3 > e && d4 < -e) || (d3 < -e && d4 > e)) && small(chainOf(i, j))){ hit = [i, j]; break; }
+        }
+        if(hit){
+          const chain = chainOf(hit[0], hit[1]);
+          for(const g of chain) parent[find(g)] = find(chain[0]);
+          changed = true;
+        }
+      }
+    }
+    if(!changed) break;
+  }
+  const out = [];
+  for(let id=0; id<patches.length; id++){
+    if(gone[id]) continue;
+    const P = patches[id], n = P.n;
+    if(!loopsOf[id]){
+      // контур касается сам себя — треугольники как есть
+      for(const tr of P.tris){
+        const o = tr*9, Q = [0, 1, 2].map(j => X.get(find(vIdx.get(K(o+j*3)))));
+        const m = new THREE.Vector3().subVectors(Q[1], Q[0]).cross(new THREE.Vector3().subVectors(Q[2], Q[0]));
+        if(m.length() < 1e-9) continue;
+        if(m.dot(n) < 0) throw tooThick();
+        out.push(Q.map(q => q.clone()));
+      }
+      continue;
+    }
+    const sArea = L => loopArea(L, n);
+    const orig = loopsOf[id].map(L => sArea(L.map(vi => vP[vi])));
+    const gls = loopsOf[id].map(groupLoop);
+    const shifted = gls.map(gl => gl.map(g => X.get(g)));
+    const outerI = outerOf[id];
+    const holes = [];
+    let skip = false;
+    for(let i=0;i<gls.length;i++){
+      const sa = gls[i].length >= 3 ? sArea(shifted[i]) : 0;
+      if(i === outerI){
+        if(gls[i].length < 3 || Math.abs(sa) < 1e-9){ skip = true; break; } // грань исчезла
+        if(sa < 0) throw tooThick();
+      } else {
+        if(orig[i] > 0) throw new Error('a face has two outer outlines');
+        if(gls[i].length < 3 || Math.abs(sa) < 1e-9) continue; // дыра схлопнулась
+        if(sa > 0) throw tooThick();
+        holes.push(shifted[i]);
+      }
+    }
+    if(skip) continue;
+    // контуры не должны пересекаться ни сами с собой, ни друг с другом
+    // (остриё кармана, ушедшее в стенку отверстия)
+    {
+      const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize(), v = n.clone().cross(u);
+      const E = [];
+      for(const L of [shifted[outerI], ...holes]) for(let i=0;i<L.length;i++){
+        const a = L[i], b = L[(i+1)%L.length], A = [a.dot(u), a.dot(v)], B = [b.dot(u), b.dot(v)];
+        E.push({A, B, a, b, x0: Math.min(A[0], B[0]), x1: Math.max(A[0], B[0]), y0: Math.min(A[1], B[1]), y1: Math.max(A[1], B[1])});
+      }
+      E.sort((p, q) => p.x0 - q.x0);
+      const o = (p, q, r) => (q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0]), e = 1e-12;
+      for(let i=0;i<E.length;i++) for(let j=i+1;j<E.length && E[j].x0 <= E[i].x1;j++){
+        const P = E[i], Q = E[j];
+        if(P.y1 < Q.y0 || Q.y1 < P.y0) continue;
+        if(P.a === Q.a || P.a === Q.b || P.b === Q.a || P.b === Q.b) continue;
+        const d1 = o(P.A, P.B, Q.A), d2 = o(P.A, P.B, Q.B), d3 = o(Q.A, Q.B, P.A), d4 = o(Q.A, Q.B, P.B);
+        if(((d1 > e && d2 < -e) || (d1 < -e && d2 > e)) && ((d3 > e && d4 < -e) || (d3 < -e && d4 > e))) throw tooThick();
+      }
+    }
+    let r;
+    try{ r = polygonWithHolesTris(shifted[outerI], holes, n); }
+    catch(err){ throw tooThick(); } // контур перекручен — стенка толще детали
+    if(Math.abs(r.got - r.want) > Math.max(1e-6, Math.abs(r.want) * 0.002)) throw tooThick();
+    for(const tri of r.tris) out.push(tri.map(q => q.clone()));
+  }
+  let vol = 0;
+  for(const [p, q, r] of out) vol += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
+  if(!(vol > 1e-3)) throw new Error('the wall of ' + t + ' mm is thicker than half of the body — no room inside');
+  return out;
+}
+// Shell тела: одна запись истории; итог должен быть замкнут
+function applyShell(tris, open, t){
+  if(!(t >= 0.1)) throw new Error('wall thickness must be at least 0.1 mm');
+  const pos = mesh.geometry.attributes.position.array;
+  const body = tris || Array.from({length: pos.length / 9}, (_, i) => i);
+  const inner = shellInnerTris(pos, body, open, t, Math.max(1, t));
+  const r = zcApplySolid(inner, 'cut');
+  if(r.open_edges > 0 || r.nonmanifold_edges > 0 || !(r.volume_change_mm3 < -1e-3)){
+    undo(true);
+    throw new Error(r.volume_change_mm3 < -1e-3 ? 'the shell came out broken here — try another wall thickness' : 'nothing was hollowed out');
+  }
+  return Object.assign({thickness_mm: t, open_faces: open ? open.length : 0, boolean: lastBoolPath}, r);
+}
+const shellTool = {
+  hud: 'SHELL · click a body (Enter — the whole model) → click faces to leave open (click again — closed) · Thickness in the window · Enter — apply · Esc — back',
+  stage: 'body', tris: null, faces: [], ghostG: null, hiG: null, timer: 0, err: '', innerVol: 0,
+  on(){
+    bodyPick.reset();
+    this.tris = null; this.faces = []; this.err = ''; this.innerVol = 0;
+    this.stage = bodyPick.single() ? 'faces' : 'body';
+    shellPopup.style.left = '16px'; shellPopup.style.top = '48px';
+    shellPopup.hidden = false;
+    if(this.stage === 'faces') this.preview();
+    this.ui();
+  },
+  off(){
+    clearTimeout(this.timer);
+    this.ghostG = killGroup(this.ghostG); this.hiG = killGroup(this.hiG);
+    hidePatch(); tipHide(); shellPopup.hidden = true; releaseToolInput();
+  },
+  thick(){ const v = parseFloat(String(sh_t.value).replace(',', '.')); return Number.isFinite(v) ? v : 0; },
+  bodyIdx(){ const pos = mesh.geometry.attributes.position.array; return this.tris || Array.from({length: pos.length / 9}, (_, i) => i); },
+  openTris(){ return this.faces.flat(); },
+  // открытые грани — оранжевым поверх тела
+  paintFaces(){
+    this.hiG = killGroup(this.hiG);
+    const list = this.openTris();
+    if(!list.length) return;
+    const pos = mesh.geometry.attributes.position.array, arr = new Float32Array(list.length * 9);
+    let o = 0;
+    for(const t of list) for(let j=0;j<9;j++) arr[o++] = pos[t*9+j];
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({color: 0xff9f1a, transparent: true, opacity: 0.55, side: THREE.DoubleSide,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2})));
+    scene.add(g); this.hiG = g;
+  },
+  preview(now){
+    clearTimeout(this.timer);
+    const run = () => {
+      this.ghostG = killGroup(this.ghostG); this.err = ''; this.innerVol = 0;
+      if(this.stage !== 'faces'){ this.ui(); return; }
+      const t = this.thick();
+      if(!(t >= 0.1)){ this.err = 'Wall thickness must be at least 0.1 mm'; this.ui(); return; }
+      try{
+        const pos = mesh.geometry.attributes.position.array;
+        const inner = shellInnerTris(pos, this.bodyIdx(), this.openTris(), t, Math.max(1, t));
+        for(const [p, q, r] of inner) this.innerVol += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
+        const arr = new Float32Array(inner.length * 9);
+        let o = 0;
+        for(const tri of inner) for(const p of tri){ arr[o++] = p.x; arr[o++] = p.y; arr[o++] = p.z; }
+        const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+        const g = new THREE.Group();
+        // полость — красным сквозь стенки
+        g.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({color: 0xff5a5a, transparent: true, opacity: 0.22, depthWrite: false, depthTest: false, side: THREE.DoubleSide})));
+        g.renderOrder = 5;
+        scene.add(g); this.ghostG = g;
+      }catch(err){ this.err = err.message; }
+      this.ui();
+    };
+    if(now) run(); else this.timer = setTimeout(() => { if(activeTool === this) run(); }, 120);
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    if(this.stage === 'body'){
+      const t = bodyPick.take(q);
+      if(!t){ warnTip('Click a body to hollow, or Enter for the whole model'); return; }
+      this.tris = t; this.stage = 'faces'; hidePatch(); tipHide(); this.preview(true);
+      return;
+    }
+    const h = raycastFace(q);
+    if(!h) return;
+    const inBody = this.tris ? this.tris.includes(h.faceIndex) : true;
+    if(!inBody){ warnTip('This face belongs to another body'); return; }
+    const i = this.faces.findIndex(f => f.includes(h.faceIndex));
+    if(i >= 0) this.faces.splice(i, 1);
+    else this.faces.push(coplanarFaceTris(mesh.geometry.attributes.position.array, h.faceIndex, this.tris));
+    this.paintFaces(); this.preview(true);
+  },
+  move(e, q){
+    if(!q.inside) return;
+    if(this.stage === 'body'){ bodyPick.hover(e, q, 'Shell'); return; }
+    const h = raycastFace(q);
+    if(!h){ tipHide(); return; }
+    const open = this.faces.some(f => f.includes(h.faceIndex));
+    tipAt(e, open ? 'Open face · click — close it' : 'Click — leave this face open');
+  },
+  key(e){
+    if(e.key === 'Enter'){
+      e.preventDefault();
+      if(this.stage === 'body'){ this.tris = null; this.stage = 'faces'; hidePatch(); tipHide(); this.preview(true); }
+      else this.commit();
+      return true;
+    }
+    return false;
+  },
+  esc(){
+    if(this.stage !== 'faces') return false;
+    if(this.faces.length){ this.faces.pop(); this.paintFaces(); this.preview(true); return true; }
+    if(!bodyPick.single()){ this.stage = 'body'; this.tris = null; this.ghostG = killGroup(this.ghostG); bodyPick.hoverRoot = -1; this.ui(); return true; }
+    return false;
+  },
+  ui(){
+    sh_state.textContent = this.stage === 'body' ? 'pick a body' : this.faces.length ? this.faces.length + ' open' : 'closed';
+    sh_hint.hidden = !hintsChk.checked;
+    sh_ok.disabled = !(this.stage === 'faces' && !this.err && this.innerVol > 0);
+    sh_info.style.color = this.err ? '#ff6b6b' : '';
+    if(this.stage === 'body'){ sh_info.textContent = 'Click the body to hollow · Enter — the whole model'; return; }
+    if(this.err){ sh_info.textContent = this.err; return; }
+    if(!(this.innerVol > 0)){ sh_info.innerHTML = '&nbsp;'; return; }
+    sh_info.innerHTML = 'Wall <b>' + this.thick() + '</b> mm · ' + (this.faces.length
+      ? this.faces.length + (this.faces.length === 1 ? ' open face' : ' open faces')
+      : '<span style="color:#f5c542">closed cavity — add an open face or a hole to drain</span>');
+  },
+  commit(){
+    clearTimeout(this.timer);
+    if(this.stage !== 'faces') return;
+    this.ghostG = killGroup(this.ghostG); this.hiG = killGroup(this.hiG);
+    try{ applyShell(this.tris, this.openTris(), this.thick()); }
+    catch(err){ warnTip('Shell failed: ' + err.message); this.paintFaces(); this.preview(true); return; }
     setActiveTool(null);
   }
 };
@@ -4874,6 +5376,19 @@ const mirPopup = $id('mirPopup'), mir_state = $id('mir_state'), mir_off = $id('m
   $id('mir_cancel').addEventListener('click', () => { if(activeTool === mirTool) setActiveTool(null); });
   makeGripDrag(mirPopup);
 }
+const shellPopup = $id('shellPopup'), sh_t = $id('sh_t'), sh_state = $id('sh_state'), sh_info = $id('sh_info'),
+      sh_hint = $id('sh_hint'), sh_ok = $id('sh_ok');
+{
+  sh_t.addEventListener('input', () => { if(activeTool === shellTool) shellTool.preview(); });
+  sh_t.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === shellTool) shellTool.commit(); }
+    if(e.key === 'Escape') releaseToolInput();
+    e.stopPropagation();
+  });
+  sh_ok.addEventListener('click', () => { if(activeTool === shellTool) shellTool.commit(); });
+  $id('sh_cancel').addEventListener('click', () => { if(activeTool === shellTool) setActiveTool(null); });
+  makeGripDrag(shellPopup);
+}
 const xfPopup = $id('xfPopup'), xf_state = $id('xf_state'), xf_move = $id('xf_move'), xf_scale = $id('xf_scale'),
       xf_rows_move = $id('xf_rows_move'), xf_rows_scale = $id('xf_rows_scale'),
       xf_dx = $id('xf_dx'), xf_dy = $id('xf_dy'), xf_dz = $id('xf_dz'), xf_s = $id('xf_s'), xf_sx = $id('xf_sx'), xf_sy = $id('xf_sy'), xf_sz = $id('xf_sz'),
@@ -5654,6 +6169,7 @@ function showChordHint(){
     row('W', 'Sweep a profile along the selected lines', edgeSel.length > 0) +
     row('I', 'Mirror a body', true) +
     row('B', 'Move / copy / scale a body', true) +
+    row('H', 'Shell — hollow a body', true) +
     row('V', 'Vertex X/Y/Z', !!sel) +
     '<div style="opacity:.55">Esc — cancel</div>';
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 400) + 'px';
@@ -10814,8 +11330,8 @@ window.addEventListener('keydown', e=>{
     rotTool.items = it; setActiveTool(rotTool);
     return;
   }
-  // G,I — Mirror тела, G,B — Move / Copy / Scale тела (раньше B — рёбра границы)
-  for(const [code, ch, tool] of [['KeyI', 'i', mirTool], ['KeyB', 'b', xfTool]]){
+  // G,I — Mirror тела, G,B — Move / Copy / Scale тела (раньше B — рёбра границы), G,H — Shell
+  for(const [code, ch, tool] of [['KeyI', 'i', mirTool], ['KeyB', 'b', xfTool], ['KeyH', 'h', shellTool]]){
     if((e.code===code || e.key.toLowerCase()===ch) && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
        && document.activeElement.tagName!=='INPUT'){
       e.preventDefault(); chordG = 0; hideChordHint();
@@ -14010,6 +14526,23 @@ const ZC_COMMANDS = {
         tris.push([P[0], rings[0][j], rings[0][i]]); tris.push([P[n-1], rings[n-1][i], rings[n-1][j]]);
       }
       return zcApplySolid(tris, a.operation || 'join');
+    }
+  },
+  shell_body: {
+    // то же, что окно Shell (G,H): applyShell
+    run(a){
+      const t = +a.thickness;
+      if(!(t >= 0.1)) throw new Error('thickness must be at least 0.1 mm');
+      const tris = zcBodyAt(a.body_point), pos = mesh.geometry.attributes.position.array;
+      const open = [];
+      for(const f of (a.open_faces || [])){
+        const P = zcV3(f.point, 'open face point'), n = f.normal ? zcV3(f.normal, 'open face normal').normalize() : null;
+        const tri = zcFaceAt(P, n);
+        if(tri < 0) throw new Error('no face at open face point ' + JSON.stringify(f.point));
+        if(tris && !tris.includes(tri)) throw new Error('open face ' + JSON.stringify(f.point) + ' is not on the body');
+        open.push(...coplanarFaceTris(pos, tri, tris));
+      }
+      return applyShell(tris, open, t);
     }
   },
   mirror_body: {
