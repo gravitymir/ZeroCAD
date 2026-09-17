@@ -285,6 +285,8 @@ function updateOrthoFrusta(){
 // сегментов (цилиндр гладкий, как softened curve в SketchUp) и ниже фаски
 // 45° и стенки 90° — они по-прежнему видны. Ср. Auto Smooth 30° в Blender
 const FEATURE_COS = Math.cos(35*Math.PI/180);
+// излом мельче 4° — шум пересчёта плоской грани, а не складка (см. markNewFoldEdges)
+const FOLD_MIN_COS = Math.cos(4*Math.PI/180);
 const CHAIN_COS   = Math.cos(25*Math.PI/180); // поворот >25° => конец цепочки («угол»)
 // Жёсткие рёбра (hard edges SketchUp, Mark Sharp в Blender): отрезки, рёбра
 // сетки на которых рисуются и выбираются, даже если грани сходятся под
@@ -355,22 +357,27 @@ function markNewFoldEdges(prevPos, allNew){
     const n = new THREE.Vector3(pos[o+3]-pos[o], pos[o+4]-pos[o+1], pos[o+5]-pos[o+2])
       .cross(new THREE.Vector3(pos[o+6]-pos[o], pos[o+7]-pos[o+1], pos[o+8]-pos[o+2]));
     if(n.length() < 1e-9) continue;
+    const area2 = n.length(); // удвоенная площадь: высота над ребром = area2 / |ребро|
     n.normalize();
     C.set((pos[o]+pos[o+3]+pos[o+6])/3, (pos[o+1]+pos[o+4]+pos[o+7])/3, (pos[o+2]+pos[o+5]+pos[o+8])/3);
     const old = onOld(C);
     for(let e=0;e<3;e++){
       const o1 = o+e*3, o2 = o+((e+1)%3)*3, k = EK(pos, o1, o2);
       let L = eMap.get(k);
-      if(!L) eMap.set(k, L = {n: [], old: [], A: new THREE.Vector3(pos[o1],pos[o1+1],pos[o1+2]),
+      if(!L) eMap.set(k, L = {n: [], old: [], h: [], A: new THREE.Vector3(pos[o1],pos[o1+1],pos[o1+2]),
                               B: new THREE.Vector3(pos[o2],pos[o2+1],pos[o2+2])});
-      L.n.push(n); L.old.push(old);
+      L.n.push(n); L.old.push(old); L.h.push(area2);
     }
   }
   let added = 0;
   for(const [k, L] of eMap){
     if(L.n.length !== 2 || oldEdges.has(k)) continue;
     const dt = L.n[0].dot(L.n[1]);
-    if(dt < FEATURE_COS || dt > 0.99999) continue; // и так видно / складки нет
+    if(dt < FEATURE_COS || dt > FOLD_MIN_COS) continue; // и так видно / складки нет
+    // осколок-игла у ребра: его нормаль — шум float, а не излом. Высота
+    // треугольника над ребром (2·площадь / длина) меньше 0.05 мм — не считаем
+    const len = L.A.distanceTo(L.B);
+    if(!(len > 0.2) || L.h.some(a2 => a2 / len < 0.05)) continue;
     // обе грани новые: у цилиндра и конуса это соседние сегменты, их не
     // трогаем; у выреза клином (allNew) стенки плоские — дно канавки показываем
     if(L.old[0] === L.old[1] && !(allNew && !L.old[0] && !L.old[1])) continue;
@@ -9904,11 +9911,13 @@ function applyEdgeDelta(d, e){
     const np = edgeDrag.pts0[i].clone().add(disp(edgeDrag.pts0[i], 1));
     for(const bi of edgeDrag.idx[i]){ posE[bi]=np.x; posE[bi+1]=np.y; posE[bi+2]=np.z; }
   }
-  // канавка с торцами Straight: сетку не гнём, показываем призрак выреза
+  // канавка: красный призрак будущего выреза в обоих режимах торцов. При
+  // Straight сетку ещё и не гнём — конец линии тащил бы треугольники соседней
+  // грани «ножницами»; при Follow face сгиб совпадает с результатом и остаётся
   const sN = edgeDrag.normal ? d.dot(edgeDrag.normal) : 0;
-  if(edgeDrag.nLock && edgeDrag.endMode === 'straight' && sN < -0.01){
-    posE.set(edgeDrag.snap.pos);
-    edgeDrag.folded = false;
+  if(edgeDrag.nLock && sN < -0.01){
+    if(edgeDrag.endMode === 'straight'){ posE.set(edgeDrag.snap.pos); edgeDrag.folded = false; }
+    else edgeDrag.folded = true;
     showEdgeGhost(sN);
   } else {
     edgeDrag.folded = true;
