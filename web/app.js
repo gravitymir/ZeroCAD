@@ -2069,7 +2069,7 @@ const tapeTool = {
 // Ошибки и предупреждения. Если открыто окно или палитра, блок встаёт над
 // ним той же ширины (места сверху мало — под ним), иначе — у курсора.
 // Держится 2.8 с
-const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'rotPopup',
+const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'rotPopup',
   'arrPopup', 'txtPopup', 'divPopup', 'vpanel', 'popup'];
 function warnTip(msg){
   const box = document.getElementById('warnBox');
@@ -2390,6 +2390,247 @@ for(const inp of [rot_a, rot_n]){
 }
 rot_ok.addEventListener('click', ()=>{ if(activeTool === rotTool) rotTool.apply(rotTool.angle); });
 rot_cancel.addEventListener('click', ()=>setActiveTool(null));
+
+// ---------- G,S — Slice: срез тела плоскостью (Bisect в Blender, Split Body во Fusion) ----------
+// Остаётся сторона против нормали плоскости. Сначала точный planeCut (каждый
+// треугольник отсекается, сечение — одна петля, крышка ушами); если сечение
+// не одна петля (труба, вложенные контуры) — точное вычитание коробки
+// полупространства. Одна функция для окна и MCP cut_plane
+function slicePlaneArray(pos, P, n){
+  const out = planeCut(pos, P, n);
+  if(out) return out;
+  const box = new THREE.Box3();
+  for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+  const R = box.getSize(new THREE.Vector3()).length() + 10;
+  const C = box.getCenter(new THREE.Vector3()), O = C.clone().addScaledVector(n, n.dot(new THREE.Vector3().subVectors(P, C)));
+  const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize(), w = n.clone().cross(u);
+  const c = (a, b, h) => O.clone().addScaledVector(u, a*R).addScaledVector(w, b*R).addScaledVector(n, h*R);
+  const q = [[-1,-1],[1,-1],[1,1],[-1,1]], lo = q.map(([a, b]) => c(a, b, 0)), hi = q.map(([a, b]) => c(a, b, 1));
+  let tris = [[lo[0], lo[2], lo[1]], [lo[0], lo[3], lo[2]], [hi[0], hi[1], hi[2]], [hi[0], hi[2], hi[3]]];
+  for(let i=0;i<4;i++){ const j = (i+1)%4; tris.push([lo[i], lo[j], hi[j]], [lo[i], hi[j], hi[i]]); }
+  let vol = 0; for(const [p, qq, r] of tris) vol += p.dot(new THREE.Vector3().crossVectors(qq, r)) / 6;
+  if(vol < 0) tris = tris.map(t => [t[0], t[2], t[1]]);
+  const body = [];
+  for(let i=0;i<pos.length;i+=9)
+    body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]), new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]), new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
+  return meshBoolean(body, tris, 'subtract');
+}
+// применить срез к модели: одна запись истории; линии, оставшиеся в воздухе, убираются
+function applySlice(P, n, snap){
+  const pos = snap ? snap.pos : mesh.geometry.attributes.position.array;
+  const v0 = meshVolumeOf(pos);
+  const out = slicePlaneArray(pos, P, n);
+  if(!out.length) throw new Error('the plane removes the whole body');
+  const dv = meshVolumeOf(out) - v0;
+  if(dv > -1e-6) throw new Error('the plane does not cut the body — nothing to remove on this side');
+  if(snap) pushHistory(snap); else pushUndo();
+  setMeshFromArray(out);
+  weldVertices(0.0015); cleanupMesh();
+  if(openEdgeCount() || nonManifoldEdgeCount()) healAll();
+  dropAirGuides();
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
+  extractEdges();
+  return meshVolumeOf(mesh.geometry.attributes.position.array) - v0;
+}
+const sliceTool = {
+  hud: 'SLICE · hover a face — the plane is parallel to it · click, move to offset, click to fix · X/Y/Z — axis plane · F — flip · Enter — apply · Esc',
+  // stage 0 — плоскость ходит за гранью под курсором; 1 — плоскость поставлена,
+  // мышь двигает её вдоль нормали; 2 — зафиксирована (правка полями)
+  stage: 0, P0: null, n: null, offset: 0, axis: 'face', faceN: null, snap: null, committed: false,
+  plane: null, ghost: null, timer: 0, result: null, t0: 0,
+  on(){
+    this.snap = takeSnapshot(); this.committed = false;
+    this.stage = 0; this.P0 = null; this.n = null; this.offset = 0; this.axis = 'face'; this.faceN = null; this.result = null;
+    // окно — в углу вида, а не у курсора: после G,S кликают по модели там же,
+    // где курсор, и окно у курсора перехватывало клик
+    slicePopup.style.left = '16px';
+    slicePopup.style.top = '48px';
+    slicePopup.hidden = false;
+    sl_off.value = 0;
+    this.ui();
+  },
+  off(){
+    clearTimeout(this.timer);
+    this.killVisuals();
+    if(!this.committed && this.snap && this.result) this.restore();
+    slicePopup.hidden = true; releaseToolInput(); tipHide();
+    this.snap = null;
+  },
+  restore(){
+    setMeshFromArray(this.snap.pos);
+    hardEdges = this.snap.hard.map(h => ({a: h.a.clone(), b: h.b.clone()}));
+    extractEdges();
+    this.result = null;
+  },
+  killVisuals(){
+    for(const k of ['plane', 'ghost']) if(this[k]){ scene.remove(this[k]); this[k].traverse(o => { if(o.geometry) o.geometry.dispose(); }); this[k] = null; }
+  },
+  planeP(){ return this.P0.clone().addScaledVector(this.n, this.offset); },
+  // полупрозрачная плоскость размером с тело, по центру — проекция центра габарита
+  drawPlane(P, n){
+    if(this.plane){ scene.remove(this.plane); this.plane.traverse(o => { if(o.geometry) o.geometry.dispose(); }); }
+    const pos = this.snap.pos, box = new THREE.Box3();
+    for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+    const S = box.getSize(new THREE.Vector3()).length() * 0.75 + 5;
+    const C = box.getCenter(new THREE.Vector3());
+    const O = C.clone().addScaledVector(n, n.dot(new THREE.Vector3().subVectors(P, C)));
+    const g = new THREE.Group();
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(2*S, 2*S),
+      new THREE.MeshBasicMaterial({color: 0x4da3ff, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false}));
+    g.add(m);
+    const fr = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([[-S,-S],[S,-S],[S,S],[-S,S]].map(([x, y]) => new THREE.Vector3(x, y, 0))),
+      new THREE.LineBasicMaterial({color: 0x4da3ff}));
+    g.add(fr);
+    // стрелка — в сторону, которая будет удалена
+    const arr = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), Math.max(4, S * 0.25), 0xff5a5a, Math.max(1.5, S*0.06), Math.max(1, S*0.04));
+    g.add(arr);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+    g.position.copy(O.clone().addScaledVector(n, 0));
+    // стрелка — у точки плоскости под курсором, а не в центре квадрата
+    arr.position.copy(new THREE.Vector3().subVectors(P, O).applyQuaternion(g.quaternion.clone().invert()));
+    g.renderOrder = 5;
+    scene.add(g); this.plane = g;
+  },
+  hitFace(q){
+    raycaster.setFromCamera({x: q.mx/q.w*2-1, y: -(q.my/q.h*2-1)}, q.cam);
+    const pg = new THREE.BufferGeometry();
+    pg.setAttribute('position', new THREE.BufferAttribute(this.snap.pos, 3));
+    const probe = new THREE.Mesh(pg, new THREE.MeshBasicMaterial({side: THREE.DoubleSide}));
+    probe.updateMatrixWorld(true);
+    const hits = raycaster.intersectObject(probe);
+    pg.dispose();
+    if(!hits.length) return null;
+    const h = hits[0], o = h.faceIndex * 9, sp = this.snap.pos;
+    const n = new THREE.Vector3(sp[o+3]-sp[o], sp[o+4]-sp[o+1], sp[o+5]-sp[o+2])
+      .cross(new THREE.Vector3(sp[o+6]-sp[o], sp[o+7]-sp[o+1], sp[o+8]-sp[o+2])).normalize();
+    return {P: h.point.clone(), n};
+  },
+  axisN(){ // нормаль по выбранной ориентации; знак — как у нормали грани
+    if(this.axis === 'face') return this.faceN.clone();
+    const a = new THREE.Vector3(this.axis === 'x' ? 1 : 0, this.axis === 'y' ? 1 : 0, this.axis === 'z' ? 1 : 0);
+    return this.faceN && this.faceN.dot(a) < 0 ? a.negate() : a;
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    if(this.stage === 1){ this.stage = 2; this.ui(); return; }
+    const h = this.hitFace(q);
+    if(!h){ warnTip('Click a face of the body to place the slice plane'); return; }
+    if(this.result) this.restore();
+    this.P0 = new THREE.Vector3(Math.round(h.P.x*1000)/1000, Math.round(h.P.y*1000)/1000, Math.round(h.P.z*1000)/1000); this.faceN = h.n; this.n = this.axisN(); this.offset = 0; this.flipped = false;
+    this.stage = 1; sl_off.value = 0;
+    this.preview(true);
+  },
+  move(e, q){
+    if(!q.inside) return;
+    if(this.stage === 0){
+      const h = this.hitFace(q);
+      if(!h){ if(this.plane){ scene.remove(this.plane); this.plane = null; } tipHide(); return; }
+      this.faceN = h.n;
+      const n = this.axisN();
+      this.drawPlane(h.P, n);
+      tipAt(e, 'Slice plane · click to place');
+      return;
+    }
+    if(this.stage === 1){ // плоскость едет вдоль нормали за мышью, шаг 0.1
+      raycaster.setFromCamera({x: q.mx/q.w*2-1, y: -(q.my/q.h*2-1)}, q.cam);
+      const t = snapMM(rayLineParam(raycaster.ray, this.P0, this.n));
+      if(t !== this.offset){ this.offset = t; sl_off.value = t.toFixed(1); this.preview(); }
+      tipHide();
+    }
+  },
+  key(e){
+    if(this.stage === 0 && !this.faceN) return false;
+    const k = e.key.toLowerCase();
+    if(k === 'x' || k === 'y' || k === 'z'){ this.setAxis(this.axis === k ? 'face' : k); e.preventDefault(); return true; }
+    if(k === 'f' && this.P0){ this.flip(); e.preventDefault(); return true; }
+    if(e.key === 'Enter' && this.P0){ this.commit(); e.preventDefault(); return true; }
+    return false;
+  },
+  esc(){ // Esc: с поставленной плоскости — назад к выбору грани, потом выход
+    if(!this.P0) return false;
+    clearTimeout(this.timer);
+    if(this.result) this.restore();
+    this.killVisuals(); this.stage = 0; this.P0 = null; this.offset = 0; sl_off.value = 0; this.ui();
+    return true;
+  },
+  setAxis(ax){
+    this.axis = ax;
+    if(this.P0){ this.n = this.axisN(); if(this.flipped) this.n.negate(); this.preview(true); }
+    this.ui();
+  },
+  flip(){
+    if(!this.P0) return;
+    this.flipped = !this.flipped; this.n.negate(); this.offset = -this.offset; sl_off.value = this.offset.toFixed(1);
+    this.preview(true);
+  },
+  preview(now){
+    this.drawPlane(this.planeP(), this.n);
+    this.ui();
+    clearTimeout(this.timer);
+    if(now) this.apply(); else this.timer = setTimeout(() => { if(activeTool === this) this.apply(); }, 70);
+  },
+  // результат от исходной сетки: остаток — в сцене, удаляемое — красным призраком
+  apply(){
+    const P = this.planeP(), n = this.n, pos = this.snap.pos;
+    if(this.ghost){ scene.remove(this.ghost); this.ghost.geometry.dispose(); this.ghost = null; }
+    try{
+      const v0 = meshVolumeOf(pos);
+      const keep = slicePlaneArray(pos, P, n);
+      const vk = meshVolumeOf(keep);
+      if(!keep.length){ this.fail('The plane removes the whole body — move it or press F'); return; }
+      if(v0 - vk < 1e-6){ this.fail('The plane does not cut the body on this side'); return; }
+      setMeshFromArray(keep); extractEdges();
+      this.result = {removed: v0 - vk, kept: vk};
+      const cut = slicePlaneArray(pos, P, n.clone().negate());
+      if(cut.length){
+        const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(cut, 3));
+        this.ghost = new THREE.Mesh(g, new THREE.MeshBasicMaterial({color: 0xff5a5a, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide}));
+        scene.add(this.ghost);
+      }
+      sl_info.style.color = '';
+      sl_ok.disabled = false;
+    }catch(err){
+      console.warn('slice preview failed', err);
+      this.fail('Slice failed here: ' + err.message);
+      return;
+    }
+    this.ui();
+  },
+  fail(msg){
+    if(this.result) this.restore();
+    this.result = null; sl_ok.disabled = true;
+    sl_info.style.color = '#ff6b6b'; sl_info.textContent = msg;
+  },
+  ui(){
+    sl_state.textContent = this.stage === 0 ? 'pick a face' : this.stage === 1 ? 'move to offset · click to fix' : 'fixed';
+    for(const [id, a] of [['sl_face', 'face'], ['sl_x', 'x'], ['sl_y', 'y'], ['sl_z', 'z']])
+      document.getElementById(id).classList.toggle('on', this.axis === a);
+    sl_flip.disabled = !this.P0; sl_off.disabled = !this.P0;
+    sl_hint.hidden = !hintsChk.checked;
+    if(!this.P0){ sl_ok.disabled = true; sl_info.style.color = ''; sl_info.innerHTML = 'Hover a face, click to place the plane'; return; }
+    if(this.result){
+      const f = x => x >= 1000 ? Math.round(x).toLocaleString('en-US').replace(/,/g, ' ') : x.toFixed(1);
+      sl_info.style.color = '';
+      sl_info.innerHTML = 'Removes <b>' + f(this.result.removed) + '</b> mm³ · keeps ' + f(this.result.kept) + ' mm³';
+    }
+  },
+  commit(){
+    clearTimeout(this.timer);
+    if(!this.P0) return;
+    if(!this.result){ this.apply(); if(!this.result){ warnTip(sl_info.textContent || 'Slice failed'); return; } }
+    const P = this.planeP(), n = this.n.clone();
+    this.killVisuals();
+    try{
+      setMeshFromArray(this.snap.pos);
+      applySlice(P, n, this.snap);
+      this.committed = true;
+    }catch(err){
+      this.restore(); warnTip(err.message); return;
+    }
+    setActiveTool(null);
+  }
+};
 
 // ---------- Ctrl+B — Bevel (как в Blender): фаска и скругление ребра ----------
 // Одно ребро или несколько (Ctrl+клик). 1 сегмент — фаска, 2+ — дуга,
@@ -3533,6 +3774,27 @@ for(const inp of [bev_d, bev_s]){
 }
 bev_ok.addEventListener('click', ()=>{ if(activeTool === bevelTool) bevelTool.commit(); });
 const bev_loops = document.getElementById('bev_loops');
+const slicePopup = document.getElementById('slicePopup'), sl_off = document.getElementById('sl_off'),
+      sl_state = document.getElementById('sl_state'), sl_info = document.getElementById('sl_info'),
+      sl_ok = document.getElementById('sl_ok'), sl_flip = document.getElementById('sl_flip'), sl_hint = document.getElementById('sl_hint');
+sl_off.addEventListener('input', () => {
+  if(activeTool !== sliceTool || !sliceTool.P0) return;
+  const v = +sl_off.value;
+  if(!Number.isFinite(v)) return;
+  sliceTool.offset = snapMM(v); if(sliceTool.stage === 1) sliceTool.stage = 2;
+  sliceTool.preview();
+});
+sl_off.addEventListener('keydown', e => {
+  if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === sliceTool) sliceTool.commit(); }
+  if(e.key === 'Escape'){ releaseToolInput(); }
+  e.stopPropagation();
+});
+for(const [id, a] of [['sl_face', 'face'], ['sl_x', 'x'], ['sl_y', 'y'], ['sl_z', 'z']])
+  document.getElementById(id).addEventListener('click', () => { if(activeTool === sliceTool) sliceTool.setAxis(a); });
+sl_flip.addEventListener('click', () => { if(activeTool === sliceTool) sliceTool.flip(); });
+sl_ok.addEventListener('click', () => { if(activeTool === sliceTool) sliceTool.commit(); });
+document.getElementById('sl_cancel').addEventListener('click', () => { if(activeTool === sliceTool) setActiveTool(null); });
+makeGripDrag(slicePopup);
 for(const [id, w] of [['bev_outer', 'outer'], ['bev_holes', 'holes'], ['bev_all', 'all']])
   document.getElementById(id).addEventListener('click', ()=>{
     if(activeTool !== bevelTool || bevelTool.face < 0) return;
@@ -4241,6 +4503,7 @@ function showChordHint(){
     row('T', '3D Text on face', true) +
     row('Y', 'Point (with snaps) — also P', true) +
     row('E', 'Extrude face ±mm', !!ppPatch) +
+    row('S', 'Slice the body with a plane', true) +
     row('V', 'Vertex X/Y/Z', !!sel) +
     '<div style="opacity:.55">Esc — cancel</div>';
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 400) + 'px';
@@ -9401,6 +9664,13 @@ window.addEventListener('keydown', e=>{
     rotTool.items = it; setActiveTool(rotTool);
     return;
   }
+  // G,S — срез плоскостью (Bisect в Blender, Split Body во Fusion)
+  if((e.code==='KeyS' || e.key.toLowerCase()==='s') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    setActiveTool(activeTool === sliceTool ? null : sliceTool);
+    return;
+  }
   // G,A — круговой массив выбранных линий или точки (PolarPattern во FreeCAD)
   if((e.code==='KeyA' || e.key.toLowerCase()==='a') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
      && document.activeElement.tagName!=='INPUT'){
@@ -12461,38 +12731,13 @@ const ZC_COMMANDS = {
     run(){ if(!undoStack.length) throw new Error('nothing to undo'); undo(); return zcSummary(); }
   },
   cut_plane: {
+    // тот же срез, что G,S в редакторе (applySlice)
     run(a){
       const P = zcV3(a.point, 'point'), n = zcV3(a.normal, 'normal');
       if(n.length() < 1e-9) throw new Error('normal must not be zero');
       n.normalize();
-      const pos = mesh.geometry.attributes.position.array;
-      const v0 = meshVolumeOf(pos);
-      const out = planeCut(pos, P, n);
-      if(!out){
-        // сечение не замкнулось одной петлёй (вложенные контуры, трубка) —
-        // точное вычитание полупространства: коробка за плоскостью
-        const box = new THREE.Box3();
-        for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
-        const R = box.getSize(new THREE.Vector3()).length() + 10;
-        const C = box.getCenter(new THREE.Vector3()), O = C.clone().addScaledVector(n, n.dot(new THREE.Vector3().subVectors(P, C)));
-        const u = (Math.abs(n.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(n).normalize(), w = n.clone().cross(u);
-        const c = (a, b, h) => O.clone().addScaledVector(u, a*R).addScaledVector(w, b*R).addScaledVector(n, h*R);
-        const q = [[-1,-1],[1,-1],[1,1],[-1,1]], lo = q.map(([a, b]) => c(a, b, 0)), hi = q.map(([a, b]) => c(a, b, 1));
-        const tris = [[lo[0], lo[2], lo[1]], [lo[0], lo[3], lo[2]], [hi[0], hi[1], hi[2]], [hi[0], hi[2], hi[3]]];
-        for(let i=0;i<4;i++){ const j = (i+1)%4; tris.push([lo[i], lo[j], hi[j]], [lo[i], hi[j], hi[i]]); }
-        const r = zcApplySolid(tris, 'cut', false);
-        if(r.triangles === 0){ undo(true); throw new Error('the plane removes the whole body'); }
-        delete r.solid_volume_mm3;
-        return r;
-      }
-      if(!out.length) throw new Error('the plane removes the whole body');
-      pushUndo();
-      setMeshFromArray(out);
-      weldVertices(0.0015); cleanupMesh();
-      if(!modified){ modified = true; s_mod.textContent = 'yes'; }
-      clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
-      extractEdges();
-      return Object.assign({volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
+      const dv = applySlice(P, n);
+      return Object.assign({volume_change_mm3: +dv.toFixed(3)}, zcSummary());
     }
   },
   add_frustum: {
@@ -12686,6 +12931,10 @@ async function zcRun(name, args){
   const c = ZC_COMMANDS[name];
   if(!c) throw new Error('unknown command ' + name);
   zcAgentBadge(name);
+  // открытый инструмент с предпросмотром (Slice, Bevel) при закрытии вернул бы
+  // свой снимок и затёр изменение агента — закрываем его, как Esc; чтение
+  // модели и снимок экрана инструмент не трогают
+  if(activeTool && !['get_state', 'screenshot', 'export_stl'].includes(name)) setActiveTool(null);
   lastBoolPath = '';
   const res = await c.run(args || {});
   // каким путём прошли булевы инструментов: exact — точный, bsp — запасной
