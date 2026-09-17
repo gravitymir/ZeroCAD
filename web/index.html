@@ -141,6 +141,8 @@
      (правило body.*Held .key .mod-*), сама строка остаётся приглушённой */
   #linePopup .prow.linecmd,#emPopup .prow.emcmd{color:var(--muted);font-size:22px}
   #emPopup #em_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
+  #emPopup button.lp{padding:6px 8px;font-size:15px}
+  #emPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
   #exPopup input,#divPopup input,#txtPopup input,#circPopup input,#rectPopup input,#arrPopup input,#bevPopup input,#rotPopup input{width:80px;background:var(--panel2);color:var(--text);
     border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px}
   /* поле ввода видно как поле и без фокуса: заметная рамка; наведение —
@@ -425,8 +427,9 @@
       <div class="pinfo" id="em_snap">&nbsp;</div>
       <div class="prow"><span class="plab">From face</span><input id="em_dist" type="number" step="0.1" placeholder="—"> mm</div>
       <div class="pinfo" id="em_xyz">&nbsp;</div>
+      <div class="prow"><span class="plab">End</span><button id="em_follow" class="lp on">Follow face</button><button id="em_straight" class="lp">Straight</button></div>
       <div class="prow emcmd"><span class="key">Shift</span> — perpendicular to the face</div>
-      <div class="phint" id="em_hint">Drag the edge with the mouse. Shift or N — only perpendicular to the face it lies on; X/Y/Z — along an axis. From face — how far the edge left its face: type a distance and press Enter (the sign follows the mouse, a minus goes into the body). Pushed into the body, the edge cuts a V groove. Click or OK — apply, Cancel or Esc — undo.</div>
+      <div class="phint" id="em_hint">Drag the edge with the mouse. Shift or N — only perpendicular to the face it lies on; X/Y/Z — along an axis. From face — how far the edge left its face: type a distance and press Enter (the sign follows the mouse, a minus goes into the body). Pushed into the body, the edge cuts a V groove. End (or F) — how the groove ends: Follow face lets its ends lean into the neighbouring faces, so the edge slides along them and gets shorter; Straight cuts the ends square across the edge, so the edge keeps its length and the neighbouring face gets one more edge. Click or OK — apply, Cancel or Esc — undo.</div>
       <div class="prow" style="margin-top:8px;gap:10px"><button id="em_ok">OK</button><button id="em_cancel">Cancel</button></div>
     </div>
     <div id="linePopup" hidden>

@@ -9184,7 +9184,7 @@ function edgeFaceNormal(A, B){
 // Окно Move edge (как окна Line/Offset): расстояние от грани, на которой
 // лежало ребро, — поле From face (ввод + Enter), сдвиг по осям, привязка.
 // Раньше это был тултип у курсора — число нельзя было ввести мышью
-const emPopup = document.getElementById('emPopup');
+const emPopup = document.getElementById('emPopup'), em_follow = document.getElementById('em_follow'), em_straight = document.getElementById('em_straight');
 function openEmPopup(){
   tipHide();
   const vr = view.getBoundingClientRect();
@@ -9211,6 +9211,8 @@ function updateEmPopup(d, err){
     : ed.snapped && !ed.typed ? '<span style="color:#52c752;font-weight:700">on ' + ed.snapped.what + '</span>'
     : ed.nLock && s != null && s < -0.01 ? 'into the body · <b>V groove</b> on apply'
     : '&nbsp;';
+  em_follow.classList.toggle('on', ed.endMode !== 'straight');
+  em_straight.classList.toggle('on', ed.endMode === 'straight');
   em_hint.hidden = !hintsChk.checked;
 }
 // поле From face: число — сдвиг перпендикулярно грани; знак — как вела мышь,
@@ -9228,6 +9230,16 @@ em_dist.addEventListener('keydown', e => {
 });
 document.getElementById('em_ok').addEventListener('click', () => { if(edgeDrag){ if(edgeDrag.typed) applyEdgeTyped(); finishEdgeMove(); } });
 document.getElementById('em_cancel').addEventListener('click', () => cancelEdgeMove());
+// переключатель торцов: пересчитываем соседей и повторяем предпросмотр
+function setEdgeEnd(mode){
+  if(!edgeDrag || edgeDrag.endMode === mode) return;
+  edgeDrag.endMode = mode;
+  edgeDrag.slide = undefined;
+  if(edgeDrag.lastD) applyEdgeDelta(edgeDrag.lastD.clone());
+  updateEmPopup(edgeDrag.lastD || new THREE.Vector3());
+}
+document.getElementById('em_follow').addEventListener('click', () => setEdgeEnd('face'));
+document.getElementById('em_straight').addEventListener('click', () => setEdgeEnd('straight'));
 function cancelEdgeMove(){
   if(!edgeDrag) return;
   const pushed = edgeDrag.snapPushed;
@@ -9362,6 +9374,14 @@ function edgeSlideInfo(){
   const L = A.distanceTo(B);
   if(L < 1e-6) return null;
   const u = new THREE.Vector3().subVectors(B, A).normalize();
+  // End: Straight — торцы поперёк линии, ровно на её концах. Линия сохраняет
+  // длину, на соседней грани появляется новое ребро (Press/Pull, который
+  // режет всё на пути). Follow face (по умолчанию) — торцы ложатся в
+  // плоскости соседних граней, и конец линии едет вдоль неё вместе с ними
+  if(ed.endMode === 'straight'){
+    ed.slide = {A, u, L, N, kA: 0, kB: 0, nA: null, nB: null};
+    return ed.slide;
+  }
   const pos = ed.snap.pos;
   // Соседняя грань у конца линии. Раньше: треугольник с ВЕРШИНОЙ в 0.012 мм
   // от конца, из них самый большой. Конец посреди ребра сетки не находил
@@ -11276,6 +11296,9 @@ window.addEventListener('keydown', e=>{
       return;
     }
     if(e.key === 'Enter'){ e.preventDefault(); if(edgeDrag.typed) applyEdgeTyped(); finishEdgeMove(); return; }
+    if(e.code === 'KeyF' || e.key.toLowerCase() === 'f'){ // торцы: по соседней грани / поперёк линии
+      e.preventDefault(); setEdgeEnd(edgeDrag.endMode === 'straight' ? 'face' : 'straight'); return;
+    }
   }
   if((dragPt || edgeDrag) && !e.ctrlKey && !e.altKey && !e.metaKey){
     const ax = {KeyX:'x', KeyY:'y', KeyZ:'z'}[e.code]
@@ -14628,6 +14651,9 @@ const ZC_COMMANDS = {
       startEdgeMove();
       if(!edgeDrag) throw new Error('this line cannot be moved');
       if(!edgeDrag.normal){ cancelEdgeMove(); throw new Error('the line does not lie on a face — nothing to move it perpendicular to'); }
+      const end = a.end || 'face';
+      if(end !== 'face' && end !== 'straight'){ cancelEdgeMove(); throw new Error('end must be face or straight'); }
+      edgeDrag.endMode = end;
       edgeDrag.nKey = true; edgeDrag.nLock = true;
       edgeDrag.mouseSign = d < 0 ? -1 : 1; edgeDrag.typed = String(Math.abs(d));
       applyEdgeTyped();

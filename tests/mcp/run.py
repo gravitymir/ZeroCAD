@@ -333,6 +333,32 @@ def gear_v_grooves_on_tooth_flanks():
 
 
 @case
+def move_edge_end_follow_face_or_straight():
+    # Переключатель End окна Move edge: наклонный сосед у конца линии.
+    # Follow face — торец клина ложится в его плоскость, конец линии едет вдоль
+    # соседа (32 → 33 мм); Straight — торцы поперёк линии, длина сохраняется,
+    # снято ровно сечение × длина
+    out = {}
+    for end in ('face', 'straight'):
+        call('new_shape', {'shape': 'cube', 'size': 40})
+        call('cut_plane', {'point': [32, 0, 0], 'normal': [1, -0.2, 0]})
+        call('draw_line', {'from': [0, 0, 20], 'to': [32, 0, 20]})
+        d = call('move_edge', {'point': [16, 0, 20], 'distance': -5, 'end': end})
+        closed(d, 'move_edge ' + end); exact(d, 'move_edge ' + end)
+        out[end] = d['volume_change_mm3']
+    near(out['straight'], -100 * 32, 0.1, 'straight: section 100 mm² × 32 mm')
+    assert out['face'] < out['straight'] - 20, f"follow face must reach into the neighbour: {out}"
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    call('draw_line', {'from': [0, 0, 20], 'to': [32, 0, 20]})
+    try:
+        call('move_edge', {'point': [16, 0, 20], 'distance': -5, 'end': 'sideways'})
+    except McpError as e:
+        assert 'face or straight' in str(e), str(e)
+    else:
+        raise AssertionError('an unknown end mode must be refused')
+
+
+@case
 def bevel_edges_tool():
     call('new_shape', {'shape': 'cube', 'size': 40})
     d = call('bevel_edges', {'points': [[20, 0, 40]], 'size': 4, 'segments': 1})

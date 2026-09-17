@@ -596,6 +596,11 @@ const ZC_TOOLS = [
         "distance": {
           "type": "number",
           "description": "mm along the face normal: − into the body (V groove), + outward"
+        },
+        "end": {
+          "type": "string",
+          "enum": ["face", "straight"],
+          "description": "how the groove ends, default face: face lets the ends lean into the neighbouring faces, so the edge slides along them and gets shorter; straight cuts the ends square across the edge, so the edge keeps its length and the neighbouring face gets one more edge"
         }
       },
       "required": [
