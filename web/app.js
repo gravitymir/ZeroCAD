@@ -2069,7 +2069,7 @@ const tapeTool = {
 // Ошибки и предупреждения. Если открыто окно или палитра, блок встаёт над
 // ним той же ширины (места сверху мало — под ним), иначе — у курсора.
 // Держится 2.8 с
-const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'rotPopup',
+const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'cylPopup', 'rotPopup',
   'arrPopup', 'txtPopup', 'divPopup', 'vpanel', 'popup'];
 function warnTip(msg){
   const box = document.getElementById('warnBox');
@@ -2391,6 +2391,167 @@ for(const inp of [rot_a, rot_n]){
 rot_ok.addEventListener('click', ()=>{ if(activeTool === rotTool) rotTool.apply(rotTool.angle); });
 rot_cancel.addEventListener('click', ()=>setActiveTool(null));
 
+// Усечённый конус (цилиндр при r1 = r2) от A (радиус r1) к B (r2), замкнутый;
+// один построитель для G,U и MCP add_frustum
+function frustumTris(A, B, r1, r2, seg){
+  const axis = new THREE.Vector3().subVectors(B, A).normalize();
+  const u = (Math.abs(axis.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(axis).normalize();
+  const v = axis.clone().cross(u);
+  const ring = (C, r) => Array.from({length: seg}, (_, i) => {
+    const t = i / seg * Math.PI * 2;
+    return C.clone().addScaledVector(u, r*Math.cos(t)).addScaledVector(v, r*Math.sin(t));
+  });
+  const ra = ring(A, r1), rb = ring(B, r2), tris = [];
+  for(let i=0;i<seg;i++){
+    const j = (i+1) % seg;
+    if(r1 > 0) tris.push([A, ra[j], ra[i]]);
+    if(r2 > 0) tris.push([B, rb[i], rb[j]]);
+    if(r1 > 0) tris.push([ra[i], ra[j], rb[j]]);
+    if(r2 > 0) tris.push([ra[i], rb[j], rb[i]]);
+  }
+  return tris;
+}
+// ---------- G,U — цилиндр/конус на грани (Create → Cylinder во Fusion) ----------
+// центр на грани (привязки как у окружности) → радиус мышью → высота вдоль
+// нормали; наружу — Join, в тело — Cut (как Extrude; зажатый Ctrl — Cut).
+// Top Ø отличный от Ø — конус (0 — остриё). Тело объединяется или вычитается
+// точной булевой — та же zcApplySolid, что у MCP add_frustum
+const cylTool = {
+  hud: 'CYLINDER · click the center on a face → radius → height · type Ø / Height / Top Ø in the window · Ctrl — cut · Enter — apply · Esc — back',
+  stage: 0, C: null, n: null, r: 0, h: 0, dLock: null, hLock: null, topD: null, seg: 0, segAuto: true,
+  op: 'auto', ctrl: false, ghostG: null,
+  on(){
+    this.stage = 0; this.C = null; this.n = null; this.r = 0; this.h = 0;
+    this.dLock = null; this.hLock = null; this.topD = null; this.segAuto = true; this.op = 'auto'; this.ctrl = false;
+    cyl_d.value = ''; cyl_h.value = ''; cyl_t.value = ''; cyl_s.value = '';
+    cylPopup.style.left = '16px'; cylPopup.style.top = '48px'; // в углу: клики — по модели
+    cylPopup.hidden = false;
+    this.ui();
+  },
+  off(){
+    this.kill(); ghost.visible = false; tipHide();
+    cylPopup.hidden = true; releaseToolInput();
+  },
+  kill(){ if(this.ghostG){ scene.remove(this.ghostG); this.ghostG.traverse(o => { if(o.geometry) o.geometry.dispose(); }); this.ghostG = null; } },
+  modChange(e){
+    const c = !!(e.ctrlKey || e.metaKey);
+    if(c !== this.ctrl){ this.ctrl = c; if(this.stage >= 1) this.draw(); this.ui(); }
+  },
+  wantsCtrlClick(){ return this.stage >= 1; },
+  radius(){ return this.dLock != null ? this.dLock / 2 : this.r; },
+  height(){ return this.hLock != null ? this.hLock : this.h; },
+  topR(){ return this.topD != null ? this.topD / 2 : this.radius(); },
+  segs(){ return this.segAuto ? autoCircSegs(Math.max(this.radius(), this.topR(), 0.5)) : this.seg; },
+  opNow(){
+    if(this.op !== 'auto') return this.op;
+    if(this.ctrl) return 'cut';
+    return this.height() < 0 ? 'cut' : 'join';
+  },
+  // призрак тела: зелёный — добавить, красный — вырезать; плоский диск, пока нет высоты
+  draw(){
+    this.kill();
+    const r = this.radius(), h = this.height(), rt = this.topR();
+    if(!(r > 0) && !(rt > 0)) return;
+    const cut = this.opNow() === 'cut', col = cut ? 0xff5a5a : 0x2ecc40;
+    const g = new THREE.Group(), seg = this.segs();
+    const A = this.C, B = this.C.clone().addScaledVector(this.n, Math.abs(h) < 0.05 ? 0.05 : h);
+    const tris = frustumTris(A, B, r, Math.abs(h) < 0.05 ? r : rt, seg), arr = [];
+    for(const t of tris) for(const p of t) arr.push(p.x, p.y, p.z);
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(arr), 3));
+    // вырез — внутри тела и скрыт гранью: рисуем его поверх, чтобы видно глубину
+    g.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({color: col, transparent: true, opacity: cut ? 0.22 : 0.3,
+      depthWrite: false, depthTest: !cut, side: THREE.DoubleSide})));
+    const axis = this.n, u = (Math.abs(axis.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(axis).normalize(), v = axis.clone().cross(u);
+    const loop = (P, rr) => new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(Array.from({length: seg}, (_, i) => {
+      const t = i / seg * Math.PI * 2; return P.clone().addScaledVector(u, rr*Math.cos(t)).addScaledVector(v, rr*Math.sin(t)); })),
+      new THREE.LineBasicMaterial({color: col, depthTest: !cut}));
+    if(r > 0) g.add(loop(A, r));
+    if(Math.abs(h) >= 0.05 && rt > 0) g.add(loop(B, rt));
+    g.renderOrder = 5;
+    scene.add(g); this.ghostG = g;
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    if(this.stage === 0){
+      const pk = pickOnFace(q);
+      if(!pk || pk.ground){ warnTip('Click a face of the body for the cylinder center'); return; }
+      this.C = pk.pos.clone(); this.n = pk.n.clone().normalize();
+      ghost.visible = false;
+      this.stage = this.dLock != null ? 2 : 1;
+      this.draw(); this.ui();
+      return;
+    }
+    if(this.stage === 1){
+      if(!(this.radius() >= 0.1)){ warnTip('Move away from the center to set the radius'); return; }
+      this.stage = 2; this.ui(); return;
+    }
+    if(this.stage === 2) this.commit();
+  },
+  move(e, q){
+    if(!q.inside) return;
+    if(this.stage === 0){ showPickGhost(e, q, 'Cylinder center · '); return; }
+    if(this.stage === 1){
+      const P = rayOnPlane(q, this.n, this.C);
+      if(P && this.dLock == null){ this.r = Math.max(0.1, snapMM(P.distanceTo(this.C))); cyl_d.value = (2*this.r).toFixed(1); }
+      this.draw(); this.ui();
+      tipAt(e, 'Ø <b>' + (2*this.radius()).toFixed(1) + '</b> mm · click to set the height');
+      return;
+    }
+    if(this.stage === 2){
+      raycaster.setFromCamera({x: q.mx/q.w*2-1, y: -(q.my/q.h*2-1)}, q.cam);
+      if(this.hLock == null){ this.h = snapMM(rayLineParam(raycaster.ray, this.C, this.n)); cyl_h.value = this.h.toFixed(1); }
+      this.draw(); this.ui();
+      tipAt(e, 'Height <b>' + this.height().toFixed(1) + '</b> mm · ' + (this.opNow() === 'cut' ? 'Cut' : 'Join') + ' · click to apply');
+    }
+  },
+  key(e){
+    if(e.key === 'Enter' && this.stage >= 1){ e.preventDefault(); this.enter(); return true; }
+    return false;
+  },
+  enter(){
+    if(this.stage === 1 && this.radius() >= 0.1){ this.stage = 2; this.draw(); this.ui(); return; }
+    if(this.stage === 2) this.commit();
+  },
+  esc(){ // шаг назад: высота → радиус → центр → выход
+    if(this.stage === 0) return false;
+    if(this.stage === 2){ this.stage = 1; this.h = 0; this.hLock = null; cyl_h.value = ''; }
+    else { this.stage = 0; this.C = null; this.kill(); }
+    this.draw(); this.ui(); tipHide();
+    return true;
+  },
+  ui(){
+    cyl_state.textContent = ['center', 'radius', 'height'][this.stage] + (this.stage === 2 ? ' · ' + (this.opNow() === 'cut' ? 'cut' : 'join') : '');
+    for(const [id, o] of [['cyl_auto', 'auto'], ['cyl_join', 'join'], ['cyl_cut', 'cut']])
+      document.getElementById(id).classList.toggle('on', this.op === o);
+    if(this.segAuto) cyl_s.placeholder = String(this.segs());
+    cyl_t.placeholder = '= Ø';
+    cyl_hint.hidden = !hintsChk.checked;
+    const r = this.radius(), h = this.height(), rt = this.topR();
+    cyl_ok.disabled = !(this.stage === 2 && Math.abs(h) >= 0.1 && r >= 0.1);
+    if(this.stage === 0){ cyl_info.textContent = 'Click the center on a face'; return; }
+    if(this.stage === 1){ cyl_info.textContent = 'Ø ' + (2*r).toFixed(1) + ' mm · click or Enter for the height'; return; }
+    const V = Math.PI * Math.abs(h) / 3 * (r*r + r*rt + rt*rt);
+    cyl_info.innerHTML = (Math.abs(rt - r) < 1e-9 ? 'Cylinder' : rt < 1e-9 ? 'Cone' : 'Frustum') + ' · ' + Math.round(V).toLocaleString('en-US').replace(/,/g, ' ') + ' mm³ · <b>' + (this.opNow() === 'cut' ? 'Cut' : 'Join') + '</b>';
+  },
+  commit(){
+    const r = this.radius(), h = this.height(), rt = this.topR();
+    if(!(r >= 0.1) || Math.abs(h) < 0.1){ warnTip('Set the radius and a height of at least 0.1 mm'); return; }
+    const op = this.opNow();
+    const tris = frustumTris(this.C, this.C.clone().addScaledVector(this.n, h), r, rt, this.segs());
+    this.kill();
+    let res;
+    try { res = zcApplySolid(tris, op); }
+    catch(err){ warnTip('Cylinder failed here: ' + err.message); this.draw(); return; }
+    if(Math.abs(res.volume_change_mm3) < 1e-3){
+      undo(true);
+      warnTip(op === 'cut' ? 'Nothing to cut here — the cylinder is outside the body' : 'Nothing to add — the body is already there');
+      this.draw(); return;
+    }
+    // следующий цилиндр — сразу с центра (размеры в полях остаются)
+    this.stage = 0; this.C = null; this.h = 0; this.hLock = null; cyl_h.value = '';
+    this.ui();
+  }
+};
 // ---------- G,S — Slice: срез тела плоскостью (Bisect в Blender, Split Body во Fusion) ----------
 // Остаётся сторона против нормали плоскости. Сначала точный planeCut (каждый
 // треугольник отсекается, сечение — одна петля, крышка ушами); если сечение
@@ -3774,6 +3935,27 @@ for(const inp of [bev_d, bev_s]){
 }
 bev_ok.addEventListener('click', ()=>{ if(activeTool === bevelTool) bevelTool.commit(); });
 const bev_loops = document.getElementById('bev_loops');
+const cylPopup = document.getElementById('cylPopup'), cyl_d = document.getElementById('cyl_d'), cyl_h = document.getElementById('cyl_h'),
+      cyl_t = document.getElementById('cyl_t'), cyl_s = document.getElementById('cyl_s'), cyl_state = document.getElementById('cyl_state'),
+      cyl_info = document.getElementById('cyl_info'), cyl_ok = document.getElementById('cyl_ok'), cyl_hint = document.getElementById('cyl_hint');
+{
+  const num = el => { const v = parseFloat(String(el.value).replace(',', '.')); return Number.isFinite(v) ? v : null; };
+  const refresh = () => { if(activeTool !== cylTool) return; if(cylTool.stage >= 1) cylTool.draw(); cylTool.ui(); };
+  cyl_d.addEventListener('input', () => { const v = num(cyl_d); cylTool.dLock = v != null && v >= 0.2 ? snapMM(v) : null; refresh(); });
+  cyl_h.addEventListener('input', () => { const v = num(cyl_h); cylTool.hLock = v != null && Math.abs(v) >= 0.1 ? snapMM(v) : null; refresh(); });
+  cyl_t.addEventListener('input', () => { const v = num(cyl_t); cylTool.topD = v != null && v >= 0 ? snapMM(v) : null; refresh(); });
+  cyl_s.addEventListener('input', () => { const v = num(cyl_s); cylTool.segAuto = !(v >= 3); if(v >= 3) cylTool.seg = Math.min(256, Math.round(v)); refresh(); });
+  for(const el of [cyl_d, cyl_h, cyl_t, cyl_s]) el.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === cylTool) cylTool.enter(); }
+    if(e.key === 'Escape') releaseToolInput();
+    e.stopPropagation();
+  });
+  for(const [id, o] of [['cyl_auto', 'auto'], ['cyl_join', 'join'], ['cyl_cut', 'cut']])
+    document.getElementById(id).addEventListener('click', () => { if(activeTool !== cylTool) return; cylTool.op = o; refresh(); });
+  cyl_ok.addEventListener('click', () => { if(activeTool === cylTool) cylTool.commit(); });
+  document.getElementById('cyl_cancel').addEventListener('click', () => { if(activeTool === cylTool) setActiveTool(null); });
+  makeGripDrag(cylPopup);
+}
 const slicePopup = document.getElementById('slicePopup'), sl_off = document.getElementById('sl_off'),
       sl_state = document.getElementById('sl_state'), sl_info = document.getElementById('sl_info'),
       sl_ok = document.getElementById('sl_ok'), sl_flip = document.getElementById('sl_flip'), sl_hint = document.getElementById('sl_hint');
@@ -4504,6 +4686,7 @@ function showChordHint(){
     row('Y', 'Point (with snaps) — also P', true) +
     row('E', 'Extrude face ±mm', !!ppPatch) +
     row('S', 'Slice the body with a plane', true) +
+    row('U', 'Cylinder / cone on a face', true) +
     row('V', 'Vertex X/Y/Z', !!sel) +
     '<div style="opacity:.55">Esc — cancel</div>';
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 400) + 'px';
@@ -9664,6 +9847,13 @@ window.addEventListener('keydown', e=>{
     rotTool.items = it; setActiveTool(rotTool);
     return;
   }
+  // G,U — цилиндр/конус на грани (Create → Cylinder во Fusion)
+  if((e.code==='KeyU' || e.key.toLowerCase()==='u') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
+     && document.activeElement.tagName!=='INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    setActiveTool(activeTool === cylTool ? null : cylTool);
+    return;
+  }
   // G,S — срез плоскостью (Bisect в Blender, Split Body во Fusion)
   if((e.code==='KeyS' || e.key.toLowerCase()==='s') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
      && document.activeElement.tagName!=='INPUT'){
@@ -12745,25 +12935,9 @@ const ZC_COMMANDS = {
       const A = zcV3(a.from, 'from'), B = zcV3(a.to, 'to');
       const r1 = +a.r1, r2 = +a.r2, op = a.operation || 'join';
       if(!(r1 >= 0) || !(r2 >= 0) || r1 + r2 < 0.1) throw new Error('radii must be ≥ 0 mm, not both zero');
-      const axis = new THREE.Vector3().subVectors(B, A), L = axis.length();
-      if(L < 0.1) throw new Error('from and to must be at least 0.1 mm apart');
-      axis.multiplyScalar(1/L);
+      if(A.distanceTo(B) < 0.1) throw new Error('from and to must be at least 0.1 mm apart');
       const seg = Math.max(3, Math.min(256, Math.round(+a.segments || 48)));
-      const u = (Math.abs(axis.z) < 0.9 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0)).cross(axis).normalize();
-      const v = axis.clone().cross(u);
-      const ring = (C, r) => Array.from({length: seg}, (_, i) => {
-        const t = i / seg * Math.PI * 2;
-        return C.clone().addScaledVector(u, r*Math.cos(t)).addScaledVector(v, r*Math.sin(t));
-      });
-      const ra = ring(A, r1), rb = ring(B, r2), tris = [];
-      for(let i=0;i<seg;i++){
-        const j = (i+1) % seg;
-        if(r1 > 0) tris.push([A, ra[j], ra[i]]);
-        if(r2 > 0) tris.push([B, rb[i], rb[j]]);
-        if(r1 > 0) tris.push([ra[i], ra[j], rb[j]]);
-        if(r2 > 0) tris.push([ra[i], rb[j], rb[i]]);
-      }
-      return zcApplySolid(tris, op);
+      return zcApplySolid(frustumTris(A, B, r1, r2, seg), op); // тот же построитель, что G,U
     }
   },
   add_revolve: {

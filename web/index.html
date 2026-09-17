@@ -239,24 +239,24 @@
   #exPopup #ex_through.on{background:#fff;color:#10131a;font-weight:700;border-color:#fff}
   #exPopup #ex_through:disabled,#exPopup #ex_taper:disabled{opacity:.4;cursor:default}
   #bevPopup .prow[hidden]{display:none}
-  /* окно Slice (G,S): как окно фаски */
-  #slicePopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
+  /* окна Slice (G,S) и Cylinder (G,U): как окно фаски */
+  #slicePopup,#cylPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
     padding:14px 16px;font-size:12px;width:320px;box-sizing:border-box}
-  #slicePopup[hidden]{display:none}
-  #slicePopup .prow{display:flex;align-items:center;gap:10px;margin:4px 0;color:var(--muted);font-size:19px}
-  #slicePopup .plab{display:inline-block;min-width:70px}
-  #slicePopup input{font-size:22px;padding:6px 10px;width:110px;background:var(--panel2);color:var(--text);
+  #slicePopup[hidden],#cylPopup[hidden]{display:none}
+  #slicePopup .prow,#cylPopup .prow{display:flex;align-items:center;gap:10px;margin:4px 0;color:var(--muted);font-size:19px}
+  #slicePopup .plab,#cylPopup .plab{display:inline-block;min-width:70px}
+  #slicePopup input,#cylPopup input{font-size:22px;padding:6px 10px;width:110px;background:var(--panel2);color:var(--text);
     border:1px solid #6b7483;border-radius:6px;transition:border-color .1s,box-shadow .1s}
-  #slicePopup input:hover{border-color:#aab3c2}
-  #slicePopup input:focus{border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
-  #slicePopup input:disabled,#slicePopup button:disabled{opacity:.45;cursor:default}
-  #slicePopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
+  #slicePopup input:hover,#cylPopup input:hover{border-color:#aab3c2}
+  #slicePopup input:focus,#cylPopup input:focus{border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
+  #slicePopup input:disabled,#slicePopup button:disabled,#cylPopup input:disabled,#cylPopup button:disabled{opacity:.45;cursor:default}
+  #slicePopup button,#cylPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
-  #slicePopup button.lp{padding:6px 8px;font-size:15px}
-  #slicePopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
-  #slicePopup #sl_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
-  #slicePopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
-  #slicePopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
+  #slicePopup button.lp,#cylPopup button.lp{padding:6px 8px;font-size:15px}
+  #slicePopup button.lp.on,#cylPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
+  #slicePopup #sl_ok,#cylPopup #cyl_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
+  #slicePopup .pinfo,#cylPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
+  #slicePopup .phint,#cylPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
   #bevPopup .plab{display:inline-block;min-width:70px}
   #bevPopup button.lp{padding:6px 8px;font-size:15px}
   #bevPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
@@ -439,6 +439,18 @@
       <div class="prow linecmd" id="line_alt"><span class="key">Alt+click</span> — new start: break the line here</div>
       <div class="phint" id="line_hint">Click the start, then the end — it snaps to vertices, midpoints, axes and angles. Type the length or the angle to fix it: before the end, the cursor only picks the side; after placing, a new length or angle redraws the line from its start (Enter); while you type, a dashed preview shows the new end. The angle is measured to the edge the line starts from (or to the axis), 90° — red. In a polyline, Alt+click puts a new start without a segment from the previous point. OK — finish the tool, Cancel or Esc — exit without the unfinished line.</div>
       <div class="prow" style="margin-top:8px;gap:10px"><button id="line_ok">OK</button><button id="line_cancel">Cancel</button></div>
+    </div>
+    <div id="cylPopup" hidden>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Cylinder</b><span id="cyl_state" style="font-size:14px">center</span></div>
+      <div class="prow"><span class="plab">Ø</span><input id="cyl_d" type="number" step="0.2" min="0.2" placeholder="—"> mm</div>
+      <div class="prow"><span class="plab">Height</span><input id="cyl_h" type="number" step="0.1" placeholder="—"> mm</div>
+      <div class="prow"><span class="plab">Top Ø</span><input id="cyl_t" type="number" step="0.2" min="0" placeholder="= Ø"> mm</div>
+      <div class="prow"><span class="plab">Segments</span><input id="cyl_s" type="number" step="4" min="3" max="256" placeholder="auto"></div>
+      <div class="prow"><span class="plab">Operation</span><button id="cyl_auto" class="lp on">Auto</button><button id="cyl_join" class="lp">Join</button><button id="cyl_cut" class="lp">Cut</button></div>
+      <div class="pinfo" id="cyl_info">&nbsp;</div>
+      <div class="phint" id="cyl_hint">Click the center on a face (it sticks to vertices, midpoints and centers), move for the radius and click, move along the face normal for the height and click to apply. Typed values override the mouse. Outward — Join, into the body — Cut; hold Ctrl to cut. Top Ø other than Ø makes a cone (0 — a point). Esc — one step back</div>
+      <div class="prow" style="gap:10px;margin-top:8px"><button id="cyl_ok" disabled>OK</button><button id="cyl_cancel">Cancel</button></div>
     </div>
     <div id="slicePopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
