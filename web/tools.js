@@ -557,6 +557,15 @@ const ZC_TOOLS = [
     }}
   },
   {
+    "name": "loft_profiles",
+    "description": "Stretch a solid between two flat closed profiles given in 3D — the same builder as the user's Loft tool (G,F): a funnel, an adapter, a neck. Vertices are stitched by the share of the outline length from the closest starting vertex, so the corners of both profiles stay and the walls run straight from one to the other. Both profiles must be flat and not in the same place.",
+    "inputSchema": {"type": "object", "properties": {
+      "profile_a": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 3},
+      "profile_b": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 3},
+      "operation": {"type": "string", "enum": ["join", "cut", "new"], "description": "default join"}
+    }, "required": ["profile_a", "profile_b"]}
+  },
+  {
     "name": "revolve_profile",
     "description": "Revolve a flat closed profile given in 3D around an axis — the same builder as the user's Revolve tool (G,O). The axis must lie in the plane of the profile and the profile on one side of it (points on the axis are fine). |angle| < 360 makes a sector with flat ends.",
     "inputSchema": {"type": "object", "properties": {

@@ -333,6 +333,37 @@ def gear_v_grooves_on_tooth_flanks():
 
 
 @case
+def loft_between_two_profiles():
+    # Loft (G,F) — loft_profiles: призма, усечённая пирамида, наклонная призма
+    # по Кавальери, переходник круг → круг; вырез лофтом между кругом на крыше
+    # куба и кругом на боковой грани
+    sq = lambda s, z: [[-s, -s, z], [s, -s, z], [s, s, z], [-s, s, z]]
+    circ = lambda r, z, n: [[round(r*math.cos(2*math.pi*i/n), 4), round(r*math.sin(2*math.pi*i/n), 4), z] for i in range(n)]
+    d = call('loft_profiles', {'profile_a': sq(10, 0), 'profile_b': sq(10, 30), 'operation': 'new'})
+    closed(d, 'prism'); near(d['volume_mm3'], 400 * 30, 1e-3, 'prism')
+    d = call('loft_profiles', {'profile_a': sq(10, 0), 'profile_b': sq(4, 25), 'operation': 'new'})
+    closed(d, 'frustum'); near(d['volume_mm3'], 25 / 3 * (400 + math.sqrt(400 * 64) + 64), 1e-3, 'frustum')
+    d = call('loft_profiles', {'profile_a': sq(10, 0), 'profile_b': [[20, 20, 30], [40, 20, 30], [40, 40, 30], [20, 40, 30]], 'operation': 'new'})
+    closed(d, 'oblique'); near(d['volume_mm3'], 400 * 30, 1e-3, 'oblique prism')
+    A1, A2 = ngon(12, 32), ngon(4, 32)
+    d = call('loft_profiles', {'profile_a': circ(12, 0, 32), 'profile_b': circ(4, 18, 32), 'operation': 'new'})
+    closed(d, 'cone'); near(d['volume_mm3'], 18 / 3 * (A1 + math.sqrt(A1 * A2) + A2), 0.2, 'cone frustum')  # координаты округлены до 0.001 мм
+    # вырез между двумя гранями куба: тем же путём, что окно G,F
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    top = circ(12, 40, 48)
+    side = [[40, round(20 + 6*math.cos(2*math.pi*i/48), 4), round(12 + 6*math.sin(2*math.pi*i/48), 4)] for i in range(48)]
+    d = call('loft_profiles', {'profile_a': top, 'profile_b': side, 'operation': 'cut'})
+    closed(d, 'loft cut'); exact(d, 'loft cut')
+    assert -7000 < d['volume_change_mm3'] < -6000, d['volume_change_mm3']
+    try:
+        call('loft_profiles', {'profile_a': sq(10, 0), 'profile_b': sq(8, 0.01), 'operation': 'new'})
+    except McpError as e:
+        assert 'same place' in str(e), str(e)
+    else:
+        raise AssertionError('profiles in the same place must be refused')
+
+
+@case
 def move_edge_end_follow_face_or_straight():
     # Переключатель End окна Move edge: наклонный сосед у конца линии.
     # Follow face — торец клина ложится в его плоскость, конец линии едет вдоль

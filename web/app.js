@@ -3605,16 +3605,86 @@ function applyProfileSolid(tris, op, consume){
   }
   return r;
 }
+// ---------- G,F — Loft: тело между двумя профилями (Loft во Fusion) ----------
+// Воронки, переходники, горлышки: квадрат снизу, круг сверху. Вершины
+// профилей сшиваются по доле длины контура: точки ОБОИХ сохраняются (углы
+// квадрата и сегменты круга никуда не деваются), боковина — четырёхугольники,
+// торцы — сами профили. Тело объединяется или вычитается точной булевой
+function loopCentroid(loop){
+  const c = new THREE.Vector3();
+  for(const p of loop) c.add(p);
+  return c.multiplyScalar(1 / loop.length);
+}
+// точка контура по доле длины s ∈ [0, 1), отсчёт от вершины start
+function loopAt(loop, cum, total, s, start){
+  const want = ((s % 1) + 1) % 1 * total;
+  const n = loop.length;
+  let lo = 0, hi = n;
+  while(lo + 1 < hi){ const mid = (lo + hi) >> 1; if(cum[mid] <= want) lo = mid; else hi = mid; }
+  const a = loop[(start + lo) % n], b = loop[(start + lo + 1) % n];
+  const seg = cum[lo+1] - cum[lo];
+  const t = seg < 1e-12 ? 0 : (want - cum[lo]) / seg;
+  return a.clone().lerp(b, t);
+}
+function loopParams(loop, start){
+  const n = loop.length, cum = [0];
+  for(let i=0;i<n;i++) cum.push(cum[i] + loop[(start + i) % n].distanceTo(loop[(start + i + 1) % n]));
+  const total = cum[n];
+  return {cum, total, s: cum.slice(0, n).map(x => x / total)};
+}
+function loftLoopTris(loopA, loopB){
+  if(loopA.length < 3 || loopB.length < 3) throw new Error('both profiles need at least 3 points');
+  const cA = loopCentroid(loopA), cB = loopCentroid(loopB);
+  const axis = new THREE.Vector3().subVectors(cB, cA);
+  if(axis.length() < 0.05) throw new Error('the profiles are in the same place — move one of them');
+  axis.normalize();
+  // обход обоих контуров — в одну сторону вокруг оси между ними, иначе тело
+  // выходит перекрученным
+  const A = loopPlaneNormal(loopA), B = loopPlaneNormal(loopB);
+  if(!A || !B) throw new Error('a profile is degenerate');
+  const la = A.dot(axis) < 0 ? [...loopA].reverse() : loopA.slice();
+  const lb = B.dot(axis) < 0 ? [...loopB].reverse() : loopB.slice();
+  // старт второго контура — вершина, лежащая в ту же сторону от центра, что и
+  // первая вершина первого: сшивка без закрутки
+  const u = new THREE.Vector3().subVectors(la[0], cA);
+  u.addScaledVector(axis, -u.dot(axis));
+  if(u.length() < 1e-9) throw new Error('a profile is degenerate');
+  u.normalize();
+  const v = new THREE.Vector3().crossVectors(axis, u);
+  let start = 0, best = -Infinity;
+  lb.forEach((p, i) => {
+    const w = new THREE.Vector3().subVectors(p, cB);
+    w.addScaledVector(axis, -w.dot(axis));
+    const L = w.length();
+    if(L < 1e-9) return;
+    const d = w.dot(u) / L;
+    if(d > best){ best = d; start = i; }
+  });
+  const pa = loopParams(la, 0), pb = loopParams(lb, start);
+  const params = [...new Set([...pa.s, ...pb.s].map(x => Math.round(x * 1e9) / 1e9))].sort((x, y) => x - y);
+  const ringA = params.map(s => loopAt(la, pa.cum, pa.total, s, 0));
+  const ringB = params.map(s => loopAt(lb, pb.cum, pb.total, s, start));
+  const tris = [];
+  for(let i=0;i<params.length;i++){
+    const j = (i + 1) % params.length;
+    tris.push([ringA[i], ringA[j], ringB[j]], [ringA[i], ringB[j], ringB[i]]);
+  }
+  for(const t of earClip(ringA)) tris.push(t);
+  for(const t of earClip(ringB)) tris.push(t);
+  return orientSolid(tris);
+}
 const profTool = {
-  kind: 'revolve', stage: 'profile', profile: null, axis: null, path: null, op: 'auto', ctrl: false,
-  ghostG: null, axisLine: null, profLine: null, hoverLine: null, tris: null, err: '', timer: 0,
+  kind: 'revolve', stage: 'profile', profile: null, profile2: null, axis: null, path: null, op: 'auto', ctrl: false,
+  ghostG: null, axisLine: null, profLine: null, profLine2: null, hoverLine: null, tris: null, err: '', timer: 0,
   get hud(){
     return this.kind === 'revolve'
       ? 'REVOLVE · click the profile region (or select a contour first) → click the axis line or X/Y/Z · angle in the window · Enter — apply · Esc — back'
-      : 'SWEEP · path = the selected lines · click the profile region · Enter — apply · Esc';
+      : this.kind === 'sweep'
+      ? 'SWEEP · path = the selected lines · click the profile region · Enter — apply · Esc'
+      : 'LOFT · click the first profile region → click the second one · Enter — apply · Esc — back';
   },
   start(kind){ // из аккорда: Sweep требует выбранный путь
-    this.kind = kind; this.profile = null; this.axis = null; this.path = null;
+    this.kind = kind; this.profile = null; this.profile2 = null; this.axis = null; this.path = null;
     if(kind === 'sweep'){
       try{ this.path = pathFromSelection(); }catch(err){ warnTip(err.message); return; }
       if(!this.path){ warnTip('Select the path lines first (click, Ctrl+click), then G,W'); return; }
@@ -3623,18 +3693,20 @@ const profTool = {
       const lp = edgeSelLoop();
       if(lp){
         try{ this.profile = profileFromLoop(lp); }catch(err){ warnTip(err.message); return; }
-        this.stage = 'axis';
+        this.stage = kind === 'loft' ? 'profile2' : 'axis';
       } else this.stage = 'profile';
     }
     setActiveTool(this);
   },
   on(){
     this.op = 'auto'; this.ctrl = false; this.tris = null; this.err = '';
-    pf_title.textContent = this.kind === 'revolve' ? 'Revolve' : 'Sweep';
+    pf_title.textContent = this.kind === 'revolve' ? 'Revolve' : this.kind === 'sweep' ? 'Sweep' : 'Loft';
     pf_revolve.hidden = this.kind !== 'revolve';
     pf_hint.textContent = this.kind === 'revolve'
       ? 'Profile: a closed shape drawn on a face (click its region) or a selected closed contour of lines (B). Axis: click a straight line or edge in the plane of the profile, or press X/Y/Z for a world axis through the origin. The profile must lie on one side of the axis. Angle under 360 makes a sector with flat ends; a negative angle turns the other way. A sheet profile in the air is absorbed into the solid.'
-      : 'Path: the lines selected before G,W (one chain, open or closed). Profile: click the closed region to sweep — usually drawn across the start of the path. The profile is carried along the path without twisting; at corners the walls meet in a miter. A sheet profile in the air is absorbed into the solid.';
+      : this.kind === 'sweep'
+      ? 'Path: the lines selected before G,W (one chain, open or closed). Profile: click the closed region to sweep — usually drawn across the start of the path. The profile is carried along the path without twisting; at corners the walls meet in a miter. A sheet profile in the air is absorbed into the solid.'
+      : 'Two closed profiles — regions drawn on faces, sheets in the air (F) or a selected contour of lines (B): click one, then the other, and the solid is stretched between them (a funnel, an adapter, a neck). Their vertices are stitched by the share of the outline length, so corners of both stay; the walls are straight from one profile to the other. A sheet profile is absorbed into the solid.';
     if(this.kind === 'sweep') this.showPathLine();
     profPopup.style.left = '16px'; profPopup.style.top = '48px';
     profPopup.hidden = false;
@@ -3644,7 +3716,7 @@ const profTool = {
   off(){
     clearTimeout(this.timer);
     this.kill(); hidePatch(); ppPatch = null; tipHide();
-    for(const k of ['axisLine', 'profLine', 'hoverLine']) if(this[k]){ scene.remove(this[k]); this[k].geometry.dispose(); this[k] = null; }
+    for(const k of ['axisLine', 'profLine', 'profLine2', 'hoverLine']) if(this[k]){ scene.remove(this[k]); this[k].geometry.dispose(); this[k] = null; }
     profPopup.hidden = true; releaseToolInput();
   },
   kill(){ if(this.ghostG){ scene.remove(this.ghostG); this.ghostG.geometry.dispose(); this.ghostG = null; } },
@@ -3671,6 +3743,7 @@ const profTool = {
     if(this.profLine){ scene.remove(this.profLine); this.profLine.geometry.dispose(); }
     this.profLine = this.line(lp, 0x6aff3d);
     if(this.kind === 'sweep'){ this.path = orientPathToProfile(this.path, this.profile.loop); this.stage = 'ready'; this.preview(true); }
+    else if(this.kind === 'loft'){ if(this.stage !== 'ready') this.stage = 'profile2'; }
     else if(!this.axis) this.stage = 'axis';
   },
   down(e, q){
@@ -3681,6 +3754,22 @@ const profTool = {
       try{ this.profile = profileFromRegion(h.faceIndex); }catch(err){ warnTip(err.message); return; }
       showPatch(this.profile.patch, 0x6aff3d);
       this.afterProfile(); this.ui(); tipHide();
+      return;
+    }
+    if(this.stage === 'profile2'){
+      const h = raycastFace(q);
+      if(!h){ warnTip('Click the second profile region'); return; }
+      let p2;
+      try{ p2 = profileFromRegion(h.faceIndex); }catch(err){ warnTip(err.message); return; }
+      if(this.profile.patch && p2.patch && this.profile.patch.tris[0] === p2.patch.tris[0]){
+        warnTip('Pick a different region for the second profile'); return;
+      }
+      this.profile2 = p2;
+      const lp = p2.loop.slice(); lp.push(lp[0]);
+      if(this.profLine2){ scene.remove(this.profLine2); this.profLine2.geometry.dispose(); }
+      this.profLine2 = this.line(lp, 0x4da3ff);
+      hidePatch();
+      this.stage = 'ready'; tipHide(); this.preview(true);
       return;
     }
     if(this.stage === 'axis'){
@@ -3697,13 +3786,14 @@ const profTool = {
   },
   move(e, q){
     if(!q.inside) return;
-    if(this.stage === 'profile'){
+    if(this.stage === 'profile' || this.stage === 'profile2'){
       const h = raycastFace(q);
       if(!h){ hidePatch(); tipHide(); return; }
       cachedPatch = null;
       const patch = facePatchAt(h.faceIndex);
-      showPatch(patch, 0x6aff3d);
-      tipAt(e, 'Profile · region ' + (Math.round((patch.area || 0)*10)/10) + ' mm² · click');
+      const second = this.stage === 'profile2';
+      showPatch(patch, second ? 0x4da3ff : 0x6aff3d);
+      tipAt(e, (second ? 'Second profile · region ' : 'Profile · region ') + (Math.round((patch.area || 0)*10)/10) + ' mm² · click');
       return;
     }
     if(this.stage === 'axis'){
@@ -3724,6 +3814,19 @@ const profTool = {
     return false;
   },
   esc(){
+    if(this.kind === 'loft'){
+      if(this.stage === 'ready'){
+        this.stage = 'profile2'; this.profile2 = null; this.kill(); this.tris = null; this.err = '';
+        if(this.profLine2){ scene.remove(this.profLine2); this.profLine2.geometry.dispose(); this.profLine2 = null; }
+        this.ui(); return true;
+      }
+      if(this.stage === 'profile2' && this.profile && this.profile.patch){
+        this.stage = 'profile'; this.profile = null; this.kill(); this.tris = null; this.err = ''; hidePatch();
+        if(this.profLine){ scene.remove(this.profLine); this.profLine.geometry.dispose(); this.profLine = null; }
+        this.ui(); return true;
+      }
+      return false;
+    }
     if(this.stage === 'ready' && this.kind === 'revolve'){
       this.stage = 'axis'; this.axis = null; this.kill(); this.tris = null; this.err = '';
       if(this.axisLine){ scene.remove(this.axisLine); this.axisLine.geometry.dispose(); this.axisLine = null; }
@@ -3744,6 +3847,7 @@ const profTool = {
   build(){
     const p = this.params();
     if(this.kind === 'revolve') return revolveLoopTris(this.profile.loop, this.axis.A, this.axis.d, p.angle, p.segs);
+    if(this.kind === 'loft') return loftLoopTris(this.profile.loop, this.profile2.loop);
     return sweepLoopTris(this.profile.loop, this.path.pts, this.path.closed);
   },
   preview(now){
@@ -3767,7 +3871,8 @@ const profTool = {
     if(now) run(); else this.timer = setTimeout(() => { if(activeTool === this) run(); }, 80);
   },
   ui(){
-    const st = {profile: 'pick the profile', axis: 'pick the axis', ready: this.opNow() === 'cut' ? 'cut' : 'join'}[this.stage];
+    const st = {profile: 'pick the profile', profile2: 'pick the second profile', axis: 'pick the axis',
+                ready: this.opNow() === 'cut' ? 'cut' : 'join'}[this.stage];
     pf_state.textContent = st;
     for(const [id, o] of [['pf_auto', 'auto'], ['pf_join', 'join'], ['pf_cut', 'cut']]) document.getElementById(id).classList.toggle('on', this.op === o);
     pf_hint.hidden = !hintsChk.checked;
@@ -3775,17 +3880,22 @@ const profTool = {
     pf_info.style.color = this.err ? '#ff6b6b' : '';
     if(this.err){ pf_info.textContent = this.err; return; }
     if(this.stage === 'profile'){ pf_info.textContent = this.kind === 'sweep'
-      ? 'Path: ' + this.path.pts.length + ' points' + (this.path.closed ? ', closed' : '') + ' · click the profile region' : 'Click the profile region'; return; }
+      ? 'Path: ' + this.path.pts.length + ' points' + (this.path.closed ? ', closed' : '') + ' · click the profile region'
+      : this.kind === 'loft' ? 'Click the first profile region' : 'Click the profile region'; return; }
+    if(this.stage === 'profile2'){ pf_info.textContent = 'First profile: ' + this.profile.loop.length + ' points · click the second one'; return; }
     if(this.stage === 'axis'){ pf_info.textContent = 'Profile: ' + this.profile.loop.length + ' points · click the axis'; return; }
     if(this.tris){
       let v = 0; for(const [p, q, r] of this.tris) v += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
-      pf_info.innerHTML = (this.kind === 'revolve' ? 'Around the ' + this.axis.label : 'Along ' + this.path.pts.length + ' points') + ' · '
+      pf_info.innerHTML = (this.kind === 'revolve' ? 'Around the ' + this.axis.label
+        : this.kind === 'loft' ? this.profile.loop.length + ' → ' + this.profile2.loop.length + ' points'
+        : 'Along ' + this.path.pts.length + ' points') + ' · '
         + Math.round(Math.abs(v)).toLocaleString('en-US').replace(/,/g, ' ') + ' mm³ · <b>' + (this.opNow() === 'cut' ? 'Cut' : 'Join') + '</b>';
     }
   },
   commit(){
-    if(this.stage !== 'ready' || !this.tris){ warnTip('Finish the profile' + (this.kind === 'revolve' ? ' and the axis' : '')); return; }
-    const tris = this.tris, op = this.opNow(), consume = this.profile.consume;
+    if(this.stage !== 'ready' || !this.tris){ warnTip('Finish the profile' + (this.kind === 'revolve' ? ' and the axis' : this.kind === 'loft' ? 's' : '')); return; }
+    const tris = this.tris, op = this.opNow();
+    const consume = [...(this.profile.consume || []), ...((this.profile2 && this.profile2.consume) || [])];
     this.kill();
     try{ applyProfileSolid(tris, op, consume); }
     catch(err){ warnTip(err.message); this.preview(true); return; }
@@ -6167,6 +6277,7 @@ function showChordHint(){
     row('U', 'Cylinder / cone on a face', true) +
     row('O', 'Revolve a profile around an axis', true) +
     row('W', 'Sweep a profile along the selected lines', edgeSel.length > 0) +
+    row('F', 'Loft between two profiles', true) +
     row('I', 'Mirror a body', true) +
     row('B', 'Move / copy / scale a body', true) +
     row('H', 'Shell — hollow a body', true) +
@@ -11363,9 +11474,9 @@ window.addEventListener('keydown', e=>{
       return;
     }
   }
-  // G,O — Revolve (тело вращения профиля), G,W — Sweep (профиль вдоль пути);
-  // раньше O — отступа грани
-  for(const [code, ch, kind] of [['KeyO', 'o', 'revolve'], ['KeyW', 'w', 'sweep']]){
+  // G,O — Revolve (тело вращения профиля), G,W — Sweep (профиль вдоль пути),
+  // G,F — Loft (тело между двумя профилями); раньше O — отступ грани, F — заливка
+  for(const [code, ch, kind] of [['KeyO', 'o', 'revolve'], ['KeyW', 'w', 'sweep'], ['KeyF', 'f', 'loft']]){
     if((e.code===code || e.key.toLowerCase()===ch) && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
        && document.activeElement.tagName!=='INPUT'){
       e.preventDefault(); chordG = 0; hideChordHint();
@@ -14602,6 +14713,17 @@ const ZC_COMMANDS = {
       } else throw new Error('give move [dx, dy, dz] or scale');
       const r = applyBodyTransform(tris, mats, copies > 0);
       return Object.assign({boolean: lastBoolPath || 'none'}, r);
+    }
+  },
+  loft_profiles: {
+    // тот же построитель, что G,F в редакторе (loftLoopTris)
+    run(a){
+      const one = (v, name) => {
+        if(!Array.isArray(v) || v.length < 3) throw new Error(name + ' must be [[x, y, z], ...] with at least 3 points');
+        return profileFromLoop(v.map(q => zcV3(q, name + ' point'))).loop;
+      };
+      const tris = loftLoopTris(one(a.profile_a, 'profile_a'), one(a.profile_b, 'profile_b'));
+      return applyProfileSolid(tris, a.operation || 'join', null);
     }
   },
   revolve_profile: {
