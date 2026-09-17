@@ -240,23 +240,23 @@
   #exPopup #ex_through:disabled,#exPopup #ex_taper:disabled{opacity:.4;cursor:default}
   #bevPopup .prow[hidden]{display:none}
   /* окна Slice (G,S) и Cylinder (G,U): как окно фаски */
-  #slicePopup,#cylPopup,#profPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
+  #slicePopup,#cylPopup,#profPopup,#mirPopup,#xfPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
     padding:14px 16px;font-size:12px;width:320px;box-sizing:border-box}
-  #slicePopup[hidden],#cylPopup[hidden],#profPopup[hidden],#pf_revolve[hidden]{display:none}
-  #slicePopup .prow,#cylPopup .prow,#profPopup .prow{display:flex;align-items:center;gap:10px;margin:4px 0;color:var(--muted);font-size:19px}
-  #slicePopup .plab,#cylPopup .plab,#profPopup .plab{display:inline-block;min-width:70px}
-  #slicePopup input,#cylPopup input,#profPopup input{font-size:22px;padding:6px 10px;width:110px;background:var(--panel2);color:var(--text);
+  #slicePopup[hidden],#cylPopup[hidden],#profPopup[hidden],#pf_revolve[hidden],#xf_rows_move[hidden],#xf_rows_scale[hidden],#mirPopup[hidden],#xfPopup[hidden]{display:none}
+  #slicePopup .prow,#cylPopup .prow,#profPopup .prow,#mirPopup .prow,#xfPopup .prow{display:flex;align-items:center;gap:10px;margin:4px 0;color:var(--muted);font-size:19px}
+  #slicePopup .plab,#cylPopup .plab,#profPopup .plab,#mirPopup .plab,#xfPopup .plab{display:inline-block;min-width:70px}
+  #slicePopup input,#cylPopup input,#profPopup input,#mirPopup input,#xfPopup input{font-size:22px;padding:6px 10px;width:110px;background:var(--panel2);color:var(--text);
     border:1px solid #6b7483;border-radius:6px;transition:border-color .1s,box-shadow .1s}
-  #slicePopup input:hover,#cylPopup input:hover,#profPopup input:hover{border-color:#aab3c2}
-  #slicePopup input:focus,#cylPopup input:focus,#profPopup input:focus{border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
-  #slicePopup input:disabled,#slicePopup button:disabled,#cylPopup input:disabled,#cylPopup button:disabled,#profPopup input:disabled,#profPopup button:disabled{opacity:.45;cursor:default}
-  #slicePopup button,#cylPopup button,#profPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
+  #slicePopup input:hover,#cylPopup input:hover,#profPopup input:hover,#mirPopup input:hover,#xfPopup input:hover{border-color:#aab3c2}
+  #slicePopup input:focus,#cylPopup input:focus,#profPopup input:focus,#mirPopup input:focus,#xfPopup input:focus{border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
+  #slicePopup input:disabled,#slicePopup button:disabled,#cylPopup input:disabled,#cylPopup button:disabled,#profPopup input:disabled,#profPopup button:disabled,#mirPopup input:disabled,#xfPopup input:disabled,#mirPopup button:disabled,#xfPopup button:disabled{opacity:.45;cursor:default}
+  #slicePopup button,#cylPopup button,#profPopup button,#mirPopup button,#xfPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
-  #slicePopup button.lp,#cylPopup button.lp,#profPopup button.lp{padding:6px 8px;font-size:15px}
-  #slicePopup button.lp.on,#cylPopup button.lp.on,#profPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
-  #slicePopup #sl_ok,#cylPopup #cyl_ok,#profPopup #pf_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
-  #slicePopup .pinfo,#cylPopup .pinfo,#profPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
-  #slicePopup .phint,#cylPopup .phint,#profPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
+  #slicePopup button.lp,#cylPopup button.lp,#profPopup button.lp,#mirPopup button.lp,#xfPopup button.lp{padding:6px 8px;font-size:15px}
+  #slicePopup button.lp.on,#cylPopup button.lp.on,#profPopup button.lp.on,#mirPopup button.lp.on,#xfPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
+  #slicePopup #sl_ok,#cylPopup #cyl_ok,#profPopup #pf_ok,#mirPopup #mir_ok,#xfPopup #xf_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
+  #slicePopup .pinfo,#cylPopup .pinfo,#profPopup .pinfo,#mirPopup .pinfo,#xfPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
+  #slicePopup .phint,#cylPopup .phint,#profPopup .phint,#mirPopup .phint,#xfPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
   #bevPopup .plab{display:inline-block;min-width:70px}
   #bevPopup button.lp{padding:6px 8px;font-size:15px}
   #bevPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
@@ -439,6 +439,37 @@
       <div class="prow linecmd" id="line_alt"><span class="key">Alt+click</span> — new start: break the line here</div>
       <div class="phint" id="line_hint">Click the start, then the end — it snaps to vertices, midpoints, axes and angles. Type the length or the angle to fix it: before the end, the cursor only picks the side; after placing, a new length or angle redraws the line from its start (Enter); while you type, a dashed preview shows the new end. The angle is measured to the edge the line starts from (or to the axis), 90° — red. In a polyline, Alt+click puts a new start without a segment from the previous point. OK — finish the tool, Cancel or Esc — exit without the unfinished line.</div>
       <div class="prow" style="margin-top:8px;gap:10px"><button id="line_ok">OK</button><button id="line_cancel">Cancel</button></div>
+    </div>
+    <div id="mirPopup" hidden>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Mirror</b><span id="mir_state" style="font-size:14px">pick a body</span></div>
+      <div class="prow"><span class="plab">Plane</span><button id="mir_face" class="lp">Face</button><button id="mir_x" class="lp">X</button><button id="mir_y" class="lp">Y</button><button id="mir_z" class="lp">Z</button></div>
+      <div class="prow"><span class="plab">Offset</span><input id="mir_off" type="number" step="0.1" value="0"> mm</div>
+      <div class="prow"><span class="plab">Result</span><button id="mir_join" class="lp on">Join</button><button id="mir_flip" class="lp">Flip</button></div>
+      <div class="pinfo" id="mir_info">&nbsp;</div>
+      <div class="phint" id="mir_hint">Click the body to mirror (with one body in the model this step is skipped; Enter — the whole model). Then click a face — the mirror plane lies on it — or press X/Y/Z for a plane across that axis through the origin; Offset moves the plane along its normal. Join keeps the original and unites it with the mirrored copy: draw half of a symmetric part and mirror it on its cut face. Flip moves the body to the other side. Lines on the body follow it. Esc — one step back</div>
+      <div class="prow" style="gap:10px;margin-top:8px"><button id="mir_ok" disabled>OK</button><button id="mir_cancel">Cancel</button></div>
+    </div>
+    <div id="xfPopup" hidden>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Move / Scale</b><span id="xf_state" style="font-size:14px">pick a body</span></div>
+      <div class="prow"><span class="plab">Mode</span><button id="xf_move" class="lp on">Move</button><button id="xf_scale" class="lp">Scale</button></div>
+      <div id="xf_rows_move">
+        <div class="prow"><span class="plab">ΔX</span><input id="xf_dx" type="number" step="0.1" placeholder="0"> mm</div>
+        <div class="prow"><span class="plab">ΔY</span><input id="xf_dy" type="number" step="0.1" placeholder="0"> mm</div>
+        <div class="prow"><span class="plab">ΔZ</span><input id="xf_dz" type="number" step="0.1" placeholder="0"> mm</div>
+      </div>
+      <div id="xf_rows_scale" hidden>
+        <div class="prow"><span class="plab">Scale</span><input id="xf_s" type="number" step="10" min="0" placeholder="100"> %</div>
+        <div class="prow"><span class="plab"></span><button id="xf_half" class="lp">50 %</button><button id="xf_double" class="lp">200 %</button><button id="xf_inch" class="lp">inch → mm</button></div>
+        <div class="prow"><span class="plab">X / Y / Z</span><input id="xf_sx" type="number" step="10" min="0" placeholder="=" style="width:62px"><input id="xf_sy" type="number" step="10" min="0" placeholder="=" style="width:62px"><input id="xf_sz" type="number" step="10" min="0" placeholder="=" style="width:62px"></div>
+        <div class="prow"><span class="plab">Pivot</span><button id="xf_bottom" class="lp on">Bottom</button><button id="xf_center" class="lp">Center</button></div>
+      </div>
+      <div class="prow"><span class="plab">Original</span><button id="xf_off" class="lp on">Move it</button><button id="xf_copy" class="lp">Copy</button></div>
+      <div class="prow"><span class="plab">Copies</span><input id="xf_n" type="number" step="1" min="1" max="100" value="1" disabled></div>
+      <div class="pinfo" id="xf_info">&nbsp;</div>
+      <div class="phint" id="xf_hint">Click the body (with one body in the model this step is skipped; Enter — the whole model). Move: click a base point (vertices, midpoints, centers snap), move the mouse and click the target; X/Y/Z — only along that axis; or type ΔX/ΔY/ΔZ and press Enter. Scale: type % for all axes (X/Y/Z override single axes); Bottom keeps the part standing on the bed. Copy keeps the original; several copies go one step further each. Short Ctrl — toggle Copy. Copies touching the body are united with it. Esc — one step back</div>
+      <div class="prow" style="gap:10px;margin-top:8px"><button id="xf_ok" disabled>OK</button><button id="xf_cancel">Cancel</button></div>
     </div>
     <div id="profPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>

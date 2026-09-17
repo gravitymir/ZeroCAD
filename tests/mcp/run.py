@@ -239,6 +239,37 @@ def revolve_and_sweep_profiles():
 
 
 @case
+def mirror_move_copy_scale_body():
+    # Mirror (G,I) и Move / Copy / Scale (G,B) — mirror_body и transform_body:
+    # половинка → целое по грани, массив копий, перенос и масштаб одного тела,
+    # переворот на другую сторону, копия внахлёст сливается точной булевой;
+    # линия на теле едет вместе с ним
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    call('draw_line', {'from': [5, 0, 20], 'to': [15, 20, 20]})
+    d = call('mirror_body', {'plane_point': [20, 0, 0], 'plane_normal': [1, 0, 0]})
+    closed(d, 'mirror join'); exact(d, 'mirror join'); near(d['volume_mm3'], 16000, 1e-3, 'mirror join')
+    assert d['bbox_max'][0] == 40 and d['lines'] == 2, d
+    d = call('transform_body', {'move': [0, 50, 0], 'copies': 3})
+    closed(d, 'array'); near(d['volume_mm3'], 64000, 1e-3, 'array')
+    assert d['boolean'] == 'none' and d['lines'] == 8, d
+    d = call('transform_body', {'body_point': [10, 50, 20], 'move': [0, 0, 5]})
+    closed(d, 'move one'); near(d['volume_change_mm3'], 0, 1e-3, 'move one')
+    assert d['bbox_max'][2] == 25, d
+    d = call('transform_body', {'body_point': [10, 100, 20], 'scale': 0.5})
+    closed(d, 'scale'); near(d['volume_change_mm3'], -14000, 1e-3, 'scale 50 %')
+    d = call('mirror_body', {'body_point': [10, 150, 20], 'plane_point': [0, 0, 0], 'plane_normal': [0, 1, 0], 'mode': 'flip'})
+    closed(d, 'flip'); assert d['bbox_min'][1] == -170, d
+    d = call('transform_body', {'body_point': [10, 0, 20], 'move': [10, 0, 0], 'copies': 1})
+    closed(d, 'overlap'); exact(d, 'overlap'); near(d['volume_change_mm3'], 4000, 1e-3, 'overlapping copy')
+    try:
+        call('transform_body', {'scale': 0})
+    except McpError as e:
+        assert '> 0' in str(e), str(e)
+    else:
+        raise AssertionError('scale 0 must be refused')
+
+
+@case
 def gear_v_grooves_on_tooth_flanks():
     # Сценарий пользователя: диск Ø140 на 180 сегментов, 6 зубьев (вершина R70,
     # впадина R60), линия поперёк боковой грани на высоте 5.5 и move_edge −5.5.

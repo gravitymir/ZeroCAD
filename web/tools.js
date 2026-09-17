@@ -527,6 +527,27 @@ const ZC_TOOLS = [
     }
   },
   {
+    "name": "mirror_body",
+    "description": "Mirror a body across a plane — the same as the user's Mirror window (G,I). body_point: a point on the surface of the body (a connected part of the mesh); omit it for the whole model. mode join (default) keeps the original and unites it with the mirrored copy (a half part becomes whole); flip moves the body to the other side. Lines on the body follow it.",
+    "inputSchema": {"type": "object", "properties": {
+      "plane_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "plane_normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "body_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "mode": {"type": "string", "enum": ["join", "flip"]}
+    }, "required": ["plane_point", "plane_normal"]}
+  },
+  {
+    "name": "transform_body",
+    "description": "Move or scale a body — the same as the user's Move / Scale window (G,B). body_point: a point on the surface of the body; omit it for the whole model. move [dx, dy, dz] in mm, or scale (a factor, or [sx, sy, sz]) around pivot (default: the bottom centre of the body's bounding box). copies 0 (default) transforms the body itself; N keeps the original and adds N copies, each one more step further (a linear array; scale allows 1). Copies touching the rest are united with exact booleans.",
+    "inputSchema": {"type": "object", "properties": {
+      "body_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "move": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "scale": {"description": "factor, or [sx, sy, sz]"},
+      "pivot": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "copies": {"type": "integer"}
+    }}
+  },
+  {
     "name": "revolve_profile",
     "description": "Revolve a flat closed profile given in 3D around an axis — the same builder as the user's Revolve tool (G,O). The axis must lie in the plane of the profile and the profile on one side of it (points on the axis are fine). |angle| < 360 makes a sector with flat ends.",
     "inputSchema": {"type": "object", "properties": {

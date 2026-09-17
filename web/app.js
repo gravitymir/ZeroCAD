@@ -2069,7 +2069,7 @@ const tapeTool = {
 // Ошибки и предупреждения. Если открыто окно или палитра, блок встаёт над
 // ним той же ширины (места сверху мало — под ним), иначе — у курсора.
 // Держится 2.8 с
-const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'cylPopup', 'profPopup', 'rotPopup',
+const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'cylPopup', 'profPopup', 'mirPopup', 'xfPopup', 'rotPopup',
   'arrPopup', 'txtPopup', 'divPopup', 'vpanel', 'popup'];
 function warnTip(msg){
   const box = document.getElementById('warnBox');
@@ -2390,6 +2390,487 @@ for(const inp of [rot_a, rot_n]){
 }
 rot_ok.addEventListener('click', ()=>{ if(activeTool === rotTool) rotTool.apply(rotTool.angle); });
 rot_cancel.addEventListener('click', ()=>setActiveTool(null));
+
+// ---------- Тело: Mirror (G,I) и Move / Copy / Scale (G,B) ----------
+// Тело — связная часть сетки: треугольники, сцепленные общими вершинами
+// (по ключу 0.001 мм). Преобразование — матрица; зеркало разворачивает
+// обход. Одна функция applyBodyTransform для окон и MCP mirror_body /
+// transform_body
+function bodyComponents(pos){
+  const n = pos.length / 9, parent = new Int32Array(n);
+  for(let i=0;i<n;i++) parent[i] = i;
+  const find = i => { while(parent[i] !== i){ parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  const owner = new Map();
+  for(let t=0;t<n;t++) for(let e=0;e<3;e++){
+    const o = t*9 + e*3, k = keyOf(pos[o], pos[o+1], pos[o+2]);
+    const u = owner.get(k);
+    if(u === undefined) owner.set(k, t);
+    else { const a = find(u), b = find(t); if(a !== b) parent[a] = b; }
+  }
+  const comp = new Int32Array(n);
+  for(let t=0;t<n;t++) comp[t] = find(t);
+  return comp;
+}
+function bodyTrisOf(comp, tri){
+  const r = comp[tri], out = [];
+  for(let t=0;t<comp.length;t++) if(comp[t] === r) out.push(t);
+  return out;
+}
+function bodyCount(comp){ return new Set(comp).size; }
+function mirrorMatrix(P, n){
+  const u = n.clone().normalize(), d = 2 * u.dot(P);
+  return new THREE.Matrix4().set(
+    1-2*u.x*u.x, -2*u.x*u.y, -2*u.x*u.z, d*u.x,
+    -2*u.y*u.x, 1-2*u.y*u.y, -2*u.y*u.z, d*u.y,
+    -2*u.z*u.x, -2*u.z*u.y, 1-2*u.z*u.z, d*u.z,
+    0, 0, 0, 1);
+}
+function scaleMatrix(C, s){
+  return new THREE.Matrix4().makeTranslation(C.x, C.y, C.z)
+    .multiply(new THREE.Matrix4().makeScale(s.x, s.y, s.z))
+    .multiply(new THREE.Matrix4().makeTranslation(-C.x, -C.y, -C.z));
+}
+function bodyBox(pos, tris){
+  const b = new THREE.Box3(), v = new THREE.Vector3();
+  for(const t of tris) for(let k=0;k<3;k++) b.expandByPoint(v.fromArray(pos, t*9 + k*3));
+  return b;
+}
+// треугольники тела через матрицу, координаты до 0.001 мм (как у булевых);
+// у зеркала (det < 0) обход разворачивается — нормали снова наружу
+function bodyTrisTransformed(pos, tris, M){
+  const flip = M.determinant() < 0, q3 = x => Math.round(x*1000) / 1000, v = new THREE.Vector3(), out = [];
+  for(const t of tris){
+    const p = [0, 1, 2].map(k => { v.fromArray(pos, t*9 + k*3).applyMatrix4(M); return new THREE.Vector3(q3(v.x), q3(v.y), q3(v.z)); });
+    out.push(flip ? [p[0], p[2], p[1]] : p);
+  }
+  return out;
+}
+// призрак: копии тела полупрозрачным мешем
+function bodyGhost(pos, tris, mats, color){
+  const g = new THREE.Group(), v = new THREE.Vector3();
+  for(const M of mats){
+    const arr = new Float32Array(tris.length * 9);
+    let o = 0;
+    for(const t of tris) for(let k=0;k<3;k++){ v.fromArray(pos, t*9 + k*3).applyMatrix4(M); arr[o++] = v.x; arr[o++] = v.y; arr[o++] = v.z; }
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+    g.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({color, transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide})));
+  }
+  g.renderOrder = 5;
+  scene.add(g);
+  return g;
+}
+function killGroup(g){ if(g){ scene.remove(g); g.traverse(o => { if(o.geometry) o.geometry.dispose(); }); } return null; }
+// tris — треугольники тела (null — вся модель); mats — по матрице на копию;
+// keep — оригинал остаётся (Copy, Mirror Join), иначе тело заменяется
+// первой копией. Копия, чей габарит задевает остальное, объединяется точной
+// булевой, остальные просто добавляются. Линии на теле едут вместе с ним
+function applyBodyTransform(tris, mats, keep){
+  const pos = mesh.geometry.attributes.position.array, nT = pos.length / 9;
+  if(!nT) throw new Error('the model is empty');
+  const body = tris || Array.from({length: nT}, (_, i) => i);
+  const inBody = new Uint8Array(nT);
+  for(const t of body) inBody[t] = 1;
+  const V = (arr, o) => new THREE.Vector3(arr[o], arr[o+1], arr[o+2]);
+  let cur = [];
+  for(let t=0;t<nT;t++) if(keep || !inBody[t]) cur.push([V(pos, t*9), V(pos, t*9+3), V(pos, t*9+6)]);
+  const boxOf = list => { const b = new THREE.Box3(); for(const t of list) for(const p of t) b.expandByPoint(p); return b; };
+  const v0 = meshVolumeOf(pos), snap = takeSnapshot();
+  let usedBool = false;
+  for(const M of mats){
+    const piece = bodyTrisTransformed(pos, body, M);
+    // булева — только если габарит копии задевает хоть один треугольник
+    const pb = boxOf(piece).expandByScalar(0.01), tb0 = new THREE.Box3();
+    const touches = cur.some(t => { tb0.makeEmpty(); tb0.expandByPoint(t[0]); tb0.expandByPoint(t[1]); tb0.expandByPoint(t[2]); return tb0.intersectsBox(pb); });
+    if(touches){
+      const arr = meshBoolean(cur, piece, 'union');
+      usedBool = true;
+      cur = [];
+      for(let o=0;o<arr.length;o+=9) cur.push([V(arr, o), V(arr, o+3), V(arr, o+6)]);
+    } else cur = cur.concat(piece);
+  }
+  if(!cur.length) throw new Error('the result is empty');
+  // линии и жёсткие рёбра на теле: концы и середина лежат на его треугольниках
+  const bbox = bodyBox(pos, body).expandByScalar(0.05);
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), tri = new THREE.Triangle(), q = new THREE.Vector3(), tb = new THREE.Box3();
+  const onBody = P => {
+    if(!bbox.containsPoint(P)) return false;
+    for(const t of body){
+      a.fromArray(pos, t*9); b.fromArray(pos, t*9+3); c.fromArray(pos, t*9+6);
+      tb.makeEmpty(); tb.expandByPoint(a); tb.expandByPoint(b); tb.expandByPoint(c);
+      if(tb.distanceToPoint(P) > 0.02) continue;
+      tri.set(a, b, c);
+      if(tri.closestPointToPoint(P, q).distanceTo(P) < 0.02) return true;
+    }
+    return false;
+  };
+  const segOnBody = (A, B) => onBody(A) && onBody(B) && onBody(A.clone().add(B).multiplyScalar(0.5));
+  const moveSegs = (list, make) => {
+    const out = [];
+    for(const s of list){
+      const on = segOnBody(s.a, s.b);
+      if(!on || keep) out.push(make(s, s.a.clone(), s.b.clone()));
+      if(on) for(const M of (keep ? mats : mats.slice(0, 1))) out.push(make(s, s.a.clone().applyMatrix4(M), s.b.clone().applyMatrix4(M)));
+    }
+    return out;
+  };
+  const newGuides = moveSegs(guides, (g, A, B) => ({a: A, b: B, noExt: g.noExt, curve: g.curve}));
+  const newHard = moveSegs(hardEdges, (h, A, B) => ({a: A, b: B}));
+  const arr = new Float32Array(cur.length * 9);
+  let o = 0;
+  for(const t of cur) for(const p of t){ arr[o++] = p.x; arr[o++] = p.y; arr[o++] = p.z; }
+  pushHistory(snap);
+  setMeshFromArray(arr);
+  cleanupMesh();
+  if(openEdgeCount() > 0) healAll();
+  hardEdges = newHard;
+  restoreGuides(newGuides);
+  lastBoolPath = usedBool ? 'exact' : '';
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
+  extractEdges();
+  return Object.assign({volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
+}
+// тело под точкой на поверхности (для MCP): null — вся модель
+function zcBodyAt(point){
+  if(point == null) return null;
+  const t = zcFaceAt(zcV3(point, 'body_point'));
+  if(t < 0) throw new Error('body_point is not on the surface of the model');
+  return bodyTrisOf(bodyComponents(mesh.geometry.attributes.position.array), t);
+}
+// прозрачная плоскость-квадрат с рамкой: размер — по габариту модели
+function toolPlaneGroup(P, n, color){
+  const pos = mesh.geometry.attributes.position.array, box = new THREE.Box3();
+  for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+  const S = box.getSize(new THREE.Vector3()).length() * 0.6 + 5;
+  const C = box.getCenter(new THREE.Vector3());
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(new THREE.PlaneGeometry(2*S, 2*S),
+    new THREE.MeshBasicMaterial({color, transparent: true, opacity: 0.14, side: THREE.DoubleSide, depthWrite: false})));
+  g.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([[-S,-S],[S,-S],[S,S],[-S,S]].map(([x, y]) => new THREE.Vector3(x, y, 0))),
+    new THREE.LineBasicMaterial({color})));
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+  g.position.copy(C.addScaledVector(n, n.dot(new THREE.Vector3().subVectors(P, C))));
+  g.renderOrder = 4;
+  scene.add(g);
+  return g;
+}
+// общий выбор тела для окон: наведение подсвечивает связную часть, клик берёт
+const bodyPick = {
+  comp: null, hoverRoot: -1,
+  reset(){ this.comp = bodyComponents(mesh.geometry.attributes.position.array); this.hoverRoot = -1; },
+  single(){ return bodyCount(this.comp) <= 1; },
+  hover(e, q, label){
+    const h = raycastFace(q);
+    if(!h){ if(this.hoverRoot !== -1){ hidePatch(); this.hoverRoot = -1; } tipHide(); return null; }
+    const r = this.comp[h.faceIndex];
+    if(r !== this.hoverRoot){ showPatch({tris: bodyTrisOf(this.comp, h.faceIndex)}, 0x4da3ff); this.hoverRoot = r; }
+    tipAt(e, label + ' · click the body · Enter — the whole model');
+    return h;
+  },
+  take(q){
+    const h = raycastFace(q);
+    return h ? bodyTrisOf(this.comp, h.faceIndex) : null;
+  }
+};
+const fmtVol = v => Math.round(v).toLocaleString('en-US').replace(/,/g, ' ');
+
+// ---------- G,I — Mirror (Mirror во Fusion, Flip в SketchUp) ----------
+// тело (одно тело в модели — сразу вся модель) → плоскость: клик по грани
+// или X/Y/Z через начало, Offset сдвигает её по нормали. Join — оригинал и
+// отражённая копия сливаются (половинка детали → целая), Flip — тело
+// переворачивается на ту сторону
+const mirTool = {
+  hud: 'MIRROR · click a body (Enter — the whole model) → click a face for the plane or X/Y/Z · Join / Flip · Enter — apply · Esc — back',
+  stage: 'body', tris: null, axis: 'face', P0: null, n: null, mode: 'join', ghostG: null, plane: null,
+  on(){
+    bodyPick.reset();
+    this.tris = null; this.axis = 'face'; this.P0 = null; this.n = null; this.mode = 'join';
+    this.stage = bodyPick.single() ? 'plane' : 'body';
+    mir_off.value = '0';
+    mirPopup.style.left = '16px'; mirPopup.style.top = '48px';
+    mirPopup.hidden = false;
+    this.ui();
+  },
+  off(){
+    this.ghostG = killGroup(this.ghostG); this.plane = killGroup(this.plane);
+    hidePatch(); tipHide(); mirPopup.hidden = true; releaseToolInput();
+  },
+  offset(){ const v = parseFloat(String(mir_off.value).replace(',', '.')); return Number.isFinite(v) ? v : 0; },
+  planeP(){ return this.P0.clone().addScaledVector(this.n, this.offset()); },
+  matrix(){ return mirrorMatrix(this.planeP(), this.n); },
+  draw(){
+    this.ghostG = killGroup(this.ghostG); this.plane = killGroup(this.plane);
+    if(!this.n) return;
+    const pos = mesh.geometry.attributes.position.array;
+    const body = this.tris || Array.from({length: pos.length / 9}, (_, i) => i);
+    this.plane = toolPlaneGroup(this.planeP(), this.n, 0x4da3ff);
+    this.ghostG = bodyGhost(pos, body, [this.matrix()], 0x2ecc40);
+  },
+  setAxis(a){
+    if(this.stage === 'body') this.stage = 'plane';
+    this.axis = a;
+    if(a !== 'face'){
+      this.P0 = new THREE.Vector3(); this.n = new THREE.Vector3(a === 'x' ? 1 : 0, a === 'y' ? 1 : 0, a === 'z' ? 1 : 0);
+      this.stage = 'ready';
+    } else if(this.stage === 'ready'){ this.stage = 'plane'; this.P0 = null; this.n = null; }
+    this.draw(); this.ui();
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    if(this.stage === 'body'){
+      const t = bodyPick.take(q);
+      if(!t){ warnTip('Click a body to mirror, or Enter for the whole model'); return; }
+      this.tris = t; this.stage = 'plane'; tipHide(); this.ui();
+      return;
+    }
+    if(this.stage === 'plane'){
+      const h = raycastFace(q);
+      if(!h){ warnTip('Click a face for the mirror plane, or press X/Y/Z'); return; }
+      const r3 = x => Math.round(x*1000) / 1000;
+      this.P0 = new THREE.Vector3(r3(h.point.x), r3(h.point.y), r3(h.point.z));
+      this.n = triNormalAt(h.faceIndex).clone().normalize();
+      this.axis = 'face'; this.stage = 'ready';
+      if(!this.tris) hidePatch();
+      tipHide(); this.draw(); this.ui();
+      return;
+    }
+    if(this.stage === 'ready') this.commit();
+  },
+  move(e, q){
+    if(!q.inside) return;
+    if(this.stage === 'body'){ bodyPick.hover(e, q, 'Mirror'); return; }
+    if(this.stage === 'plane'){
+      const h = raycastFace(q);
+      if(!h){ tipHide(); return; }
+      this.P0 = h.point.clone(); this.n = triNormalAt(h.faceIndex).clone().normalize();
+      this.draw();
+      this.P0 = null; this.n = null; // только предпросмотр — плоскость ставит клик
+      tipAt(e, 'Mirror plane · click the face');
+    }
+  },
+  key(e){
+    const k = e.key.toLowerCase();
+    if(this.stage !== 'body' && (k === 'x' || k === 'y' || k === 'z')){ e.preventDefault(); this.setAxis(k); return true; }
+    if(e.key === 'Enter'){
+      e.preventDefault();
+      if(this.stage === 'body'){ this.tris = null; this.stage = 'plane'; hidePatch(); tipHide(); this.ui(); }
+      else if(this.stage === 'ready') this.commit();
+      return true;
+    }
+    return false;
+  },
+  esc(){
+    if(this.stage === 'ready'){ this.stage = 'plane'; this.P0 = null; this.n = null; this.axis = 'face'; this.draw(); this.ui(); return true; }
+    if(this.stage === 'plane' && !bodyPick.single()){ this.stage = 'body'; this.tris = null; this.draw(); hidePatch(); bodyPick.hoverRoot = -1; this.ui(); return true; }
+    return false;
+  },
+  ui(){
+    mir_state.textContent = {body: 'pick a body', plane: 'pick the plane', ready: this.mode}[this.stage];
+    for(const [id, a] of [['mir_face', 'face'], ['mir_x', 'x'], ['mir_y', 'y'], ['mir_z', 'z']])
+      document.getElementById(id).classList.toggle('on', this.axis === a && this.stage === 'ready');
+    mir_join.classList.toggle('on', this.mode === 'join');
+    mir_flip.classList.toggle('on', this.mode === 'flip');
+    mir_off.disabled = this.stage !== 'ready';
+    mir_hint.hidden = !hintsChk.checked;
+    mir_ok.disabled = this.stage !== 'ready';
+    const what = this.tris ? 'Body of ' + this.tris.length + ' triangles' : 'Whole model';
+    if(this.stage === 'body'){ mir_info.textContent = 'Click the body to mirror · Enter — the whole model'; return; }
+    if(this.stage === 'plane'){ mir_info.textContent = what + ' · click a face for the plane or X/Y/Z'; return; }
+    const pos = mesh.geometry.attributes.position.array;
+    let v = 0;
+    if(this.tris){ for(const t of this.tris){ const o = t*9; v += (pos[o]*(pos[o+4]*pos[o+8]-pos[o+5]*pos[o+7]) - pos[o+1]*(pos[o+3]*pos[o+8]-pos[o+5]*pos[o+6]) + pos[o+2]*(pos[o+3]*pos[o+7]-pos[o+4]*pos[o+6])) / 6; } }
+    else v = meshVolumeOf(pos);
+    const P = this.planeP();
+    mir_info.innerHTML = what + ' · ' + fmtVol(Math.abs(v)) + ' mm³ · plane ' + (this.axis === 'face' ? 'on the face' : this.axis.toUpperCase() + ' = ' + +P.dot(this.n).toFixed(3))
+      + ' · <b>' + (this.mode === 'join' ? 'Join' : 'Flip') + '</b>';
+  },
+  commit(){
+    if(this.stage !== 'ready'){ warnTip('Pick the mirror plane first'); return; }
+    const tris = this.tris, M = this.matrix(), keep = this.mode === 'join';
+    this.ghostG = killGroup(this.ghostG); this.plane = killGroup(this.plane);
+    try{ applyBodyTransform(tris, [M], keep); }
+    catch(err){ warnTip('Mirror failed: ' + err.message); this.draw(); return; }
+    setActiveTool(null);
+  }
+};
+
+// ---------- G,B — Move / Copy / Scale тела (Move/Copy во Fusion, Move и Scale в SketchUp) ----------
+// Move: базовая точка (привязки) → куда (привязки; X/Y/Z — по оси) или
+// поля ΔX/ΔY/ΔZ. Scale: поля Scale % и по осям, опорная точка — низ-центр
+// габарита (деталь остаётся на столе) или центр. Copy — оригинал остаётся;
+// у Move копий может быть несколько, каждая на шаг дальше (линейный массив)
+const xfTool = {
+  get hud(){
+    return 'MOVE / SCALE BODY · click a body (Enter — whole model) · Move: base point → target, X/Y/Z — along an axis, or type ΔX/ΔY/ΔZ · Scale: type % · short Ctrl — copy: '
+      + (this.copy ? '<span style="color:#6aff3d">ON</span>' : 'off') + ' · Enter — apply · Esc — back';
+  },
+  stage: 'body', tris: null, mode: 'move', copy: false, base: null, target: null, axisLock: null, pivotKind: 'bottom', ghostG: null, rubber: null,
+  on(){
+    bodyPick.reset();
+    this.tris = null; this.base = null; this.target = null; this.axisLock = null; this.copy = false;
+    this.stage = bodyPick.single() ? 'edit' : 'body';
+    for(const el of [xf_dx, xf_dy, xf_dz, xf_sx, xf_sy, xf_sz]) el.value = '';
+    xf_s.value = ''; xf_n.value = '1';
+    xfPopup.style.left = '16px'; xfPopup.style.top = '48px';
+    xfPopup.hidden = false;
+    this.ui();
+  },
+  off(){
+    this.ghostG = killGroup(this.ghostG); this.killRubber();
+    ghost.visible = false; hidePatch(); tipHide(); xfPopup.hidden = true; releaseToolInput();
+  },
+  killRubber(){ if(this.rubber){ scene.remove(this.rubber); this.rubber.geometry.dispose(); this.rubber = null; } },
+  num(el){ const v = parseFloat(String(el.value).replace(',', '.')); return Number.isFinite(v) ? v : null; },
+  typedDelta(){ return [xf_dx, xf_dy, xf_dz].some(el => this.num(el) != null); },
+  delta(){
+    if(this.typedDelta()) return new THREE.Vector3(this.num(xf_dx) || 0, this.num(xf_dy) || 0, this.num(xf_dz) || 0);
+    return this.base && this.target ? this.target.clone().sub(this.base) : null;
+  },
+  factors(){
+    const u = this.num(xf_s), f = el => { const v = this.num(el); return v != null ? v : u; };
+    const s = [f(xf_sx), f(xf_sy), f(xf_sz)];
+    if(s.some(x => x == null)) return s.every(x => x == null) ? null : new THREE.Vector3(...s.map(x => (x == null ? 100 : x) / 100));
+    return new THREE.Vector3(s[0] / 100, s[1] / 100, s[2] / 100);
+  },
+  copies(){ return this.copy && this.mode === 'move' ? Math.max(1, Math.min(100, Math.round(+xf_n.value || 1))) : 1; },
+  bodyIdx(){ const pos = mesh.geometry.attributes.position.array; return this.tris || Array.from({length: pos.length / 9}, (_, i) => i); },
+  pivot(){
+    const b = bodyBox(mesh.geometry.attributes.position.array, this.bodyIdx()), C = b.getCenter(new THREE.Vector3());
+    if(this.pivotKind === 'bottom') C.z = b.min.z;
+    return C;
+  },
+  mats(){
+    if(this.mode === 'move'){
+      const d = this.delta();
+      if(!d || d.length() < 1e-4) return null;
+      return Array.from({length: this.copies()}, (_, k) => new THREE.Matrix4().makeTranslation(d.x*(k+1), d.y*(k+1), d.z*(k+1)));
+    }
+    const s = this.factors();
+    if(!s) return null;
+    if([s.x, s.y, s.z].some(x => !(x > 0))) return 'bad';
+    if(Math.abs(s.x-1) < 1e-9 && Math.abs(s.y-1) < 1e-9 && Math.abs(s.z-1) < 1e-9) return null;
+    return [scaleMatrix(this.pivot(), s)];
+  },
+  draw(){
+    this.ghostG = killGroup(this.ghostG);
+    const m = this.mats();
+    if(Array.isArray(m)) this.ghostG = bodyGhost(mesh.geometry.attributes.position.array, this.bodyIdx(), m, 0x2ecc40);
+    this.killRubber();
+    if(this.mode === 'move' && this.base && this.target && !this.typedDelta()){
+      const col = this.axisLock ? {x: 0xff5a5a, y: 0x2ecc40, z: 0x4da3ff}[this.axisLock] : 0xf5c542;
+      this.rubber = new THREE.Line(new THREE.BufferGeometry().setFromPoints([this.base, this.target]),
+        new THREE.LineDashedMaterial({color: col, dashSize: 1.2, gapSize: 0.8, depthTest: false}));
+      this.rubber.computeLineDistances(); this.rubber.renderOrder = 6;
+      scene.add(this.rubber);
+    }
+  },
+  setMode(m){ this.mode = m; this.base = null; this.target = null; this.axisLock = null; ghost.visible = false; this.draw(); this.ui(); },
+  setCopy(on){ this.copy = on; toolb.innerHTML = this.hud + '<br>'; this.draw(); this.ui(); },
+  ctrlTap(){ if(this.stage === 'edit') this.setCopy(!this.copy); },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    if(this.stage === 'body'){
+      const t = bodyPick.take(q);
+      if(!t){ warnTip('Click a body, or Enter for the whole model'); return; }
+      this.tris = t; this.stage = 'edit'; tipHide(); this.ui();
+      return;
+    }
+    if(this.mode !== 'move' || this.typedDelta()){ if(this.mats()) this.commit(); return; }
+    if(!this.base){
+      const pk = pickOnFace(q);
+      if(!pk){ warnTip('Click the base point — a vertex, edge or face point'); return; }
+      this.base = pk.pos.clone(); this.target = pk.pos.clone(); ghost.visible = false;
+      this.ui(); return;
+    }
+    if(this.mats()) this.commit();
+  },
+  move(e, q){
+    if(!q.inside) return;
+    if(this.stage === 'body'){ bodyPick.hover(e, q, 'Move / Scale'); return; }
+    if(this.mode !== 'move' || this.typedDelta()){ ghost.visible = false; return; }
+    if(!this.base){ showPickGhost(e, q, 'Base point · '); return; }
+    if(this.axisLock){
+      const dir = new THREE.Vector3(this.axisLock === 'x' ? 1 : 0, this.axisLock === 'y' ? 1 : 0, this.axisLock === 'z' ? 1 : 0);
+      raycaster.setFromCamera({x: q.mx/q.w*2-1, y: -(q.my/q.h*2-1)}, q.cam);
+      const pk = pickOnFace(q);
+      // по оси: точка привязки проецируется на ось, иначе — ближайшая к лучу
+      const t = pk && pk.kind && pk.kind !== 'on face' && pk.kind !== 'on ground'
+        ? new THREE.Vector3().subVectors(pk.pos, this.base).dot(dir) : snapMM(rayLineParam(raycaster.ray, this.base, dir));
+      this.target = this.base.clone().addScaledVector(dir, t);
+      ghost.visible = false;
+    } else {
+      const pk = showPickGhost(e, q, '');
+      const p2 = pickOnFace(q);
+      if(p2) this.target = p2.pos.clone();
+      void pk;
+    }
+    this.draw(); this.ui();
+    const d = this.delta();
+    if(d) tipAt(e, (this.axisLock ? this.axisLock.toUpperCase() + ' · ' : '') + '<b>' + d.length().toFixed(1) + '</b> mm · click to ' + (this.copy ? 'copy' : 'move'));
+  },
+  key(e){
+    const k = e.key.toLowerCase();
+    if(e.key === 'Enter'){
+      e.preventDefault();
+      if(this.stage === 'body'){ this.tris = null; this.stage = 'edit'; hidePatch(); tipHide(); this.ui(); }
+      else this.commit();
+      return true;
+    }
+    if(this.stage === 'edit' && this.mode === 'move' && this.base && (k === 'x' || k === 'y' || k === 'z')){
+      e.preventDefault(); this.axisLock = this.axisLock === k ? null : k; this.ui(); return true;
+    }
+    return false;
+  },
+  esc(){
+    if(this.stage !== 'edit') return false;
+    if(this.base){ this.base = null; this.target = null; this.axisLock = null; this.draw(); tipHide(); this.ui(); return true; }
+    if(!bodyPick.single()){ this.stage = 'body'; this.tris = null; this.draw(); hidePatch(); bodyPick.hoverRoot = -1; this.ui(); return true; }
+    return false;
+  },
+  ui(){
+    xf_state.textContent = this.stage === 'body' ? 'pick a body' : (this.copy ? 'copy' : this.mode);
+    xf_move.classList.toggle('on', this.mode === 'move');
+    xf_scale.classList.toggle('on', this.mode === 'scale');
+    xf_rows_move.hidden = this.mode !== 'move';
+    xf_rows_scale.hidden = this.mode !== 'scale';
+    xf_off.classList.toggle('on', !this.copy);
+    xf_copy.classList.toggle('on', this.copy);
+    xf_n.disabled = !(this.copy && this.mode === 'move');
+    xf_bottom.classList.toggle('on', this.pivotKind === 'bottom');
+    xf_center.classList.toggle('on', this.pivotKind === 'center');
+    xf_hint.hidden = !hintsChk.checked;
+    const m = this.mats();
+    xf_ok.disabled = !(this.stage === 'edit' && Array.isArray(m));
+    // мышь показывает смещение в полях (пока их не правят руками)
+    if(this.mode === 'move' && !this.typedDelta()){
+      const d = this.base && this.target ? this.target.clone().sub(this.base) : null;
+      for(const [el, c] of [[xf_dx, 'x'], [xf_dy, 'y'], [xf_dz, 'z']]) el.placeholder = d ? d[c].toFixed(1) : '0';
+    }
+    if(this.stage === 'body'){ xf_info.textContent = 'Click the body · Enter — the whole model'; return; }
+    const what = this.tris ? 'Body' : 'Whole model';
+    if(m === 'bad'){ xf_info.style.color = '#ff6b6b'; xf_info.textContent = 'Scale must be above 0 %'; return; }
+    xf_info.style.color = '';
+    const b = bodyBox(mesh.geometry.attributes.position.array, this.bodyIdx()), sz = b.getSize(new THREE.Vector3());
+    const dims = s => [s.x, s.y, s.z].map(x => +x.toFixed(2)).join(' × ');
+    if(this.mode === 'move'){
+      const d = this.delta();
+      xf_info.innerHTML = !d ? what + ' ' + dims(sz) + ' mm · click the base point or type Δ'
+        : what + ' · <b>' + d.length().toFixed(2) + '</b> mm' + (this.axisLock ? ' along ' + this.axisLock.toUpperCase() : '')
+          + (this.copy ? ' · ' + this.copies() + (this.copies() === 1 ? ' copy' : ' copies') : '');
+      return;
+    }
+    const s = this.factors();
+    xf_info.innerHTML = what + ' ' + dims(sz) + (s ? ' → <b>' + dims(new THREE.Vector3(sz.x*s.x, sz.y*s.y, sz.z*s.z)) + '</b>' : '') + ' mm' + (this.copy ? ' · copy' : '');
+  },
+  commit(){
+    const m = this.mats();
+    if(!Array.isArray(m)){ warnTip(m === 'bad' ? 'Scale must be above 0 %' : this.mode === 'move' ? 'Set where to move: click the target or type Δ' : 'Type the scale in %'); return; }
+    this.ghostG = killGroup(this.ghostG); this.killRubber();
+    try{ applyBodyTransform(this.tris, m, this.copy); }
+    catch(err){ warnTip((this.mode === 'move' ? 'Move' : 'Scale') + ' failed: ' + err.message); this.draw(); return; }
+    setActiveTool(null);
+  }
+};
 
 // ---------- Revolve (G,O) и Sweep (G,W): тело из профиля ----------
 // Профиль — замкнутый плоский контур: выбранные линии/рёбра (B, Ctrl+клик)
@@ -4375,6 +4856,51 @@ const cylPopup = document.getElementById('cylPopup'), cyl_d = document.getElemen
   document.getElementById('cyl_cancel').addEventListener('click', () => { if(activeTool === cylTool) setActiveTool(null); });
   makeGripDrag(cylPopup);
 }
+const $id = id => document.getElementById(id);
+const mirPopup = $id('mirPopup'), mir_state = $id('mir_state'), mir_off = $id('mir_off'), mir_info = $id('mir_info'),
+      mir_hint = $id('mir_hint'), mir_ok = $id('mir_ok'), mir_join = $id('mir_join'), mir_flip = $id('mir_flip');
+{
+  mir_off.addEventListener('input', () => { if(activeTool === mirTool && mirTool.stage === 'ready'){ mirTool.draw(); mirTool.ui(); } });
+  mir_off.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === mirTool) mirTool.commit(); }
+    if(e.key === 'Escape') releaseToolInput();
+    e.stopPropagation();
+  });
+  for(const [id, a] of [['mir_face', 'face'], ['mir_x', 'x'], ['mir_y', 'y'], ['mir_z', 'z']])
+    $id(id).addEventListener('click', () => { if(activeTool === mirTool) mirTool.setAxis(a); });
+  for(const [el, m] of [[mir_join, 'join'], [mir_flip, 'flip']])
+    el.addEventListener('click', () => { if(activeTool === mirTool){ mirTool.mode = m; mirTool.ui(); } });
+  mir_ok.addEventListener('click', () => { if(activeTool === mirTool) mirTool.commit(); });
+  $id('mir_cancel').addEventListener('click', () => { if(activeTool === mirTool) setActiveTool(null); });
+  makeGripDrag(mirPopup);
+}
+const xfPopup = $id('xfPopup'), xf_state = $id('xf_state'), xf_move = $id('xf_move'), xf_scale = $id('xf_scale'),
+      xf_rows_move = $id('xf_rows_move'), xf_rows_scale = $id('xf_rows_scale'),
+      xf_dx = $id('xf_dx'), xf_dy = $id('xf_dy'), xf_dz = $id('xf_dz'), xf_s = $id('xf_s'), xf_sx = $id('xf_sx'), xf_sy = $id('xf_sy'), xf_sz = $id('xf_sz'),
+      xf_bottom = $id('xf_bottom'), xf_center = $id('xf_center'), xf_off = $id('xf_off'), xf_copy = $id('xf_copy'), xf_n = $id('xf_n'),
+      xf_info = $id('xf_info'), xf_hint = $id('xf_hint'), xf_ok = $id('xf_ok');
+{
+  const refresh = () => { if(activeTool === xfTool){ xfTool.draw(); xfTool.ui(); } };
+  for(const el of [xf_dx, xf_dy, xf_dz, xf_s, xf_sx, xf_sy, xf_sz, xf_n]){
+    el.addEventListener('input', refresh);
+    el.addEventListener('keydown', e => {
+      if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === xfTool) xfTool.commit(); }
+      if(e.key === 'Escape') releaseToolInput();
+      e.stopPropagation();
+    });
+  }
+  xf_move.addEventListener('click', () => { if(activeTool === xfTool) xfTool.setMode('move'); });
+  xf_scale.addEventListener('click', () => { if(activeTool === xfTool) xfTool.setMode('scale'); });
+  xf_off.addEventListener('click', () => { if(activeTool === xfTool) xfTool.setCopy(false); });
+  xf_copy.addEventListener('click', () => { if(activeTool === xfTool) xfTool.setCopy(true); });
+  xf_bottom.addEventListener('click', () => { if(activeTool === xfTool){ xfTool.pivotKind = 'bottom'; refresh(); } });
+  xf_center.addEventListener('click', () => { if(activeTool === xfTool){ xfTool.pivotKind = 'center'; refresh(); } });
+  for(const [id, v] of [['xf_half', 50], ['xf_double', 200], ['xf_inch', 2540]])
+    $id(id).addEventListener('click', () => { if(activeTool !== xfTool) return; xf_s.value = v; xf_sx.value = xf_sy.value = xf_sz.value = ''; refresh(); });
+  xf_ok.addEventListener('click', () => { if(activeTool === xfTool) xfTool.commit(); });
+  $id('xf_cancel').addEventListener('click', () => { if(activeTool === xfTool) setActiveTool(null); });
+  makeGripDrag(xfPopup);
+}
 const profPopup = document.getElementById('profPopup'), pf_title = document.getElementById('pf_title'), pf_state = document.getElementById('pf_state'),
       pf_revolve = document.getElementById('pf_revolve'), pf_angle = document.getElementById('pf_angle'), pf_segs = document.getElementById('pf_segs'),
       pf_info = document.getElementById('pf_info'), pf_hint = document.getElementById('pf_hint'), pf_ok = document.getElementById('pf_ok');
@@ -5126,6 +5652,8 @@ function showChordHint(){
     row('U', 'Cylinder / cone on a face', true) +
     row('O', 'Revolve a profile around an axis', true) +
     row('W', 'Sweep a profile along the selected lines', edgeSel.length > 0) +
+    row('I', 'Mirror a body', true) +
+    row('B', 'Move / copy / scale a body', true) +
     row('V', 'Vertex X/Y/Z', !!sel) +
     '<div style="opacity:.55">Esc — cancel</div>';
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 400) + 'px';
@@ -10286,6 +10814,16 @@ window.addEventListener('keydown', e=>{
     rotTool.items = it; setActiveTool(rotTool);
     return;
   }
+  // G,I — Mirror тела, G,B — Move / Copy / Scale тела (раньше B — рёбра границы)
+  for(const [code, ch, tool] of [['KeyI', 'i', mirTool], ['KeyB', 'b', xfTool]]){
+    if((e.code===code || e.key.toLowerCase()===ch) && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
+       && document.activeElement.tagName!=='INPUT'){
+      e.preventDefault(); chordG = 0; hideChordHint();
+      if(!(mesh.geometry.attributes.position.array.length)){ warnTip('The model is empty'); return; }
+      setActiveTool(activeTool === tool ? null : tool);
+      return;
+    }
+  }
   // G,O — Revolve (тело вращения профиля), G,W — Sweep (профиль вдоль пути);
   // раньше O — отступа грани
   for(const [code, ch, kind] of [['KeyO', 'o', 'revolve'], ['KeyW', 'w', 'sweep']]){
@@ -13472,6 +14010,42 @@ const ZC_COMMANDS = {
         tris.push([P[0], rings[0][j], rings[0][i]]); tris.push([P[n-1], rings[n-1][i], rings[n-1][j]]);
       }
       return zcApplySolid(tris, a.operation || 'join');
+    }
+  },
+  mirror_body: {
+    // то же, что окно Mirror (G,I): applyBodyTransform с матрицей зеркала
+    run(a){
+      const n = zcV3(a.plane_normal, 'plane_normal');
+      if(n.length() < 1e-9) throw new Error('plane_normal must not be zero');
+      const mode = a.mode || 'join';
+      if(mode !== 'join' && mode !== 'flip') throw new Error('mode must be join or flip');
+      const r = applyBodyTransform(zcBodyAt(a.body_point), [mirrorMatrix(zcV3(a.plane_point, 'plane_point'), n.normalize())], mode === 'join');
+      return Object.assign({boolean: lastBoolPath || 'none'}, r);
+    }
+  },
+  transform_body: {
+    // то же, что окно Move / Scale (G,B): перенос, масштаб, копии
+    run(a){
+      const tris = zcBodyAt(a.body_point), copies = Math.round(+a.copies || 0);
+      if(copies < 0 || copies > 100) throw new Error('copies must be 0…100');
+      const pos = mesh.geometry.attributes.position.array;
+      if(a.move != null && a.scale != null) throw new Error('give move or scale, not both');
+      let mats;
+      if(a.move != null){
+        const d = zcV3(a.move, 'move');
+        if(d.length() < 1e-4) throw new Error('move must not be zero');
+        mats = Array.from({length: Math.max(1, copies)}, (_, k) => new THREE.Matrix4().makeTranslation(d.x*(k+1), d.y*(k+1), d.z*(k+1)));
+      } else if(a.scale != null){
+        const s = Array.isArray(a.scale) ? zcV3(a.scale, 'scale') : new THREE.Vector3(+a.scale, +a.scale, +a.scale);
+        if(![s.x, s.y, s.z].every(x => x > 0)) throw new Error('scale factors must be > 0');
+        let C;
+        if(a.pivot != null) C = zcV3(a.pivot, 'pivot');
+        else { const b = bodyBox(pos, tris || Array.from({length: pos.length / 9}, (_, i) => i)); C = b.getCenter(new THREE.Vector3()); C.z = b.min.z; }
+        if(copies > 1) throw new Error('scale makes at most one copy');
+        mats = [scaleMatrix(C, s)];
+      } else throw new Error('give move [dx, dy, dz] or scale');
+      const r = applyBodyTransform(tris, mats, copies > 0);
+      return Object.assign({boolean: lastBoolPath || 'none'}, r);
     }
   },
   revolve_profile: {
