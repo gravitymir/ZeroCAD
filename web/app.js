@@ -2194,34 +2194,112 @@ function collectRotItems(){
   return {segs, pts: selAnchor ? [selAnchor.pos.clone()] : [], anchor: selAnchor};
 }
 // поставить повёрнутую копию; curveMap: старый id кривой -> id копии
-function placeRotated(items, center, n, angle, curveMap){
+function placeRotated(items, center, n, angle, curveMap, sn){
   const qn = new THREE.Quaternion().setFromAxisAngle(n, angle);
   const rot = P => P.clone().sub(center).applyQuaternion(qn).add(center);
-  for(const sg of items.segs){
+  // все отрезки копии прижимаются вместе: если хоть один мимо — ни один
+  const fit = sn ? items.segs.map(sg => sn.seg(sg.A, sg.B, rot(sg.A), rot(sg.B))) : [];
+  const snapAll = sn && fit.every(r => r);
+  items.segs.forEach((sg, i) => {
     let cv = 0;
     if(sg.curve){
       if(!curveMap.has(sg.curve)) curveMap.set(sg.curve, ++curveSeq);
       cv = curveMap.get(sg.curve);
     }
-    const A2 = rot(sg.A), B2 = rot(sg.B);
+    const A2 = snapAll ? fit[i].A : rot(sg.A), B2 = snapAll ? fit[i].B : rot(sg.B);
     addGuide(A2, B2, sg.noExt, cv);
     splitMeshByChord(A2, B2, !!(sg.noExt || sg.curve));
-  }
+  });
   for(const P of items.pts) makeAnchor(rot(P));
 }
-// сколько копий не легло на грани, хотя исходная линия на грани лежит
-function rotOffFaces(items, center, n, angles){
-  const test = getFaceTester();
+// Копия линии, лёгшая рядом с гранью, прижимается к «истинному месту»: зубья
+// колеса бывают не строго симметричны, центр — чуть мимо оси, и копия висит
+// в долях мм от грани (грань не делит, после канавки — «висящая»). Конец,
+// стоявший у исходника на ребре тела, ищет ближайшее ребро, остальные —
+// ближайшую точку поверхности; не дальше SNAP_COPY_TOL. Прижатая копия
+// обязана целиком лечь на грань, иначе остаётся как повёрнута
+const SNAP_COPY_TOL = 1;
+function copySnapper(tol = SNAP_COPY_TOL){
+  const pos = mesh.geometry.attributes.position.array, test = getFaceTester();
   const on = (A, B) => test(A) && test(B) && test(A.clone().lerp(B, 0.5));
-  const segs = items.segs.filter(sg => on(sg.A, sg.B));
-  if(!segs.length) return 0;
-  let off = 0;
+  // изломы — прямо из сетки: рёбра между непараллельными гранями. Рисуемые
+  // рёбра (chains) не годятся — пологий излом (дно впадины зуба, < 35°)
+  // сглажен и в них не попадает, и конец копии не находил ребра
+  const segs = [], byEdge = new Map();
+  {
+    const P = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()], nrm = new THREE.Vector3(), e1 = new THREE.Vector3();
+    for(let o=0;o<pos.length;o+=9){
+      for(let j=0;j<3;j++) P[j].fromArray(pos, o + j*3);
+      nrm.crossVectors(e1.subVectors(P[1], P[0]), new THREE.Vector3().subVectors(P[2], P[0]));
+      if(nrm.lengthSq() < 1e-12) continue;
+      nrm.normalize();
+      const k = P.map(v => keyOf(v.x, v.y, v.z));
+      for(let j=0;j<3;j++){
+        const a = k[j], b = k[(j+1)%3];
+        if(a === b) continue;
+        const ek = a < b ? a + '|' + b : b + '|' + a;
+        const rec = byEdge.get(ek);
+        if(!rec) byEdge.set(ek, {A: P[j].clone(), B: P[(j+1)%3].clone(), n: nrm.clone(), crease: false});
+        else if(rec.n.dot(nrm) < 0.99995) rec.crease = true;
+      }
+    }
+    for(const r of byEdge.values()) if(r.crease) segs.push([r.A, r.B]);
+  }
+  const ab = new THREE.Vector3(), q = new THREE.Vector3();
+  const nearSeg = P => {
+    let best = null, bd = Infinity;
+    for(const [A, B] of segs){
+      ab.subVectors(B, A); const L2 = ab.lengthSq(); if(L2 < 1e-12) continue;
+      const t = Math.max(0, Math.min(1, q.subVectors(P, A).dot(ab) / L2));
+      const C = A.clone().addScaledVector(ab, t), d = C.distanceTo(P);
+      if(d < bd){ bd = d; best = C; }
+    }
+    return {P: best, d: bd};
+  };
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), tri = new THREE.Triangle(), box = new THREE.Box3();
+  const nearSurf = P => {
+    let best = null, bd = tol;
+    for(let o=0;o<pos.length;o+=9){
+      a.fromArray(pos, o); b.fromArray(pos, o+3); c.fromArray(pos, o+6);
+      box.makeEmpty(); box.expandByPoint(a); box.expandByPoint(b); box.expandByPoint(c);
+      if(box.distanceToPoint(P) > bd) continue;
+      tri.set(a, b, c); tri.closestPointToPoint(P, q);
+      const d = q.distanceTo(P);
+      if(d <= bd){ bd = d; best = q.clone(); }
+    }
+    return best;
+  };
+  const onEdge = P => nearSeg(P).d < 0.012;
+  const snapEnd = (P0, P) => {
+    if(onEdge(P0)){ const r = nearSeg(P); return r.d <= tol ? r.P : null; }
+    return nearSurf(P);
+  };
+  // {A, B, snapped} — копия на месте (прижатая или уже лежавшая), null — мимо
+  return {on, seg(A0, B0, A, B){
+    if(on(A, B)) return {A, B, snapped: false};
+    if(!on(A0, B0)) return null;
+    const A2 = snapEnd(A0, A), B2 = snapEnd(B0, B);
+    if(!A2 || !B2 || A2.distanceTo(B2) < 1e-3 || !on(A2, B2)) return null;
+    // прижали к чужому ребру — длина уехала: это не то место
+    if(Math.abs(A2.distanceTo(B2) - A0.distanceTo(B0)) > 2*tol) return null;
+    return {A: A2, B: B2, snapped: true};
+  }};
+}
+// сколько копий прижато к граням и сколько легло мимо, хотя исходная линия
+// на грани лежит
+function rotOffFaces(items, center, n, angles){
+  const sn = copySnapper();
+  const segs = items.segs.filter(sg => sn.on(sg.A, sg.B));
+  const res = {off: 0, snapped: 0};
+  if(!segs.length) return res;
   for(const a of angles){
     const qn = new THREE.Quaternion().setFromAxisAngle(n, a);
     const rot = P => P.clone().sub(center).applyQuaternion(qn).add(center);
-    if(segs.some(sg => !on(rot(sg.A), rot(sg.B)))) off++;
+    const rs = segs.map(sg => sn.seg(sg.A, sg.B, rot(sg.A), rot(sg.B)));
+    if(rs.some(r => !r)) res.off++;
+    else if(rs.some(r => r.snapped)) res.snapped++;
   }
-  return off;
+  return res;
 }
 // пунктирные призраки повёрнутых копий для предпросмотра
 function rotGhosts(items, center, n, angles){
@@ -2412,6 +2490,7 @@ const rotTool = {
     if(!this.center){ warnTip('Click the pivot first'); return; }
     if(Math.abs(angle) < 1e-9){ this.esc(); return; }
     pushUndo();
+    const sn = copySnapper(); // до правок: поверхность и рёбра — исходные
     if(!this.copy){
       // перенос: исходные сегменты стираются, кривая сохраняет свой id
       const curveMap = new Map();
@@ -2425,10 +2504,10 @@ const rotTool = {
         scene.remove(an.marker);
         if(i >= 0) anchors.splice(i, 1);
       }
-      placeRotated(this.items, this.center, this.n, angle, curveMap);
+      placeRotated(this.items, this.center, this.n, angle, curveMap, sn);
     } else {
       // копии: каждая следующая ещё на один угол дальше, у каждой своя кривая
-      for(const a of this.angles(angle)) placeRotated(this.items, this.center, this.n, a, new Map());
+      for(const a of this.angles(angle)) placeRotated(this.items, this.center, this.n, a, new Map(), sn);
     }
     if(!modified){ modified = true; s_mod.textContent = 'yes'; }
     clearEdgeSel(); deselect(); hideChordHint();
@@ -4856,10 +4935,11 @@ const arrTool = {
     if(!c){
       // копии мимо граней (центр не на оси, зубья не строго симметричны) —
       // остаются линиями в воздухе и грань не делят
-      const off = this.offFaces || 0;
-      arr_stat.style.display = off ? '' : 'none';
-      arr_stat.style.color = '#ffcc00';
-      arr_stat.textContent = off ? '⚠ ' + off + ' of ' + this.angles().length + ' copies miss the faces — lines in the air' : '';
+      const {off = 0, snapped = 0} = this.offFaces || {}, all = this.angles().length;
+      arr_stat.style.display = off || snapped ? '' : 'none';
+      arr_stat.style.color = off ? '#ffcc00' : '#6aff3d';
+      arr_stat.textContent = off ? '⚠ ' + off + ' of ' + all + ' copies miss the faces — lines in the air'
+        : snapped ? snapped + ' of ' + all + ' copies snap onto the faces (up to ' + SNAP_COPY_TOL + ' mm)' : '';
       return;
     }
     arr_cyl.innerHTML = '<div>Cylinder R ' + c.R.toFixed(1) + ' mm</div><div>' + c.segs + ' segments</div>';
@@ -4886,7 +4966,7 @@ const arrTool = {
   preview(center, n){
     killObjs(this.ghosts);
     const C = center || this.center, N = n || this.n;
-    this.offFaces = 0;
+    this.offFaces = null;
     if(C){
       this.ghosts = rotGhosts(this.items, C, N, this.angles());
       this.ghosts.push(...arrayAxisGuides(this.items, C, N));
@@ -4937,7 +5017,8 @@ const arrTool = {
   commit(){
     if(!this.center){ arr_status.textContent = 'click the array center first'; return; }
     pushUndo();
-    for(const a of this.angles()) placeRotated(this.items, this.center, this.n, a, new Map());
+    const sn = copySnapper();
+    for(const a of this.angles()) placeRotated(this.items, this.center, this.n, a, new Map(), sn);
     if(!modified){ modified = true; s_mod.textContent = 'yes'; }
     clearEdgeSel(); deselect(); hideChordHint();
     setActiveTool(null);
