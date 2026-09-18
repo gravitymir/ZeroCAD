@@ -2209,6 +2209,20 @@ function placeRotated(items, center, n, angle, curveMap){
   }
   for(const P of items.pts) makeAnchor(rot(P));
 }
+// сколько копий не легло на грани, хотя исходная линия на грани лежит
+function rotOffFaces(items, center, n, angles){
+  const test = getFaceTester();
+  const on = (A, B) => test(A) && test(B) && test(A.clone().lerp(B, 0.5));
+  const segs = items.segs.filter(sg => on(sg.A, sg.B));
+  if(!segs.length) return 0;
+  let off = 0;
+  for(const a of angles){
+    const qn = new THREE.Quaternion().setFromAxisAngle(n, a);
+    const rot = P => P.clone().sub(center).applyQuaternion(qn).add(center);
+    if(segs.some(sg => !on(rot(sg.A), rot(sg.B)))) off++;
+  }
+  return off;
+}
 // пунктирные призраки повёрнутых копий для предпросмотра
 function rotGhosts(items, center, n, angles){
   const objs = [];
@@ -4309,7 +4323,7 @@ function applySlice(P, n, snap){
   setMeshFromArray(out);
   weldVertices(0.0015); cleanupMesh();
   if(openEdgeCount() || nonManifoldEdgeCount()) healAll();
-  dropAirGuides();
+  dropAirGuides(pos);
   if(!modified){ modified = true; s_mod.textContent = 'yes'; }
   clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
   extractEdges();
@@ -4839,7 +4853,15 @@ const arrTool = {
     for(const el of [arr_cyl, arr_sugg]) el.style.display = c ? '' : 'none';
     arr_hint.style.display = c && hintsChk.checked ? '' : 'none';
     arr_auto.style.display = c && this.auto ? '' : 'none';
-    if(!c){ arr_stat.style.display = 'none'; return; }
+    if(!c){
+      // копии мимо граней (центр не на оси, зубья не строго симметричны) —
+      // остаются линиями в воздухе и грань не делят
+      const off = this.offFaces || 0;
+      arr_stat.style.display = off ? '' : 'none';
+      arr_stat.style.color = '#ffcc00';
+      arr_stat.textContent = off ? '⚠ ' + off + ' of ' + this.angles().length + ' copies miss the faces — lines in the air' : '';
+      return;
+    }
     arr_cyl.innerHTML = '<div>Cylinder R ' + c.R.toFixed(1) + ' mm</div><div>' + c.segs + ' segments</div>';
     const cnt = Math.max(2, Math.min(360, Math.round(+arr_n.value || 6)));
     const total = Math.max(1, Math.min(360, +arr_a.value || 360));
@@ -4864,9 +4886,11 @@ const arrTool = {
   preview(center, n){
     killObjs(this.ghosts);
     const C = center || this.center, N = n || this.n;
+    this.offFaces = 0;
     if(C){
       this.ghosts = rotGhosts(this.items, C, N, this.angles());
       this.ghosts.push(...arrayAxisGuides(this.items, C, N));
+      this.offFaces = rotOffFaces(this.items, C, N, this.angles());
     }
     this.ui();
   },
@@ -4889,7 +4913,12 @@ const arrTool = {
     if(!pk) return;
     this.center = pk.pos; this.n = pk.n;
     this.cyl = null; // центр выбран руками — ось цилиндра больше не действует
-    arr_status.textContent = 'center set · click to move it · Enter — OK';
+    // куда встал центр — словами, как в подсказке у курсора: center/vertex —
+    // точно, «on face» — где щёлкнули, и копии могут лечь мимо граней
+    const c = pk.pos, f = v => (Math.abs(v) < 5e-4 ? 0 : v).toFixed(2);
+    arr_status.innerHTML = 'Center: ' + kindLabel(pk.kind || 'on face')
+      + ' <span style="color:var(--muted)">' + f(c.x) + ', ' + f(c.y) + ', ' + f(c.z) + '</span>'
+      + '<br>click to move it · Enter — OK';
     this.preview();
   },
   move(e, q){
@@ -7453,7 +7482,7 @@ function beginPatchExtrude(patch){
 // это не рвёт сетку: у концов ребра общих соседей должно быть ровно столько,
 // сколько треугольников на ребре (link condition) — иначе получится
 // немногообразный стык
-function collapseShortEdges(pos, maxLen = 0.05, maxPasses = 6, maxDV = 1e-3){
+function collapseShortEdges(pos, maxLen = 0.05, maxPasses = 6, maxDV = 0.02){
   const K = (x, y, z) => keyOf(x, y, z);
   let cur = pos;
   for(let pass = 0; pass < maxPasses; pass++){
@@ -7501,7 +7530,7 @@ function collapseShortEdges(pos, maxLen = 0.05, maxPasses = 6, maxDV = 1e-3){
       if(L > maxLen) continue;
       const va = moveVol(a, b), vb = moveVol(b, a);
       const keepB = va <= vb;
-      if(Math.min(va, vb) > maxDV) continue; // это не игла, а тонкая деталь
+      if(Math.min(va, vb) > maxDV) continue; // это не игла, а тонкая деталь (у неё сотни мм³)
       cand.push({a: keepB ? a : b, b: keepB ? b : a, L, ts});
     }
     if(!cand.length) break;
@@ -7543,7 +7572,10 @@ function tidySlivers(maxLen = 0.05){
   setMeshFromArray(out);
   cleanupMesh();
   const pos = mesh.geometry.attributes.position.array;
-  if(openEdgeCount() || nonManifoldEdgeCount() || Math.abs(meshVolumeOf(pos) - v0) > 0.01){
+  // допуск по объёму — от размера детали: у колеса Ø140 это 0.14 мм³ при
+  // канавке в 565 мм³, то есть заметное изменение всё равно откатится
+  const tol = Math.max(0.05, Math.abs(v0) * 1e-6);
+  if(openEdgeCount() || nonManifoldEdgeCount() || Math.abs(meshVolumeOf(pos) - v0) > tol){
     setMeshFromArray(keep);
     return 0;
   }
@@ -10096,7 +10128,7 @@ function finishEdgeMove(){
         markNewFoldEdges(ed.snap.pos, true); // пологое дно канавки и излом от торца — видимыми рёбрами
         // линия канавки уехала со сгибом дальше выреза, хорды сверху частично
         // срезаны — повисшие в воздухе линии убираем: край выреза теперь ребро
-        dropAirGuides();
+        dropAirGuides(ed.snap.pos, new Set((ed.guideMoves || []).map(m => m.g)));
         break;
       }catch(err){
         console.warn('edge cut failed' + (extra ? ' (retry)' : ''), err);
@@ -14590,8 +14622,14 @@ function zcBevelFaceLoop(tri, size, segs){
 // Нарисованные линии, которые после выреза или фаски повисли в воздухе
 // (контур круга над снятой фаской): середина и концы не лежат на сетке.
 // Линии на земле (z = 0) — законное построение, их не трогаем
-function dropAirGuides(){
+// Убирает линии, которые операция сняла с поверхности. prevPos — сетка до
+// операции: кандидаты только линии, лежавшие на ней (плюс also — линии,
+// ехавшие со сгибом). Линия, висевшая в воздухе и до операции, не наша забота:
+// копии кругового массива с центром чуть мимо оси висят в долях мм от граней,
+// и канавка на одном зубе раньше сносила их все разом
+function dropAirGuides(prevPos, also){
   const pos = mesh.geometry.attributes.position.array;
+  const was = prevPos ? makeFaceTester(prevPos) : null;
   const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), tri = new THREE.Triangle(), q = new THREE.Vector3();
   const box = new THREE.Box3();
   const onMesh = P => {
@@ -14609,6 +14647,7 @@ function dropAirGuides(){
     const g = guides[i];
     if(Math.abs(g.a.z) < 0.01 && Math.abs(g.b.z) < 0.01) continue;
     const mid = g.a.clone().add(g.b).multiplyScalar(0.5);
+    if(was && !(also && also.has(g)) && !(was(mid) && was(g.a) && was(g.b))) continue;
     if(onMesh(mid) && onMesh(g.a) && onMesh(g.b)) continue;
     scene.remove(g.line); g.line.geometry.dispose();
     guides.splice(i, 1); dropped++;
@@ -14648,7 +14687,7 @@ function zcCutThroughCSG(tri){
   if(!(r.volume_change_mm3 < 0)){ undo(true); throw new Error('cut through removed nothing here'); }
   if(r.open_edges || r.nonmanifold_edges){ undo(true); throw new Error('cut through did not close the body here'); }
   delete r.solid_volume_mm3;
-  dropAirGuides(); r.lines = guides.length;
+  dropAirGuides(pos); r.lines = guides.length;
   return Object.assign({face_area_mm2: +patch.area.toFixed(3)}, r);
 }
 // Фаска/скругление контуров грани точной булевой: вдоль каждого контура
@@ -14782,7 +14821,7 @@ function zcBevelLoopsCSG(tri, size, segs, which){
   if(!(r.volume_change_mm3 < 0)){ undo(true); throw new Error('the bevel removed nothing here'); }
   if(r.open_edges || r.nonmanifold_edges){ undo(true); throw new Error('the bevel did not close the body here'); }
   delete r.solid_volume_mm3;
-  dropAirGuides(); r.lines = guides.length;
+  dropAirGuides(pos); r.lines = guides.length;
   return Object.assign({outlines: pick.length, outline_points: pick.reduce((s, L) => s + L.length, 0)}, r);
 }
 // Реализация команд агента. Схема (описания и параметры) — в tools.js;
