@@ -11559,7 +11559,6 @@ async function import3MF(buf, name){
     pushUndo(); // Ctrl+Z вернёт прежнюю модель
     loadProjectData(r.project, (name || 'model').replace(/\.3mf$/i, '.zcad'));
     projectHandle = null; setProjectDirty(true);
-    warnTip('Opened the full ZeroCAD project from ' + (name || 'the 3MF'));
     return 'project';
   }
   importMeshArray(r.tris, name);
