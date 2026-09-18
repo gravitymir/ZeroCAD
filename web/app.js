@@ -371,7 +371,10 @@ function markNewFoldEdges(prevPos, allNew){
   }
   let added = 0;
   for(const [k, L] of eMap){
-    if(L.n.length !== 2 || oldEdges.has(k)) continue;
+    // старое ребро тоже, если одна грань при нём новая: торец клина Straight
+    // встаёт на угловое ребро зуба, и излом там становится положе (40° → 12.8°)
+    // — без метки ребро, видное до выреза, пропадало
+    if(L.n.length !== 2 || (oldEdges.has(k) && L.old[0] === L.old[1])) continue;
     const dt = L.n[0].dot(L.n[1]);
     if(dt < FEATURE_COS || dt > FOLD_MIN_COS) continue; // и так видно / складки нет
     // осколок-игла у ребра: его нормаль — шум float, а не излом. Высота
@@ -534,6 +537,103 @@ const keyOf = (x,y,z) => kf(x)+','+kf(y)+','+kf(z);
 const SNAP = 0.1;
 const snapMM = v => Math.round(v/SNAP)*SNAP;
 
+// Пологий угол (4°…35°) или грань кривой поверхности? Излом положе 35°
+// сглаживается как сегменты цилиндра (Auto Smooth), и угол зуба в 12.8°
+// между гранью впадины и длинной гранью не рисовался — на одних зубьях ребро
+// было (31°… больше порога), на других нет. Отличаем, как глаз: у грани
+// цилиндра, конуса, шара с другой стороны такой же излом того же знака
+// (выпуклый к выпуклому, угол в пределах ×2), а у настоящего угла хотя бы с
+// одной стороны его нет — там большая плоскость или излом другого знака.
+// Грани — плоские куски, склеенные изломами мельче 4° (шум и 180 сегментов
+// обода сливаются в одну); кусок того же ребра на той же прямой соседом не
+// считается. Помечает ent.corner
+function markShallowCorners(eMap, pos){
+  const nT = pos.length / 9, par = new Int32Array(nT);
+  for(let i=0;i<nT;i++) par[i] = i;
+  const root = i => { while(par[i] !== i){ par[i] = par[par[i]]; i = par[i]; } return i; };
+  // нормали, центры и иглы (высота над длинной стороной < 0.05 мм): игла на
+  // самом ребре угла (5.5 × 0.004 мм от булевой) давала изломы 31° и 13° вместо
+  // одного 12.8°, поэтому у иглы берём грань за ней — через её другую длинную сторону
+  const N = new Array(nT), C = new Array(nT), needle = new Uint8Array(nT), keys = new Array(nT);
+  const P = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  for(let t=0;t<nT;t++){
+    for(let j=0;j<3;j++) P[j].fromArray(pos, t*9 + j*3);
+    const n = new THREE.Vector3().crossVectors(new THREE.Vector3().subVectors(P[1], P[0]), new THREE.Vector3().subVectors(P[2], P[0]));
+    const a2 = n.length();
+    const L = Math.max(P[0].distanceTo(P[1]), P[1].distanceTo(P[2]), P[2].distanceTo(P[0]));
+    needle[t] = !(a2 > 1e-9) || a2 / L < 0.05 ? 1 : 0;
+    N[t] = a2 > 1e-12 ? n.divideScalar(a2) : n;
+    C[t] = P[0].clone().add(P[1]).add(P[2]).multiplyScalar(1/3);
+    keys[t] = P.map(v => keyOf(v.x, v.y, v.z));
+  }
+  const edgeOf = (k1, k2) => eMap.get(k1 < k2 ? k1 + '|' + k2 : k2 + '|' + k1);
+  // грань за иглой t, если смотреть через ребро ent: сосед по самой длинной
+  // из двух других сторон; сам игла — нет ответа
+  const behind = (t, ent) => {
+    let best = -1, bl = -1;
+    for(let j=0;j<3;j++){
+      const k1 = keys[t][j], k2 = keys[t][(j+1)%3];
+      const e = edgeOf(k1, k2);
+      if(!e || e === ent || e.tris.length !== 2) continue;
+      const L = e.A.distanceTo(e.B);
+      if(L > bl){ bl = L; best = e.tris[0] === t ? e.tris[1] : e.tris[0]; }
+    }
+    return best >= 0 && !needle[best] ? best : -1;
+  };
+  const cand = [];
+  for(const ent of eMap.values()){
+    if(ent.normals.length !== 2 || ent.tris.length !== 2) continue;
+    const [t0, t1] = ent.tris;
+    if(!needle[t0] && !needle[t1]){
+      const dt = N[t0].dot(N[t1]);
+      if(dt > FOLD_MIN_COS){ const r1 = root(t0), r2 = root(t1); if(r1 !== r2) par[r1] = r2; continue; }
+    }
+    cand.push(ent);
+  }
+  const V = new THREE.Vector3();
+  const byPatch = new Map(), info = [];
+  for(const ent of cand){
+    const L = ent.A.distanceTo(ent.B);
+    if(!(L > 0.2)) continue;
+    let [t0, t1] = ent.tris;
+    // у иглы две стороны лежат на линии угла — рисуем одну, самую длинную
+    const longest = t => {
+      let bl = 0;
+      for(let j=0;j<3;j++){ const e = edgeOf(keys[t][j], keys[t][(j+1)%3]); if(e) bl = Math.max(bl, e.A.distanceTo(e.B)); }
+      return L >= bl - 1e-6;
+    };
+    if((needle[t0] && !longest(t0)) || (needle[t1] && !longest(t1))) continue;
+    if(needle[t0]) t0 = behind(t0, ent);
+    if(t1 >= 0 && needle[t1]) t1 = behind(t1, ent);
+    if(t0 < 0 || t1 < 0 || t0 === t1) continue;
+    const dt = N[t0].dot(N[t1]);
+    if(dt > FOLD_MIN_COS || dt < FEATURE_COS) continue;
+    // знак: вторая грань под плоскостью первой — выпуклый угол
+    const sense = N[t0].dot(V.subVectors(C[t1], ent.A)) < 0 ? 1 : -1;
+    const rec = {ent, sense, ang: Math.acos(Math.min(1, dt)),
+                 dir: new THREE.Vector3().subVectors(ent.B, ent.A).normalize(), P: root(t0), Q: root(t1)};
+    if(rec.P === rec.Q) continue;
+    info.push(rec);
+    for(const p of [rec.P, rec.Q]){ let l = byPatch.get(p); if(!l) byPatch.set(p, l = []); l.push(rec); }
+  }
+  const tmp = new THREE.Vector3();
+  const sibling = (rec, p) => {
+    const list = byPatch.get(p) || [];
+    for(let i=0;i<list.length && i<64;i++){
+      const o = list[i];
+      if(o === rec || o.sense !== rec.sense) continue;
+      const r = o.ang / rec.ang;
+      if(r < 0.5 || r > 2) continue;
+      // тот же отрезок прямой (ребро, разрезанное точкой) — не сосед
+      tmp.subVectors(o.ent.A, rec.ent.A);
+      const off = tmp.clone().sub(rec.dir.clone().multiplyScalar(tmp.dot(rec.dir))).length();
+      if(Math.abs(o.dir.dot(rec.dir)) > 0.9999 && off < 0.05) continue;
+      return true;
+    }
+    return false;
+  };
+  for(const rec of info) if(!(sibling(rec, rec.P) && sibling(rec, rec.Q))) rec.ent.corner = true;
+}
 function extractEdges(){
   chains = [];
   if(edgeLines){ scene.remove(edgeLines); edgeLines.geometry.dispose(); edgeLines = null; }
@@ -568,6 +668,7 @@ function extractEdges(){
       ent.tris.push(i/9);
     }
   }
+  markShallowCorners(eMap, pos);
   // видимые рёбра: граница или излом
   const feats=[];
   for(const ent of eMap.values()){
@@ -578,6 +679,7 @@ function extractEdges(){
     if(ent.normals.length >= 3 && ent.normals.every(nn => nn.dot(ent.normals[0]) > 0.9999)) dt = 1;
     const coplanarMany = ent.normals.length >= 3 && dt === 1;
     if((ent.normals.length!==2 && !coplanarMany) || dt < FEATURE_COS
+       || ent.corner
        || (hardEdges.length && dt < 0.99999 && onHardEdge(ent.A, ent.B))){ ent.feat = true; feats.push(ent); }
   }
   // Поверхности: треугольники, связанные невидимыми (гладкими) рёбрами.
