@@ -7747,11 +7747,82 @@ function collapseShortEdges(pos, maxLen = 0.05, maxPasses = 6, maxDV = 0.02){
 }
 // чистка после булевой: схлопываем микрорёбра, но откатываемся, если сетка
 // перестала быть замкнутой или объём поплыл
+// Щепка без короткой стороны — длинный узкий треугольник (5.5 × 0.004 мм),
+// вершина которого лежит почти на его длинной стороне (Т-стык от булевой).
+// Схлопывание коротких рёбер её не берёт, поэтому длинная сторона
+// переворачивается (edge flip): щепка и сосед за длинной стороной (a b v) +
+// (b a w) становятся (v a w) + (v w b). Вершина v лежит почти на ab, так что
+// новые треугольники — почти в плоскости соседа: объём меняется на площадь ×
+// высоту щепки (тысячные мм³). Переворот разрешён, если v проецируется внутрь
+// ab, ребра v–w ещё нет (сетка остаётся многообразной), новые треугольники
+// смотрят туда же, куда сосед, и оба толще щепки. За проход каждая вершина
+// участвует в одном перевороте; проходы — пока есть что переворачивать
+function flipNeedles(pos, hMax = 0.01, maxPasses = 12){
+  let cur = pos;
+  for(let pass = 0; pass < maxPasses; pass++){
+    const nT = cur.length / 9, P = new Map(), T = new Array(nT);
+    for(let t = 0; t < nT; t++){
+      T[t] = [0, 1, 2].map(j => {
+        const o = t*9 + j*3, k = keyOf(cur[o], cur[o+1], cur[o+2]);
+        if(!P.has(k)) P.set(k, new THREE.Vector3(cur[o], cur[o+1], cur[o+2]));
+        return k;
+      });
+    }
+    const E = new Map();                       // направленное ребро a>b -> треугольник
+    T.forEach((k, t) => { for(let j = 0; j < 3; j++) E.set(k[j] + '>' + k[(j+1)%3], t); });
+    const cross = (a, b, c) => new THREE.Vector3().subVectors(P.get(b), P.get(a))
+      .cross(new THREE.Vector3().subVectors(P.get(c), P.get(a)));
+    const longest = k => {
+      let best = null;
+      for(let j = 0; j < 3; j++){
+        const a = k[j], b = k[(j+1)%3], L = P.get(a).distanceTo(P.get(b));
+        if(!best || L > best.L) best = {a, b, v: k[(j+2)%3], L};
+      }
+      best.h = cross(best.a, best.b, best.v).length() / best.L;
+      return best;
+    };
+    const cand = [];
+    T.forEach((k, t) => {
+      if(k[0] === k[1] || k[1] === k[2] || k[0] === k[2]) return;
+      const c = longest(k);
+      if(c.h < hMax) cand.push(Object.assign(c, {t}));
+    });
+    if(!cand.length) break;
+    cand.sort((x, y) => x.h - y.h);
+    const gone = new Set(), busy = new Set(), add = [];
+    for(const c of cand){
+      if(gone.has(c.t) || busy.has(c.a) || busy.has(c.b) || busy.has(c.v)) continue;
+      const A = P.get(c.a), ab = new THREE.Vector3().subVectors(P.get(c.b), A);
+      const s = new THREE.Vector3().subVectors(P.get(c.v), A).dot(ab) / ab.lengthSq();
+      if(!(s > 1e-4 && s < 1 - 1e-4)) continue;
+      const u = E.get(c.b + '>' + c.a);
+      if(u === undefined || gone.has(u)) continue;
+      const w = T[u].find(x => x !== c.a && x !== c.b);
+      if(!w || w === c.v || busy.has(w) || E.has(c.v + '>' + w) || E.has(w + '>' + c.v)) continue;
+      const nu = cross(c.b, c.a, w);
+      if(nu.lengthSq() < 1e-18) continue;
+      if(cross(c.v, c.a, w).dot(nu) <= 0 || cross(c.v, w, c.b).dot(nu) <= 0) continue;
+      if(Math.min(longest([c.v, c.a, w]).h, longest([c.v, w, c.b]).h) <= c.h) continue;
+      gone.add(c.t); gone.add(u);
+      for(const x of [c.a, c.b, c.v, w]) busy.add(x);
+      add.push([c.v, c.a, w], [c.v, w, c.b]);
+    }
+    if(!add.length) break;
+    const out = new Float32Array((nT - gone.size + add.length) * 9);
+    let o = 0;
+    const put = k => { for(const kk of k){ const p = P.get(kk); out[o++] = p.x; out[o++] = p.y; out[o++] = p.z; } };
+    T.forEach((k, t) => { if(!gone.has(t)) put(k); });
+    for(const k of add) put(k);
+    cur = out;
+  }
+  return cur;
+}
 function tidySlivers(maxLen = 0.05){
   const before = mesh.geometry.attributes.position.array;
   const keep = before.slice(), v0 = meshVolumeOf(before);
-  const out = collapseShortEdges(before, maxLen);
-  if(out.length >= before.length) return 0;
+  const collapsed = collapseShortEdges(before, maxLen);
+  const out = flipNeedles(collapsed);
+  if(out === before) return 0;
   setMeshFromArray(out);
   cleanupMesh();
   const pos = mesh.geometry.attributes.position.array;
@@ -7762,7 +7833,7 @@ function tidySlivers(maxLen = 0.05){
     setMeshFromArray(keep);
     return 0;
   }
-  return (before.length - pos.length) / 9;
+  return Math.max(1, (before.length - pos.length) / 9);
 }
 function cleanupMesh(){
   const pos = mesh.geometry.attributes.position.array;
