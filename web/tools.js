@@ -238,6 +238,34 @@ const ZC_TOOLS = [
     }
   },
   {
+    "name": "export_3mf",
+    "description": "Export the model as 3MF (millimetres, accepted by PrusaSlicer, Bambu Studio, Orca, Cura). The whole ZeroCAD project (lines, points, hard edges) rides inside, so import_3mf or Open… in the editor restores it fully; slicers ignore that part. The server saves the file to its exports folder and returns the path.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "file name without extension (letters, digits, - and _), default: project name"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "import_3mf",
+    "description": "Open a 3MF file, replacing the current model (undo brings it back). A 3MF written by ZeroCAD opens as the full project; one from another program (or edited there) opens as its mesh, converted to mm from its unit, with component transforms applied. Answer says opened: project or mesh.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "absolute path to a .3mf file, or a bare file name in the server's exports folder (where export_3mf writes)"
+        }
+      },
+      "required": ["path"]
+    }
+  },
+  {
     "name": "export_stl",
     "description": "Export the model as a binary STL (millimetres) for 3D printing. The server saves it to its exports folder and returns the file path; the answer says whether the mesh is printable (closed, no edges shared by 3+ triangles).",
     "inputSchema": {

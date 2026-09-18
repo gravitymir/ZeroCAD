@@ -570,6 +570,16 @@ pub fn mcp(body: &[u8]) -> (&'static str, String) {
         "tools/call" => {
             let name = params.get("name").and_then(Json::as_str).unwrap_or("").to_string();
             let args = params.get("arguments").cloned().unwrap_or(Json::Obj(vec![]));
+            // import_3mf: файл читает сервер (вкладке диск недоступен) и отдаёт
+            // вкладке содержимое — тот же разбор, что у Open… в редакторе
+            let args = if name == "import_3mf" {
+                match read_3mf_arg(&args) {
+                    Ok(a) => a,
+                    Err(e) => return ("200 OK", Json::obj(vec![("jsonrpc", Json::str("2.0")), ("id", id), ("result",
+                        Json::obj(vec![("content", Json::Arr(vec![Json::obj(vec![("type", Json::str("text")), ("text", Json::Str(format!("import_3mf: {e}")))])])),
+                                       ("isError", Json::Bool(true))]))]).dump()),
+                }
+            } else { args };
             tool_result(&name, call_tab(&name, &args, Duration::from_secs(120)))
         }
         _ => return ("200 OK", rpc_error(id, -32601, &format!("method not found: {method}"))),
@@ -595,7 +605,10 @@ fn tool_result(name: &str, r: Result<Json, String>) -> Json {
             }
             let res = v.get("result").cloned().unwrap_or(Json::Null);
             if let Some(data) = res.get("stl_base64").and_then(Json::as_str) {
-                return save_stl(&res, data);
+                return save_export(&res, data, "stl");
+            }
+            if let (Some(data), Some("3mf")) = (res.get("file_base64").and_then(Json::as_str), res.get("ext").and_then(Json::as_str)) {
+                return save_export(&res, data, "3mf");
             }
             let image = v.get("image").and_then(Json::as_bool) == Some(true);
             let content = match (image, res.get("image").and_then(Json::as_str)) {
@@ -611,23 +624,55 @@ fn tool_result(name: &str, r: Result<Json, String>) -> Json {
     }
 }
 
-/// Экспорт STL: файл пишет сервер (вкладке браузера на диск нельзя) в папку
-/// `exports/` рядом с запуском; агенту — путь, размер и пригодность к печати
-fn save_stl(res: &Json, b64: &str) -> Json {
+/// путь к 3MF для import_3mf: абсолютный или имя в `exports/` (куда пишет
+/// export_3mf); только .3mf и не больше 64 МБ — вкладке уходит base64
+fn read_3mf_arg(args: &Json) -> Result<Json, String> {
+    let raw = args.get("path").and_then(Json::as_str).ok_or("path is required")?;
+    let mut path = std::path::PathBuf::from(raw);
+    if path.components().count() == 1 {
+        path = std::path::Path::new("exports").join(&path);
+    }
+    if path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) != Some("3mf".into()) {
+        return Err(format!("{} is not a .3mf file", path.display()));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err("the file is larger than 64 MB".into());
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("model.3mf").to_string();
+    Ok(Json::obj(vec![("data_base64", Json::Str(base64_encode(&bytes))), ("name", Json::Str(name))]))
+}
+
+fn base64_encode(b: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((b.len() + 2) / 3 * 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// Экспорт STL и 3MF: файл пишет сервер (вкладке браузера на диск нельзя) в
+/// папку `exports/` рядом с запуском; агенту — путь, размер и пригодность к печати
+fn save_export(res: &Json, b64: &str, ext: &str) -> Json {
     let text = |s: String| Json::obj(vec![("type", Json::str("text")), ("text", Json::Str(s))]);
     let err = |s: String| Json::obj(vec![("content", Json::Arr(vec![text(s)])), ("isError", Json::Bool(true))]);
-    let Some(bytes) = base64_decode(b64) else { return err("export_stl: broken STL data from the editor".into()) };
-    if bytes.len() < 84 {
-        return err("export_stl: the model is empty".into());
+    let Some(bytes) = base64_decode(b64) else { return err(format!("export_{ext}: broken data from the editor")) };
+    if bytes.len() < if ext == "stl" { 84 } else { 22 } {
+        return err(format!("export_{ext}: the model is empty"));
     }
     let name = safe_file_name(res.get("name").and_then(Json::as_str).unwrap_or("zerocad"));
     let dir = std::path::Path::new("exports");
     if let Err(e) = std::fs::create_dir_all(dir) {
-        return err(format!("export_stl: cannot create {}: {e}", dir.display()));
+        return err(format!("export_{ext}: cannot create {}: {e}", dir.display()));
     }
-    let path = dir.join(format!("{name}.stl"));
+    let path = dir.join(format!("{name}.{ext}"));
     if let Err(e) = std::fs::write(&path, &bytes) {
-        return err(format!("export_stl: cannot write {}: {e}", path.display()));
+        return err(format!("export_{ext}: cannot write {}: {e}", path.display()));
     }
     let abs = std::fs::canonicalize(&path).unwrap_or(path.clone());
     // canonicalize в Windows даёт \\?\C:\... — префикс для человека лишний
@@ -662,8 +707,8 @@ fn save_stl(res: &Json, b64: &str) -> Json {
                 Json::obj(vec![
                     ("type", Json::str("resource_link")),
                     ("uri", Json::Str(uri)),
-                    ("name", Json::Str(format!("{name}.stl"))),
-                    ("mimeType", Json::str("model/stl")),
+                    ("name", Json::Str(format!("{name}.{ext}"))),
+                    ("mimeType", Json::Str(format!("model/{ext}"))),
                 ]),
             ]),
         ),

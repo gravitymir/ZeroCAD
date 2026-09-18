@@ -470,6 +470,26 @@ def export_stl_printable():
     assert d['triangles'] == 12
 
 
+@case
+def export_3mf_and_open_it_back():
+    # свой 3MF несёт проект: после импорта на месте и сетка, и нарисованная линия
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    call('draw_line', {'from': [0, 10, 20], 'to': [20, 10, 20]})
+    d = call('export_3mf', {'name': 'zerocad_test_3mf'})
+    assert d.get('printable') is True, d
+    assert d['path'].endswith('zerocad_test_3mf.3mf'), d
+    call('new_shape', {'shape': 'sphere', 'size': 30})
+    d = call('import_3mf', {'path': 'zerocad_test_3mf.3mf'})
+    assert d['opened'] == 'project', d
+    assert d['lines'] == 1, d
+    near(d['volume_mm3'], 8000, 0.01, '3mf volume'); closed(d, '3mf')
+    try:
+        call('import_3mf', {'path': 'no_such_file.3mf'})
+        raise AssertionError('a missing file must be refused')
+    except McpError as e:
+        assert 'cannot read' in str(e), e
+
+
 def main():
     global URL
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

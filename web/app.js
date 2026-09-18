@@ -11244,6 +11244,7 @@ function loadProjectText(text, name){
 // свою же выгрузку обратно должно быть можно без поиска кнопки Import
 async function openFileAny(file, handle){
   if(/\.stl$/i.test(file.name)){ importSTL(await file.arrayBuffer(), file.name); return; }
+  if(/\.3mf$/i.test(file.name)){ await open3MFFile(await file.arrayBuffer(), file.name); return; }
   loadProjectText(await file.text(), file.name);
   if(handle) projectHandle = handle;
 }
@@ -11252,9 +11253,10 @@ async function openProject(){
     try{
       const [h] = await window.showOpenFilePicker({
         types: [
-          {description: 'ZeroCAD project or STL mesh', accept: {'application/json': ['.zcad', '.json'], 'model/stl': ['.stl']}},
+          {description: 'ZeroCAD project, STL or 3MF', accept: {'application/json': ['.zcad', '.json'], 'model/stl': ['.stl'], 'model/3mf': ['.3mf']}},
           {description: 'ZeroCAD project', accept: {'application/json': ['.zcad', '.json']}},
-          {description: 'STL mesh', accept: {'model/stl': ['.stl']}}
+          {description: 'STL mesh', accept: {'model/stl': ['.stl']}},
+          {description: '3MF model', accept: {'model/3mf': ['.3mf']}}
         ]});
       await openFileAny(await h.getFile(), h);
       return;
@@ -11281,7 +11283,10 @@ function parseSTLAny(buf){
   return new Float32Array(0);
 }
 function importSTL(buf, name){
-  const raw = parseSTLAny(buf);
+  importMeshArray(parseSTLAny(buf), name);
+}
+// сетка из файла (STL, 3MF) — новая модель без линий и точек, Ctrl+Z вернёт прежнюю
+function importMeshArray(raw, name){
   if(!raw.length || raw.length % 9 !== 0 || raw.some(v => !isFinite(v))){
     alert('Cannot import: no valid triangles in ' + (name || 'the file'));
     return;
@@ -11310,7 +11315,7 @@ function importSTL(buf, name){
   orthoFit = maxd * 0.62;
   updateOrthoFrusta(); updateOrthoPoses();
   projectHandle = null;
-  projectName = (name || 'imported').replace(/\.stl$/i, '');
+  projectName = (name || 'imported').replace(/\.(stl|3mf)$/i, '');
   setProjectDirty(true);
   const open = countBoundaryEdges();
   if(open) warnTip('Imported mesh is not closed: ' + open + ' open edges');
@@ -11402,6 +11407,10 @@ function makeZipStore(files){ // [{name, data: Uint8Array}]
   for(const u of all){ out.set(u, o); o += u.length; }
   return out;
 }
+// Внутрь кладётся и весь проект ZeroCAD (Metadata/zerocad.zcad — линии,
+// точки, жёсткие рёбра, параметры): слайсеры незнакомую часть пакета
+// пропускают, а ZeroCAD, открывая такой 3MF, восстанавливает модель целиком
+const ZCAD_IN_3MF = 'Metadata/zerocad.zcad';
 function build3MF(){
   const {verts, tris} = indexedMesh();
   const enc = new TextEncoder();
@@ -11417,13 +11426,151 @@ function build3MF(){
     {name: '[Content_Types].xml', data: enc.encode(
       '<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
       '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
-      '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>')},
+      '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>' +
+      '<Override PartName="/' + ZCAD_IN_3MF + '" ContentType="application/vnd.zerocad.project+json"/></Types>')},
     {name: '_rels/.rels', data: enc.encode(
       '<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
       '<Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>')},
-    {name: '3D/3dmodel.model', data: enc.encode(xml.join('\n'))}
+    {name: '3D/3dmodel.model', data: enc.encode(xml.join('\n'))},
+    {name: ZCAD_IN_3MF, data: enc.encode(JSON.stringify(projectData()))}
   ]);
 }
+
+// --- импорт 3MF: ZIP (без сжатия или deflate — так пишут слайсеры), модель
+// по связи из _rels/.rels, единицы (unit), составные объекты (components,
+// в т.ч. в других файлах пакета — p:path) и сдвиги (transform) у деталей
+// сборки. Свой 3MF с проектом внутри открывается целиком, если сетка в нём
+// та же (файл не правили в другой программе); иначе — только сетка ---
+function zipEntries(buf){
+  const dv = new DataView(buf), u8 = new Uint8Array(buf), dec = new TextDecoder();
+  let eocd = -1;
+  for(let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 65557); i--)
+    if(dv.getUint32(i, true) === 0x06054b50){ eocd = i; break; }
+  if(eocd < 0) throw new Error('not a 3MF package (no ZIP directory)');
+  const n = dv.getUint16(eocd + 10, true), out = new Map();
+  let p = dv.getUint32(eocd + 16, true);
+  for(let k = 0; k < n; k++){
+    if(dv.getUint32(p, true) !== 0x02014b50) throw new Error('broken ZIP directory');
+    const method = dv.getUint16(p + 10, true), size = dv.getUint32(p + 20, true);
+    const nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true);
+    const lho = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nl)).replace(/^\/+/, '');
+    p += 46 + nl + xl + cl;
+    const start = lho + 30 + dv.getUint16(lho + 26, true) + dv.getUint16(lho + 28, true);
+    // имена частей пакета — без учёта регистра (OPC)
+    out.set(name.toLowerCase(), {name, method, data: u8.subarray(start, start + size)});
+  }
+  return out;
+}
+async function zipRead(entry){
+  if(entry.method === 0) return entry.data;
+  if(entry.method === 8){
+    const s = new Blob([entry.data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(s).arrayBuffer());
+  }
+  throw new Error('unsupported ZIP compression (method ' + entry.method + ')');
+}
+const UNIT_MM = {micron: 0.001, millimeter: 1, centimeter: 10, inch: 25.4, foot: 304.8, meter: 1000};
+// матрица 3MF «m00 m01 m02 m10 … m32»: строка-вектор, x' = x·m00 + y·m10 + z·m20 + m30
+function mat3MF(txt){
+  const m = new THREE.Matrix4();
+  if(!txt) return m;
+  const v = txt.trim().split(/\s+/).map(Number);
+  if(v.length !== 12 || v.some(x => !isFinite(x))) throw new Error('bad transform "' + txt + '"');
+  return m.set(v[0], v[3], v[6], v[9],  v[1], v[4], v[7], v[10],  v[2], v[5], v[8], v[11],  0, 0, 0, 1);
+}
+async function parse3MF(buf){
+  const zip = zipEntries(buf), dec = new TextDecoder();
+  const text = async path => {
+    const e = zip.get(path.replace(/^\/+/, '').toLowerCase());
+    return e ? dec.decode(await zipRead(e)) : null;
+  };
+  const xmlOf = t => {
+    const doc = new DOMParser().parseFromString(t, 'application/xml');
+    if(doc.getElementsByTagName('parsererror').length) throw new Error('broken XML in the 3MF');
+    return doc;
+  };
+  // главная модель — по связи 3dmodel из _rels/.rels
+  let root = '3D/3dmodel.model';
+  const rels = await text('_rels/.rels');
+  if(rels) for(const r of xmlOf(rels).getElementsByTagNameNS('*', 'Relationship'))
+    if(/\/3dmodel$/.test(r.getAttribute('Type') || '')) root = r.getAttribute('Target');
+  const models = new Map();
+  const model = async path => {
+    const key = path.replace(/^\/+/, '').toLowerCase();
+    if(!models.has(key)){
+      const t = await text(path);
+      if(t == null) throw new Error('the 3MF has no model part ' + path);
+      const doc = xmlOf(t), objs = new Map();
+      for(const o of doc.getElementsByTagNameNS('*', 'object')) objs.set(o.getAttribute('id'), o);
+      models.set(key, {doc, objs});
+    }
+    return models.get(key);
+  };
+  const pathOf = el => { for(const a of el.attributes) if(a.localName === 'path') return a.value; return null; };
+  const top = await model(root);
+  const unit = top.doc.documentElement.getAttribute('unit') || 'millimeter';
+  const scale = UNIT_MM[unit];
+  if(!scale) throw new Error('unknown unit ' + unit);
+  const out = [], v = new THREE.Vector3();
+  const emit = async (path, id, M, depth) => {
+    if(depth > 16) throw new Error('components nest too deep');
+    const obj = (await model(path)).objs.get(id);
+    if(!obj) throw new Error('object ' + id + ' is missing');
+    if(/^(support|other)$/.test(obj.getAttribute('type') || '')) return; // не деталь
+    const mesh3 = obj.getElementsByTagNameNS('*', 'mesh')[0];
+    if(mesh3){
+      const vs = [];
+      for(const e of mesh3.getElementsByTagNameNS('*', 'vertex'))
+        vs.push(v.set(+e.getAttribute('x'), +e.getAttribute('y'), +e.getAttribute('z')).applyMatrix4(M).multiplyScalar(scale).toArray());
+      const flip = M.determinant() < 0; // зеркальный сдвиг выворачивает обход
+      for(const t of mesh3.getElementsByTagNameNS('*', 'triangle')){
+        let ids = [+t.getAttribute('v1'), +t.getAttribute('v2'), +t.getAttribute('v3')];
+        if(flip) ids = [ids[0], ids[2], ids[1]];
+        if(ids.some(i => !vs[i])) throw new Error('a triangle refers to a missing vertex');
+        for(const i of ids) out.push(vs[i][0], vs[i][1], vs[i][2]);
+      }
+      return;
+    }
+    for(const c of obj.getElementsByTagNameNS('*', 'component'))
+      await emit(pathOf(c) || path, c.getAttribute('objectid'), M.clone().multiply(mat3MF(c.getAttribute('transform'))), depth + 1);
+  };
+  for(const it of top.doc.getElementsByTagNameNS('*', 'item'))
+    await emit(pathOf(it) || root, it.getAttribute('objectid'), mat3MF(it.getAttribute('transform')), 0);
+  let project = null;
+  const zc = await text(ZCAD_IN_3MF);
+  if(zc) try{ project = JSON.parse(zc); }catch(_){}
+  return {tris: new Float32Array(out), project, unit};
+}
+// проект внутри 3MF годится, только если сетка та же: объём и габариты
+// совпадают (файл не правили в слайсере или другой программе)
+function projectMatchesMesh(project, tris){
+  if(!project || project.format !== PROJECT_FORMAT || !project.mesh) return false;
+  const pm = b64ToF32(project.mesh);
+  const b1 = new THREE.Box3().setFromArray(pm), b2 = new THREE.Box3().setFromArray(tris);
+  const v1 = meshVolumeOf(pm), v2 = meshVolumeOf(tris);
+  return Math.abs(v1 - v2) <= Math.max(0.01, Math.abs(v1) * 1e-6)
+    && b1.min.distanceTo(b2.min) < 0.01 && b1.max.distanceTo(b2.max) < 0.01;
+}
+// общий путь для Open…, перетаскивания и MCP import_3mf; отдаёт, что открыто
+async function import3MF(buf, name){
+  const r = await parse3MF(buf);
+  if(projectMatchesMesh(r.project, r.tris)){
+    pushUndo(); // Ctrl+Z вернёт прежнюю модель
+    loadProjectData(r.project, (name || 'model').replace(/\.3mf$/i, '.zcad'));
+    projectHandle = null; setProjectDirty(true);
+    warnTip('Opened the full ZeroCAD project from ' + (name || 'the 3MF'));
+    return 'project';
+  }
+  importMeshArray(r.tris, name);
+  if(r.project) warnTip('The 3MF was changed in another program — opened its mesh only');
+  return 'mesh';
+}
+async function open3MFFile(buf, name){
+  try{ await import3MF(buf, name); }
+  catch(err){ alert('Cannot open 3MF: ' + err.message); }
+}
+
 // --- STEP AP214, гранёное тело (FACETED_BREP): каждый треугольник — плоская
 // грань. Точных цилиндров нет — для них нужно B-rep ядро (OCCT/truck) ---
 function buildSTEP(){
@@ -13547,7 +13694,9 @@ document.getElementById('f_open').addEventListener('click', openProject);
 document.getElementById('f_import').addEventListener('click', ()=>{ f_stl.value = ''; f_stl.click(); });
 f_stl.addEventListener('change', async ()=>{
   const file = f_stl.files && f_stl.files[0];
-  if(file) importSTL(await file.arrayBuffer(), file.name);
+  if(!file) return;
+  if(/\.3mf$/i.test(file.name)) await open3MFFile(await file.arrayBuffer(), file.name);
+  else importSTL(await file.arrayBuffer(), file.name);
 });
 // перетаскивание файла на сцену: .stl — импорт, .zcad — открыть проект
 view.addEventListener('dragover', e=>{ e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
@@ -13556,8 +13705,9 @@ view.addEventListener('drop', async e=>{
   const file = e.dataTransfer.files && e.dataTransfer.files[0];
   if(!file) return;
   if(/\.stl$/i.test(file.name)) importSTL(await file.arrayBuffer(), file.name);
+  else if(/\.3mf$/i.test(file.name)) await open3MFFile(await file.arrayBuffer(), file.name);
   else if(/\.zcad$/i.test(file.name)) loadProjectText(await file.text(), file.name);
-  else warnTip('Drop an .stl or .zcad file');
+  else warnTip('Drop an .stl, .3mf or .zcad file');
 });
 f_file.addEventListener('change', async ()=>{
   const file = f_file.files && f_file.files[0];
@@ -15181,6 +15331,26 @@ const ZC_COMMANDS = {
         volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
     }
   },
+  // 3MF с проектом внутри — файл пишет сервер в exports/, как STL
+  export_3mf: {
+    run(a){
+      const buf = build3MF();
+      let bin = '';
+      for(let i=0;i<buf.length;i+=0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      return Object.assign({file_base64: btoa(bin), ext: '3mf', name: String(a.name || projectName || 'zerocad'),
+        bytes: buf.length, project_inside: true}, zcSummary());
+    }
+  },
+  // тот же разбор, что у Open…: свой 3MF — проект целиком, чужой — сетка
+  import_3mf: {
+    async run(a){
+      if(typeof a.data_base64 !== 'string') throw new Error('path is required');
+      const bin = atob(a.data_base64), u8 = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i);
+      const opened = await import3MF(u8.buffer, a.name || 'model.3mf');
+      return Object.assign({opened, lines: guides.length}, zcSummary());
+    }
+  },
   export_stl: {
     run(a){
       const buf = new Uint8Array(buildSTL());
@@ -15563,7 +15733,7 @@ async function zcRun(name, args){
   // открытый инструмент с предпросмотром (Slice, Bevel) при закрытии вернул бы
   // свой снимок и затёр изменение агента — закрываем его, как Esc; чтение
   // модели и снимок экрана инструмент не трогают
-  if(activeTool && !['get_state', 'screenshot', 'export_stl'].includes(name)) setActiveTool(null);
+  if(activeTool && !['get_state', 'screenshot', 'export_stl', 'export_3mf'].includes(name)) setActiveTool(null);
   lastBoolPath = '';
   const res = await c.run(args || {});
   // каким путём прошли булевы инструментов: exact — точный, bsp — запасной
