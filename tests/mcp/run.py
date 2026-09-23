@@ -471,6 +471,16 @@ def export_stl_printable():
 
 
 @case
+def export_glb_for_three_js():
+    # GLB: метры вместо миллиметров, Y вверх; имена узлов — контракт с IEGarage
+    call('new_shape', {'shape': 'cube', 'size': 400})
+    d = call('export_glb', {'name': 'zerocad_test_glb'})
+    assert d['path'].endswith('zerocad_test_glb.glb'), d
+    assert d['parts'] == ['body-main'], d
+    assert 20 < d['bytes'] < 200000, d
+
+
+@case
 def export_3mf_and_open_it_back():
     # свой 3MF несёт проект: после импорта на месте и сетка, и нарисованная линия
     call('new_shape', {'shape': 'cube', 'size': 20})

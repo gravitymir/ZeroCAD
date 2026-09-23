@@ -218,6 +218,23 @@ gizmoScene.add(new THREE.LineSegments(
   new THREE.EdgesGeometry(gizmoCube.geometry, 25),
   new THREE.LineBasicMaterial({color: 0x596070})));
 // плавный перелёт камеры к выбранному виду
+// Отдаляться можно настолько, насколько велика сцена: с режимом Trace в ней
+// стоит машина 4.4 м, а прежний предел 1200 мм не давал её даже увидеть
+function sceneSpan(){
+  let s = 200;
+  if(mesh && mesh.geometry.boundingSphere !== undefined){
+    const b = new THREE.Box3().setFromBufferAttribute(mesh.geometry.attributes.position);
+    s = Math.max(s, b.getSize(new THREE.Vector3()).length());
+  }
+  if(traceOn) s = Math.max(s, Math.hypot(traceBox.L, traceBox.W, traceBox.H));
+  return s;
+}
+function camFarLimit(){ return Math.max(1200, sceneSpan() * 4); }
+// дальняя плоскость следом за отдалением, иначе далёкая сцена просто исчезает
+function updateCamRange(){
+  const need = Math.max(5000, camDist * 3 + sceneSpan());
+  if(Math.abs(persp.far - need) > need * 0.05){ persp.far = need; persp.updateProjectionMatrix(); }
+}
 let viewAnim = null;
 function animateView(yaw1, pitch1){
   viewAnim = {y0:yaw, p0:pitch, y1:(yaw1===null?yaw:yaw1), p1:pitch1, t0:performance.now()};
@@ -11158,6 +11175,9 @@ function projectData(){
     anchors: anchors.map(a=>({pos: v3a(a.pos),
       bend: a.bend ? {pts0: a.bend.pts0.map(v3a), t: a.bend.t.slice(), j: a.bend.j} : null})),
     curveSeq,
+    trace: traceData(),
+    parts: partNames.map(x => ({name: x.name, p: x.p.slice()})),
+    hotspots: hotspots.map(x => ({name: x.name, p: x.p.slice()})),
     camera: {yaw, pitch, camDist, target: v3a(camTarget)}
   };
 }
@@ -11185,6 +11205,10 @@ function loadProjectData(d, name){
     if(sa.bend) a.bend = {pts0: sa.bend.pts0.map(a3v), t: sa.bend.t, j: sa.bend.j};
   }
   curveSeq = Math.max(d.curveSeq || 0, ...guides.map(g=>g.curve || 0), 0);
+  partNames = (d.parts || []).map(x => ({name: x.name, p: x.p.slice()}));
+  hotspots = (d.hotspots || []).map(x => ({name: x.name, p: x.p.slice()}));
+  traceLoad(d.trace);
+  partsUI(); markHotspotsInScene();
   if(d.camera){
     yaw = d.camera.yaw; pitch = d.camera.pitch; camDist = d.camera.camDist;
     camTarget.copy(a3v(d.camera.target));
@@ -11621,6 +11645,10 @@ function exportAs(kind){
   if(kind === 'stl') downloadBlob(new Blob([buildSTL()], {type: 'model/stl'}), projectName + '.stl');
   if(kind === 'obj') downloadBlob(new Blob([buildOBJ()], {type: 'text/plain'}), projectName + '.obj');
   if(kind === '3mf') downloadBlob(new Blob([build3MF()], {type: 'model/3mf'}), projectName + '.3mf');
+  if(kind === 'glb'){
+    try{ downloadBlob(new Blob([exportGLB()], {type: 'model/gltf-binary'}), projectName + '.glb'); }
+    catch(err){ warnTip('GLB: ' + err.message); }
+  }
   if(kind === 'step'){
     // гранёный STEP описывает ТВЁРДОЕ тело: с дырой в оболочке он был бы
     // некорректным файлом, а не «почти» моделью
@@ -13537,7 +13565,7 @@ canvas.addEventListener('wheel', e=>{
   e.preventDefault();
   const k = 1+Math.sign(e.deltaY)*0.1;
   if(q.is3D){
-    camDist = Math.max(20, Math.min(1200, camDist*k));
+    camDist = Math.max(20, Math.min(camFarLimit(), camDist*k));
   } else { // зум орто-видов (общий для трёх)
     orthoFit = Math.max(5, Math.min(400, orthoFit*k));
     updateOrthoFrusta();
@@ -13571,6 +13599,7 @@ function loop(t){
     pitch = viewAnim.p0 + (viewAnim.p1-viewAnim.p0)*ease;
     if(k>=1) viewAnim = null;
   }
+  updateCamRange();
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   persp.position.set(
     camTarget.x + camDist*cp*Math.cos(yaw),
@@ -13686,6 +13715,7 @@ hintsChk.addEventListener('change', applyHints);
 applyHints();
 document.getElementById('stl').addEventListener('click', ()=>exportAs('stl'));
 document.getElementById('x_3mf').addEventListener('click', ()=>exportAs('3mf'));
+document.getElementById('x_glb').addEventListener('click', ()=>exportAs('glb'));
 document.getElementById('x_obj').addEventListener('click', ()=>exportAs('obj'));
 document.getElementById('x_step').addEventListener('click', ()=>exportAs('step'));
 document.getElementById('f_save').addEventListener('click', e=>saveProject(e.shiftKey));
@@ -15350,6 +15380,15 @@ const ZC_COMMANDS = {
       return Object.assign({opened, lines: guides.length}, zcSummary());
     }
   },
+  export_glb: {
+    run(a){
+      const buf = exportGLB();
+      let bin = '';
+      for(let i=0;i<buf.length;i+=0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      return Object.assign({file_base64: btoa(bin), ext: 'glb', name: String(a.name || projectName || 'car'),
+        bytes: buf.length, parts: glbParts().map(p => p.name), hotspots: hotspots.map(h => h.name)}, zcSummary());
+    }
+  },
   export_stl: {
     run(a){
       const buf = new Uint8Array(buildSTL());
@@ -15689,7 +15728,7 @@ const ZC_COMMANDS = {
         for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
         box.getCenter(camTarget);
         const r = box.getSize(new THREE.Vector3()).length() / 2;
-        camDist = Math.max(20, Math.min(1200, r / Math.sin(persp.fov * Math.PI / 360) * 1.15));
+        camDist = Math.max(20, Math.min(camFarLimit(), r / Math.sin(persp.fov * Math.PI / 360) * 1.15));
       }
       // снимок своего размера: вкладка может быть узкой или фоновой (цикл стоит)
       const W = Math.max(200, Math.min(2000, Math.round(+a.width || 1000)));
@@ -15786,6 +15825,445 @@ if(HAS_SERVER && window.EventSource){
       .catch(() => {});
   });
 }
+
+// ---------- GLB (glTF 2.0 binary) — для Three.js и IEGarage ----------
+// Пишем сами, как STL/3MF/STEP: JSON-кусок + двоичный кусок в одном файле.
+// Переводим в соглашения glTF: метры вместо миллиметров, Y вверх вместо Z,
+// перёд машины (+Y у нас) смотрит в −Z. Матрица (x,z,−y) — поворот без
+// отражения, обход треугольников остаётся прежним
+function glbVec(x, y, z){ return [x/1000, z/1000, -y/1000]; }
+// то же вращение осей, но без метров: нормаль — направление, её не делят
+// вершины части без дублей: одинаковые точка+нормаль — одна вершина
+function glbPart(tris){
+  const map = new Map(), pos = [], nrm = [], idx = [];
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), n = new THREE.Vector3();
+  for(let o = 0; o < tris.length; o += 9){
+    A.fromArray(tris, o); B.fromArray(tris, o+3); C.fromArray(tris, o+6);
+    n.crossVectors(B.clone().sub(A), C.clone().sub(A));
+    if(n.lengthSq() < 1e-18) continue;
+    n.normalize();
+    const nv = [n.x, n.z, -n.y];
+    for(const P of [A, B, C]){
+      const pv = glbVec(P.x, P.y, P.z);
+      const k = pv.map(v => v.toFixed(5)).join(',') + '|' + nv.map(v => v.toFixed(3)).join(',');
+      let i = map.get(k);
+      if(i === undefined){ i = pos.length / 3; map.set(k, i); pos.push(pv[0], pv[1], pv[2]); nrm.push(nv[0], nv[1], nv[2]); }
+      idx.push(i);
+    }
+  }
+  return {pos: new Float32Array(pos), nrm: new Float32Array(nrm),
+          idx: pos.length / 3 > 65535 ? new Uint32Array(idx) : new Uint16Array(idx)};
+}
+// parts: [{name, tris}] — сетки; empties: [{name, pos:Vector3}] — узлы-хотспоты
+function buildGLB(parts, empties, rootName){
+  const bin = [], views = [], accs = [], meshes = [], nodes = [], children = [];
+  let off = 0;
+  const pad4 = n => (4 - (n % 4)) % 4;
+  const addView = (u8, target) => {
+    const pad = pad4(off);
+    if(pad){ bin.push(new Uint8Array(pad)); off += pad; }
+    bin.push(u8);
+    views.push({buffer: 0, byteOffset: off, byteLength: u8.byteLength, target});
+    off += u8.byteLength;
+    return views.length - 1;
+  };
+  const addAcc = (arr, type, comp, count, minmax, target) => {
+    const v = addView(new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength), target);
+    const a = {bufferView: v, componentType: comp, count, type};
+    if(minmax){ a.min = minmax[0]; a.max = minmax[1]; }
+    accs.push(a);
+    return accs.length - 1;
+  };
+  for(const part of parts){
+    const g = glbPart(part.tris);
+    if(!g.idx.length) continue;
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for(let i = 0; i < g.pos.length; i += 3) for(let j = 0; j < 3; j++){
+      lo[j] = Math.min(lo[j], g.pos[i+j]); hi[j] = Math.max(hi[j], g.pos[i+j]);
+    }
+    const aPos = addAcc(g.pos, 'VEC3', 5126, g.pos.length / 3, [lo, hi], 34962);
+    const aNrm = addAcc(g.nrm, 'VEC3', 5126, g.nrm.length / 3, null, 34962);
+    const aIdx = addAcc(g.idx, 'SCALAR', g.idx.BYTES_PER_ELEMENT === 4 ? 5125 : 5123, g.idx.length, null, 34963);
+    meshes.push({name: part.name, primitives: [{attributes: {POSITION: aPos, NORMAL: aNrm}, indices: aIdx, material: 0}]});
+    nodes.push({name: part.name, mesh: meshes.length - 1});
+    children.push(nodes.length - 1);
+  }
+  for(const e of (empties || [])){
+    const p = glbVec(e.pos.x, e.pos.y, e.pos.z);
+    nodes.push({name: e.name, translation: p});
+    children.push(nodes.length - 1);
+  }
+  if(!children.length) throw new Error('nothing to export');
+  nodes.push({name: rootName || 'car', children});
+  const json = {
+    asset: {version: '2.0', generator: 'ZeroCAD ' + window.ZC_BUILD},
+    scene: 0, scenes: [{nodes: [nodes.length - 1]}],
+    nodes, meshes, accessors: accs, bufferViews: views,
+    materials: [{name: 'default', pbrMetallicRoughness:
+      {baseColorFactor: [0.8, 0.8, 0.82, 1], metallicFactor: 0.1, roughnessFactor: 0.8}, doubleSided: true}],
+    buffers: [{byteLength: off}]
+  };
+  const enc = new TextEncoder();
+  let jsonU8 = enc.encode(JSON.stringify(json));
+  if(pad4(jsonU8.length)){                      // куски выравниваются по 4 байтам
+    const p = new Uint8Array(jsonU8.length + pad4(jsonU8.length)).fill(0x20);
+    p.set(jsonU8); jsonU8 = p;
+  }
+  const binLen = off + pad4(off);
+  const out = new Uint8Array(12 + 8 + jsonU8.length + 8 + binLen);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, 0x46546C67, true);            // 'glTF'
+  dv.setUint32(4, 2, true);
+  dv.setUint32(8, out.length, true);
+  dv.setUint32(12, jsonU8.length, true); dv.setUint32(16, 0x4E4F534A, true);  // 'JSON'
+  out.set(jsonU8, 20);
+  let o = 20 + jsonU8.length;
+  dv.setUint32(o, binLen, true); dv.setUint32(o + 4, 0x004E4942, true);       // 'BIN'
+  o += 8;
+  for(const u8 of bin){ out.set(u8, o); o += u8.byteLength; }
+  return out;
+}
+// ---------- Имена частей и узлы-хотспоты (контракт с IEGarage) ----------
+// Имя хранится не номером детали (нумерация меняется после каждой правки), а
+// точкой на ней: при экспорте по точке находится связная деталь. Хотспоты —
+// это просто именованные точки без геометрии, в GLB они станут пустыми узлами
+const PART_NAMES = ['body-main', 'hood', 'roof', 'trunk', 'door-front-l', 'door-front-r',
+  'door-rear-l', 'door-rear-r', 'door-sliding', 'windshield', 'window-rear',
+  'window-side-l', 'window-side-r', 'wheel-fl', 'wheel-fr', 'wheel-rl', 'wheel-rr',
+  'headlight-l', 'headlight-r', 'taillight-l', 'taillight-r', 'turnsignal-l', 'turnsignal-r',
+  'bumper-front', 'bumper-rear', 'mirror-l', 'mirror-r', 'wipers', 'fuel-cap-l', 'fuel-cap-r'];
+const HOTSPOT_NAMES = ['hotspot-engine', 'hotspot-battery', 'hotspot-oil-fill',
+  'hotspot-air-filter', 'hotspot-brakes-front', 'hotspot-brakes-rear', 'hotspot-wipers'];
+let partNames = [];   // [{name, p:[x,y,z]}] — имя детали и точка на ней
+let hotspots = [];    // [{name, p:[x,y,z]}] — пустые узлы
+// деталь (связная компонента), которой принадлежит точка
+function compAtPoint(pos, comp, P){
+  let best = -1, bd = Infinity;
+  for(let t = 0; t < comp.length; t++) for(let j = 0; j < 3; j++){
+    const o = t*9 + j*3;
+    const d = (pos[o]-P[0])**2 + (pos[o+1]-P[1])**2 + (pos[o+2]-P[2])**2;
+    if(d < bd){ bd = d; best = t; }
+  }
+  return bd <= 25 ? comp[best] : -1;    // не дальше 5 мм от детали
+}
+// что уходит в GLB: именованные детали, остальное — одним узлом body-main
+function glbParts(){
+  const pos = mesh.geometry.attributes.position.array, comp = bodyComponents(pos);
+  const taken = new Map();              // корень компоненты -> имя
+  for(const pn of partNames){
+    const r = compAtPoint(pos, comp, pn.p);
+    if(r >= 0 && !taken.has(r)) taken.set(r, pn.name);
+  }
+  const byName = new Map(), rest = [];
+  for(let t = 0; t < comp.length; t++){
+    const name = taken.get(comp[t]);
+    const dst = name ? (byName.get(name) || byName.set(name, []).get(name)) : rest;
+    for(let j = 0; j < 9; j++) dst.push(pos[t*9 + j]);
+  }
+  const parts = [];
+  for(const [name, arr] of byName) parts.push({name, tris: new Float32Array(arr)});
+  if(rest.length) parts.push({name: byName.has('body-main') ? 'body-rest' : 'body-main', tris: new Float32Array(rest)});
+  return parts;
+}
+function exportGLB(){
+  const parts = glbParts();
+  const empties = hotspots.map(h => ({name: h.name, pos: new THREE.Vector3().fromArray(h.p)}));
+  return buildGLB(parts, empties, projectName || 'car');
+}
+// назвать выбранную грань (её деталь) или поставить хотспот в её центр
+function assignPartName(name){
+  if(!name) return;
+  const pick = ppPatch && ppPatch.tris && ppPatch.tris.length ? ppPatch : null;
+  if(!pick){ warnTip('Click a face of the part first'); return; }
+  const pos = mesh.geometry.attributes.position.array;
+  const P = new THREE.Vector3();
+  for(const t of pick.tris) for(let j = 0; j < 3; j++) P.add(new THREE.Vector3().fromArray(pos, t*9 + j*3));
+  P.multiplyScalar(1 / (pick.tris.length * 3));
+  const p = [P.x, P.y, P.z];
+  if(name.startsWith('hotspot-')){
+    hotspots = hotspots.filter(h => h.name !== name);
+    hotspots.push({name, p});
+  }else{
+    // точку берём на самой детали: центр лоскута может висеть над вогнутой гранью
+    const o = pick.tris[0] * 9;
+    partNames = partNames.filter(x => x.name !== name);
+    partNames.push({name, p: [pos[o], pos[o+1], pos[o+2]]});
+  }
+  partsUI(); scheduleAutosave();
+  warnTip(name + ' assigned');
+}
+function partsUI(){
+  if(!tr_parts) return;
+  const rows = partNames.map(x => ['part', x.name]).concat(hotspots.map(x => ['spot', x.name]));
+  tr_parts.innerHTML = rows.length
+    ? rows.map(([kind, name]) => '<div class="trow" data-name="' + name + '"><span class="tdot">'
+        + (kind === 'spot' ? '◇' : '■') + '</span><span class="tname">' + name
+        + '</span><button data-act="del">×</button></div>').join('')
+    : '<div style="font-size:11px;color:var(--muted);padding:4px 2px">no named parts yet</div>';
+}
+function markHotspotsInScene(){
+  for(const o of scene.children.slice()) if(o.userData.hotspot){ scene.remove(o); o.geometry.dispose(); }
+  if(!traceOn) return;
+  for(const h of hotspots){
+    const m = new THREE.Mesh(new THREE.SphereGeometry(40, 10, 8),
+      new THREE.MeshBasicMaterial({color: 0xffaa00, wireframe: true}));
+    m.position.fromArray(h.p); m.userData.hotspot = true; scene.add(m);
+  }
+}
+{
+  tr_name.innerHTML = '<option value="">Assign name…</option>'
+    + PART_NAMES.map(n => '<option>' + n + '</option>').join('')
+    + '<optgroup label="hotspots">' + HOTSPOT_NAMES.map(n => '<option>' + n + '</option>').join('') + '</optgroup>';
+  tr_name.addEventListener('change', () => { assignPartName(tr_name.value); tr_name.value = ''; markHotspotsInScene(); });
+  tr_parts.addEventListener('click', e => {
+    const row = e.target.closest('.trow');
+    if(!row || e.target.dataset.act !== 'del') return;
+    partNames = partNames.filter(x => x.name !== row.dataset.name);
+    hotspots = hotspots.filter(x => x.name !== row.dataset.name);
+    partsUI(); markHotspotsInScene(); scheduleAutosave();
+  });
+}
+// ---------- Trace (car): обводка машины по фотографиям ----------
+// Отдельный режим, не мешающий обычному черчению: 6 плоскостей-референсов
+// (front/rear/left/right/top/bottom) с фотографиями, габариты машины и
+// быстрые ортогональные виды. Машина стоит на земле по соглашению IEGarage:
+// X — ширина, +Y — перёд, Z — высота, ноль — центр колёсной базы на асфальте.
+// Модель, как и всё в программе, в миллиметрах; в метры её переводит экспорт
+const TRACE_PRESETS = {
+  'City car':    [3500, 1650, 1500],
+  'Hatchback':   [4000, 1750, 1500],
+  'Sedan':       [4600, 1800, 1450],
+  'SUV medium':  [4500, 1850, 1700],
+  'SUV large':   [4800, 1900, 1800],
+  'Van small':   [4400, 1850, 1850],
+  'Van medium':  [5000, 1950, 1950],
+  'Van large':   [5800, 2050, 2550],
+  'Wagon':       [4800, 1800, 1500],
+  'Coupe':       [4600, 1850, 1350],
+  'Pickup':      [5300, 1900, 1850]
+};
+// Для каждого вида: куда смотрит камера, оси картинки (u — вправо на экране,
+// v — вверх) и вдоль какого габарита идёт её ширина. u выбран так, чтобы фото
+// не было зеркальным, когда смотришь на эту плоскость снаружи
+const TRACE_VIEWS = [
+  {id: 'front',  name: 'Front',  u: [-1, 0, 0], v: [0, 0, 1], span: 'W', yaw:  Math.PI/2, pitch: 0},
+  {id: 'rear',   name: 'Rear',   u: [ 1, 0, 0], v: [0, 0, 1], span: 'W', yaw: -Math.PI/2, pitch: 0},
+  {id: 'left',   name: 'Left',   u: [0, -1, 0], v: [0, 0, 1], span: 'L', yaw:  Math.PI,   pitch: 0},
+  {id: 'right',  name: 'Right',  u: [0,  1, 0], v: [0, 0, 1], span: 'L', yaw:  0,         pitch: 0},
+  {id: 'top',    name: 'Top',    u: [1, 0, 0],  v: [0, 1, 0], span: 'W', yaw:  Math.PI/2, pitch: 1.5},
+  {id: 'bottom', name: 'Bottom', u: [-1, 0, 0], v: [0, 1, 0], span: 'W', yaw:  Math.PI/2, pitch: -1.5}
+];
+let traceOn = false;
+let traceBox = {L: 4400, W: 1850, H: 1850};   // габариты машины, мм
+let traceRefs = {};   // id вида -> {url, opacity, width, cu, cv, flip, visible, mesh, tex}
+let traceSel = 'left';
+const traceEl = id => document.getElementById(id);
+
+// центр плоскости вида: на габаритной коробке машины
+function traceCenter(id){
+  const {L, W, H} = traceBox;
+  if(id === 'front')  return new THREE.Vector3(0,  L/2, H/2);
+  if(id === 'rear')   return new THREE.Vector3(0, -L/2, H/2);
+  if(id === 'left')   return new THREE.Vector3(-W/2, 0, H/2);
+  if(id === 'right')  return new THREE.Vector3( W/2, 0, H/2);
+  if(id === 'top')    return new THREE.Vector3(0, 0, H);
+  return new THREE.Vector3(0, 0, 0);            // bottom — на земле
+}
+function traceSpan(view){
+  const {L, W} = traceBox;
+  return view.span === 'L' ? L : W;
+}
+// картинка кладётся на плоскость прямоугольником шириной width (мм) вдоль u;
+// высота — из пропорций самого файла, чтобы фото не растягивалось
+function traceBuildPlane(id){
+  const r = traceRefs[id], view = TRACE_VIEWS.find(v => v.id === id);
+  if(!r || !view) return;
+  if(r.mesh){ scene.remove(r.mesh); r.mesh.geometry.dispose(); r.mesh = null; }
+  if(!r.tex || !r.tex.image) return;
+  const asp = (r.tex.image.width || 1) / (r.tex.image.height || 1);
+  const w = r.width || traceSpan(view), h = w / asp;
+  const u = new THREE.Vector3().fromArray(view.u).multiplyScalar(r.flip ? -1 : 1);
+  const v = new THREE.Vector3().fromArray(view.v);
+  const n = new THREE.Vector3().crossVectors(u, v);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial(
+    {map: r.tex, transparent: true, opacity: r.opacity, side: THREE.DoubleSide,
+     depthWrite: false, toneMapped: false}));
+  m.matrixAutoUpdate = false;
+  const pos = traceCenter(id).addScaledVector(u, r.cu || 0).addScaledVector(v, r.cv || 0);
+  m.matrix.makeBasis(u, v, n).setPosition(pos);
+  m.renderOrder = -1;     // фон: линии и тело рисуются поверх фотографии
+  m.visible = traceOn && r.visible !== false;
+  m.userData.refPlane = id;
+  scene.add(m);
+  r.mesh = m;
+}
+function traceRebuild(){
+  for(const v of TRACE_VIEWS) traceBuildPlane(v.id);
+}
+function traceSetImage(id, url){
+  const r = traceRefs[id] || (traceRefs[id] = {opacity: 0.5, visible: true, cu: 0, cv: 0, flip: false});
+  const view = TRACE_VIEWS.find(v => v.id === id);
+  r.url = url;
+  const img = new Image();
+  img.onload = () => {
+    const tex = new THREE.Texture(img);
+    tex.colorSpace = THREE.SRGBColorSpace || tex.colorSpace;
+    tex.needsUpdate = true;
+    r.tex = tex;
+    if(!r.width) r.width = traceSpan(view);   // по умолчанию фото ровно на габарит
+    if(r.cv === 0 && (id === 'left' || id === 'right' || id === 'front' || id === 'rear'))
+      r.cv = 0;                               // центр плоскости уже на середине высоты
+    traceBuildPlane(id);
+    traceUI();
+    scheduleAutosave();
+  };
+  img.onerror = () => warnTip('Could not read that image');
+  img.src = url;
+}
+function traceClear(id){
+  const r = traceRefs[id];
+  if(!r) return;
+  if(r.mesh){ scene.remove(r.mesh); r.mesh.geometry.dispose(); }
+  delete traceRefs[id];
+  traceUI(); scheduleAutosave();
+}
+function setTrace(on){
+  traceOn = !!on;
+  traceChk.checked = traceOn;
+  traceBody.hidden = !traceOn;
+  markHotspotsInScene();
+  for(const id in traceRefs) if(traceRefs[id].mesh)
+    traceRefs[id].mesh.visible = traceOn && traceRefs[id].visible !== false;
+  traceUI();
+}
+function traceToggleAll(){
+  const anyOn = TRACE_VIEWS.some(v => traceRefs[v.id] && traceRefs[v.id].visible !== false);
+  for(const v of TRACE_VIEWS){
+    const r = traceRefs[v.id];
+    if(!r) continue;
+    r.visible = !anyOn;
+    if(r.mesh) r.mesh.visible = traceOn && r.visible;
+  }
+  traceUI();
+}
+// ортогональный вид этой стороны (Alt+1…6), заодно выбирает её в панели
+function traceGoView(id){
+  const view = TRACE_VIEWS.find(v => v.id === id);
+  if(!view) return;
+  traceSel = id;
+  camTarget.set(0, 0, traceBox.H/2);
+  camDist = Math.max(traceBox.L, traceBox.W, traceBox.H) * 1.6;
+  animateView(view.yaw, view.pitch);
+  traceUI();
+}
+function traceUI(){
+  if(!traceOn) return;
+  const sel = traceRefs[traceSel];
+  tr_rows.innerHTML = TRACE_VIEWS.map(v => {
+    const r = traceRefs[v.id];
+    const dot = r ? (r.visible === false ? '○' : '●') : '·';
+    return '<div class="trow' + (v.id === traceSel ? ' sel' : '') + '" data-id="' + v.id + '">'
+      + '<span class="tdot">' + dot + '</span><span class="tname">' + v.name + '</span>'
+      + '<span class="tfile">' + (r ? Math.round((r.opacity) * 100) + '%' : 'no photo') + '</span>'
+      + '<button class="tload" data-act="load">Load</button>'
+      + (r ? '<button class="tdel" data-act="clear">×</button>' : '') + '</div>';
+  }).join('');
+  tr_len.value = traceBox.L; tr_wid.value = traceBox.W; tr_hei.value = traceBox.H;
+  v_tr_m.textContent = (traceBox.L/1000).toFixed(2) + ' × ' + (traceBox.W/1000).toFixed(2)
+    + ' × ' + (traceBox.H/1000).toFixed(2) + ' m';
+  partsUI();
+  tr_edit.hidden = !sel;
+  if(sel){
+    tr_sel_name.textContent = (TRACE_VIEWS.find(v => v.id === traceSel) || {}).name;
+    tr_op.value = Math.round(sel.opacity * 100); v_tr_op.textContent = tr_op.value + '%';
+    tr_w.value = Math.round(sel.width || 0);
+    tr_cu.value = Math.round(sel.cu || 0); tr_cv.value = Math.round(sel.cv || 0);
+    tr_flip.checked = !!sel.flip;
+  }
+}
+function traceApplyBox(){
+  traceBox.L = Math.max(500, Math.min(20000, +tr_len.value || 4400));
+  traceBox.W = Math.max(500, Math.min(5000,  +tr_wid.value || 1850));
+  traceBox.H = Math.max(500, Math.min(5000,  +tr_hei.value || 1850));
+  traceRebuild(); traceUI(); scheduleAutosave();
+}
+// данные режима в проекте (и, значит, внутри нашего 3MF)
+function traceData(){
+  const refs = {};
+  for(const id in traceRefs){
+    const r = traceRefs[id];
+    if(!r.url) continue;
+    refs[id] = {url: r.url, opacity: r.opacity, width: r.width, cu: r.cu, cv: r.cv,
+                flip: !!r.flip, visible: r.visible !== false};
+  }
+  return {on: traceOn, box: {...traceBox}, sel: traceSel, refs};
+}
+function traceLoad(d){
+  for(const id in traceRefs) if(traceRefs[id].mesh){ scene.remove(traceRefs[id].mesh); traceRefs[id].mesh.geometry.dispose(); }
+  traceRefs = {};
+  d = d || {};
+  if(d.box) traceBox = {L: +d.box.L || 4400, W: +d.box.W || 1850, H: +d.box.H || 1850};
+  traceSel = d.sel || 'left';
+  for(const id in (d.refs || {})){
+    const s = d.refs[id];
+    traceRefs[id] = {opacity: s.opacity == null ? 0.5 : s.opacity, width: s.width,
+                     cu: s.cu || 0, cv: s.cv || 0, flip: !!s.flip, visible: s.visible !== false};
+    traceSetImage(id, s.url);
+  }
+  setTrace(!!d.on);
+}
+{
+  const pick = document.getElementById('tr_file');
+  let pickFor = null;
+  pick.addEventListener('change', () => {
+    const f = pick.files && pick.files[0];
+    if(f && pickFor){
+      const fr = new FileReader();
+      fr.onload = () => traceSetImage(pickFor, String(fr.result));
+      fr.readAsDataURL(f);
+    }
+    pick.value = '';
+  });
+  tr_rows.addEventListener('click', e => {
+    const row = e.target.closest('.trow');
+    if(!row) return;
+    const id = row.dataset.id, act = e.target.dataset.act;
+    if(act === 'load'){ pickFor = id; pick.click(); return; }
+    if(act === 'clear'){ traceClear(id); return; }
+    traceGoView(id);            // клик по строке — этот вид и эта сторона
+  });
+  traceChk.addEventListener('change', () => { setTrace(traceChk.checked); scheduleAutosave(); });
+  for(const el of [tr_len, tr_wid, tr_hei]) el.addEventListener('change', traceApplyBox);
+  tr_preset.addEventListener('change', () => {
+    const p = TRACE_PRESETS[tr_preset.value];
+    if(!p) return;
+    [traceBox.L, traceBox.W, traceBox.H] = p;
+    traceRebuild(); traceUI(); scheduleAutosave();
+  });
+  const edit = (el, fn) => el && el.addEventListener('input', () => {
+    const r = traceRefs[traceSel];
+    if(!r) return;
+    fn(r);
+    traceBuildPlane(traceSel); traceUI(); scheduleAutosave();
+  });
+  edit(tr_op, r => r.opacity = Math.max(0.05, Math.min(1, (+tr_op.value || 50) / 100)));
+  edit(tr_w,  r => r.width = Math.max(100, +tr_w.value || 1000));
+  edit(tr_cu, r => r.cu = +tr_cu.value || 0);
+  edit(tr_cv, r => r.cv = +tr_cv.value || 0);
+  edit(tr_flip, r => r.flip = tr_flip.checked);
+  tr_hide.addEventListener('click', traceToggleAll);
+  tr_preset.innerHTML = '<option value="">Preset…</option>'
+    + Object.keys(TRACE_PRESETS).map(k => '<option>' + k + '</option>').join('');
+}
+// Alt+1…6 — ортогональные виды (как num-pad в Blender), Alt+R — спрятать фото
+window.addEventListener('keydown', e => {
+  if(!traceOn || !e.altKey || e.ctrlKey || e.metaKey) return;
+  if(document.activeElement && document.activeElement.tagName === 'INPUT') return;
+  const order = ['front', 'right', 'rear', 'left', 'top', 'bottom'];
+  const n = +e.key;
+  if(n >= 1 && n <= 6){ e.preventDefault(); traceGoView(order[n-1]); return; }
+  if(e.code === 'KeyR' || (e.key || '').toLowerCase() === 'r'){ e.preventDefault(); traceToggleAll(); }
+});
 
 resize();
 (async ()=>{

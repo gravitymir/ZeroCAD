@@ -24,6 +24,18 @@
   .vplabel b{color:var(--accent2)}
   #hud{position:absolute;left:10px;bottom:calc(50% + 8px);font-size:11px;color:var(--muted);
     background:rgba(0,0,0,.35);padding:6px 8px;border-radius:6px;pointer-events:none}
+  #tr_rows .trow{display:flex;align-items:center;gap:8px;padding:5px 7px;border:1px solid transparent;
+    border-radius:7px;cursor:pointer;font-size:13px}
+  #tr_rows .trow:hover{background:var(--panel2)}
+  #tr_rows .trow.sel{border-color:var(--accent2);background:var(--panel2)}
+  #tr_rows .tdot{color:var(--accent2);width:10px}
+  #tr_rows .tname{flex:1}
+  #tr_rows .tfile{color:var(--muted);font-size:11px}
+  #tr_rows button{flex:0 0 auto;padding:2px 8px;font-size:12px}
+  .trsize{display:flex;gap:6px}
+  .trsize label{flex:1;font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
+  .trsize input{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:4px 6px;font-size:13px}
   #panel{width:290px;background:var(--panel);border-left:1px solid var(--line);
     padding:16px;overflow-y:auto}
   h1{font-size:15px;margin:0 0 4px}
@@ -642,6 +654,45 @@
       <label class="switch"><input type="checkbox" id="hintsChk" checked><span class="knob"></span></label>
     </div>
 
+    <div class="sec">Trace (car)</div>
+    <div class="row" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+      <span style="font-size:12px;color:var(--muted)">Draw a car over photos</span>
+      <label class="switch"><input type="checkbox" id="traceChk"><span class="knob"></span></label>
+    </div>
+    <div id="traceBody" hidden>
+      <div class="row" style="display:flex;gap:8px;align-items:center">
+        <select id="tr_preset" style="flex:1"></select>
+        <button id="tr_hide" title="Show / hide all photos (Alt+R)">Hide all</button>
+      </div>
+      <div class="row trsize">
+        <label>Length<input type="number" id="tr_len" step="10" value="4400"></label>
+        <label>Width<input type="number" id="tr_wid" step="10" value="1850"></label>
+        <label>Height<input type="number" id="tr_hei" step="10" value="1850"></label>
+      </div>
+      <div class="row" style="font-size:12px;color:var(--muted)">mm · <span id="v_tr_m">4.40 × 1.85 × 1.85 m</span></div>
+      <div id="tr_rows"></div>
+      <div id="tr_edit" hidden>
+        <div class="row" style="font-size:12px;color:var(--muted)"><b id="tr_sel_name" style="color:var(--text)"></b> photo</div>
+        <div class="row"><label>Opacity <span id="v_tr_op">50%</span></label>
+          <input type="range" id="tr_op" min="5" max="100" step="5" value="50"></div>
+        <div class="row trsize">
+          <label>Width<input type="number" id="tr_w" step="10"></label>
+          <label>Shift →<input type="number" id="tr_cu" step="10"></label>
+          <label>Shift ↑<input type="number" id="tr_cv" step="10"></label>
+        </div>
+        <div class="row" style="display:flex;align-items:center;gap:8px">
+          <label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-size:12px;color:var(--muted)">
+            <input type="checkbox" id="tr_flip"> mirror the photo</label>
+        </div>
+      </div>
+      <div class="sec" style="margin-top:14px">Parts &amp; hotspots</div>
+      <div class="row"><select id="tr_name" style="width:100%"></select></div>
+      <div id="tr_parts"></div>
+      <div class="row" style="font-size:11px;color:var(--muted)">Click a face, then pick a name. Hotspots go to the face centre.</div>
+      <div class="row" style="font-size:12px;color:var(--muted)">Alt+1…6 — front / right / rear / left / top / bottom</div>
+      <input type="file" id="tr_file" accept="image/*" hidden>
+    </div>
+
     <div class="sec">Geometry engine</div>
     <div class="row" style="display:flex;gap:14px">
       <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
@@ -670,6 +721,7 @@
     <div class="btns" style="margin-top:10px">
       <button id="stl" title="Binary STL, millimetres">STL</button>
       <button id="x_3mf" title="3MF — slicers (PrusaSlicer, Bambu, Orca, Cura); keeps units and the whole ZeroCAD project, so Open… restores it">3MF</button>
+      <button id="x_glb" title="GLB (glTF 2.0) — Three.js, IEGarage; metres, Y up">GLB</button>
       <button id="x_obj" title="Wavefront OBJ">OBJ</button>
       <button id="x_step" title="Faceted STEP (AP214): a solid of flat faces, no exact cylinders">STEP</button>
     </div>

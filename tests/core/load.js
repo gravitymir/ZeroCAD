@@ -21,7 +21,11 @@ function extract(src, name){
 // names: функции app.js, которые нужны тесту (зависимости перечислять тоже)
 function loadCore(names){
   const src = fs.readFileSync(APP, 'utf8').replace(/\r\n/g, '\n');
-  const ctx = {console, Math, Float32Array, Int32Array, Map, Set, Array, Number, JSON, Infinity, Error};
+  // Uint8Array/DataView/TextEncoder нужны писателям файлов (GLB), ZC_BUILD —
+  // подпись в их заголовке
+  const ctx = {console, Math, Float32Array, Uint8Array, Uint16Array, Uint32Array, Int32Array,
+    ArrayBuffer, DataView, TextEncoder, TextDecoder, Map, Set, Array, Number, JSON, Infinity, Error,
+    Object, isFinite, ZC_BUILD: 'test'};
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'web', 'vendor', 'three.min.js'), 'utf8'), ctx);

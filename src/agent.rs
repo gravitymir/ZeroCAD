@@ -607,8 +607,10 @@ fn tool_result(name: &str, r: Result<Json, String>) -> Json {
             if let Some(data) = res.get("stl_base64").and_then(Json::as_str) {
                 return save_export(&res, data, "stl");
             }
-            if let (Some(data), Some("3mf")) = (res.get("file_base64").and_then(Json::as_str), res.get("ext").and_then(Json::as_str)) {
-                return save_export(&res, data, "3mf");
+            if let (Some(data), Some(ext @ ("3mf" | "glb"))) =
+                (res.get("file_base64").and_then(Json::as_str), res.get("ext").and_then(Json::as_str))
+            {
+                return save_export(&res, data, ext);
             }
             let image = v.get("image").and_then(Json::as_bool) == Some(true);
             let content = match (image, res.get("image").and_then(Json::as_str)) {
@@ -662,7 +664,7 @@ fn save_export(res: &Json, b64: &str, ext: &str) -> Json {
     let text = |s: String| Json::obj(vec![("type", Json::str("text")), ("text", Json::Str(s))]);
     let err = |s: String| Json::obj(vec![("content", Json::Arr(vec![text(s)])), ("isError", Json::Bool(true))]);
     let Some(bytes) = base64_decode(b64) else { return err(format!("export_{ext}: broken data from the editor")) };
-    if bytes.len() < if ext == "stl" { 84 } else { 22 } {
+    if bytes.len() < if ext == "stl" { 84 } else if ext == "glb" { 20 } else { 22 } {
         return err(format!("export_{ext}: the model is empty"));
     }
     let name = safe_file_name(res.get("name").and_then(Json::as_str).unwrap_or("zerocad"));
@@ -692,6 +694,12 @@ fn save_export(res: &Json, b64: &str, ext: &str) -> Json {
         ("nonmanifold_edges", Json::Num(nonmanifold)),
         ("printable", Json::Bool(printable)),
     ];
+    // у GLB свои поля: какие узлы получились (имена — контракт с IEGarage)
+    for k in ["parts", "hotspots"] {
+        if let Some(v) = res.get(k) {
+            info.push((k, v.clone()));
+        }
+    }
     if !printable {
         info.push((
             "warning",

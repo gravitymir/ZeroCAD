@@ -266,6 +266,20 @@ const ZC_TOOLS = [
     }
   },
   {
+    "name": "export_glb",
+    "description": "Export the model as GLB (glTF 2.0 binary) for Three.js viewers such as IEGarage: metres (1 unit = 1 m), Y up, the car's nose along -Z. Named parts become separate nodes (body-main, hood, wheel-fl...), hotspots become empty nodes with a position. The server saves the file to its exports folder and returns the path.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "file name without extension (letters, digits, - and _), default: project name"
+        }
+      },
+      "required": []
+    }
+  },
+  {
     "name": "export_stl",
     "description": "Export the model as a binary STL (millimetres) for 3D printing. The server saves it to its exports folder and returns the file path; the answer says whether the mesh is printable (closed, no edges shared by 3+ triangles).",
     "inputSchema": {
