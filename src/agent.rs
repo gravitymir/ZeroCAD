@@ -572,11 +572,11 @@ pub fn mcp(body: &[u8]) -> (&'static str, String) {
             let args = params.get("arguments").cloned().unwrap_or(Json::Obj(vec![]));
             // import_3mf: файл читает сервер (вкладке диск недоступен) и отдаёт
             // вкладке содержимое — тот же разбор, что у Open… в редакторе
-            let args = if name == "import_3mf" {
-                match read_3mf_arg(&args) {
+            let args = if name == "import_3mf" || name == "trace_reference" {
+                match read_file_arg(&args, &name) {
                     Ok(a) => a,
                     Err(e) => return ("200 OK", Json::obj(vec![("jsonrpc", Json::str("2.0")), ("id", id), ("result",
-                        Json::obj(vec![("content", Json::Arr(vec![Json::obj(vec![("type", Json::str("text")), ("text", Json::Str(format!("import_3mf: {e}")))])])),
+                        Json::obj(vec![("content", Json::Arr(vec![Json::obj(vec![("type", Json::str("text")), ("text", Json::Str(format!("{name}: {e}")))])])),
                                        ("isError", Json::Bool(true))]))]).dump()),
                 }
             } else { args };
@@ -626,23 +626,43 @@ fn tool_result(name: &str, r: Result<Json, String>) -> Json {
     }
 }
 
-/// путь к 3MF для import_3mf: абсолютный или имя в `exports/` (куда пишет
-/// export_3mf); только .3mf и не больше 64 МБ — вкладке уходит base64
-fn read_3mf_arg(args: &Json) -> Result<Json, String> {
-    let raw = args.get("path").and_then(Json::as_str).ok_or("path is required")?;
+/// Файл с диска для вкладки (ей диск недоступен): 3MF для import_3mf,
+/// фотография для trace_reference. Путь абсолютный или имя в `exports/`;
+/// не больше 64 МБ. Остальные поля команды остаются как есть
+fn read_file_arg(args: &Json, tool: &str) -> Result<Json, String> {
+    let photo = tool == "trace_reference";
+    let raw = match args.get("path").and_then(Json::as_str) {
+        Some(p) => p,
+        // фото можно и не давать: команда тогда только правит уже загруженное
+        None if photo => return Ok(args.clone()),
+        None => return Err("path is required".into()),
+    };
     let mut path = std::path::PathBuf::from(raw);
     if path.components().count() == 1 {
         path = std::path::Path::new("exports").join(&path);
     }
-    if path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) != Some("3mf".into()) {
-        return Err(format!("{} is not a .3mf file", path.display()));
-    }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let mime = match (photo, ext.as_str()) {
+        (false, "3mf") => "model/3mf",
+        (true, "png") => "image/png",
+        (true, "jpg" | "jpeg") => "image/jpeg",
+        (true, "webp") => "image/webp",
+        (true, _) => return Err(format!("{} is not a png/jpg/webp image", path.display())),
+        (false, _) => return Err(format!("{} is not a .3mf file", path.display())),
+    };
     let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     if bytes.len() > 64 * 1024 * 1024 {
         return Err("the file is larger than 64 MB".into());
     }
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("model.3mf").to_string();
-    Ok(Json::obj(vec![("data_base64", Json::Str(base64_encode(&bytes))), ("name", Json::Str(name))]))
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
+    let mut out = match args {
+        Json::Obj(kv) => kv.iter().filter(|(k, _)| k != "path").cloned().collect::<Vec<_>>(),
+        _ => vec![],
+    };
+    out.push(("data_base64".into(), Json::Str(base64_encode(&bytes))));
+    out.push(("mime".into(), Json::str(mime)));
+    out.push(("name".into(), Json::Str(name)));
+    Ok(Json::Obj(out))
 }
 
 fn base64_encode(b: &[u8]) -> String {

@@ -471,6 +471,31 @@ def export_stl_printable():
 
 
 @case
+def draw_curve_and_name_a_part():
+    # перо (G,P) тем же ядром: гладкая кривая режется на хорды по допуску
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    a = call('draw_curve', {'points': [[5, 5, 40], [20, 35, 40], [35, 5, 40]], 'tolerance': 0.4})
+    assert a['segments'] > 8, a
+    call('undo', {})
+    b = call('draw_curve', {'points': [[5, 5, 40], [20, 35, 40], [35, 5, 40]], 'tolerance': 0.02})
+    assert b['segments'] > a['segments'] * 2, (a, b)
+    closed = call('draw_curve', {'points': [[-60, -60, 0], [60, -60, 0], [60, 60, 0], [-60, 60, 0]],
+                                 'closed': True, 'on_face': False})
+    assert closed['segments'] > 40, closed
+    # имя детали ставится по точке в середине грани, а не только у вершины
+    d = call('name_part', {'name': 'body-main', 'point': [20, 20, 40]})
+    assert d['glb_nodes'] == ['body-main'], d
+    call('name_part', {'name': 'hotspot-engine', 'point': [20, 20, 25]})
+    g = call('export_glb', {'name': 'zerocad_test_curve'})
+    assert g['parts'] == ['body-main'] and g['hotspots'] == ['hotspot-engine'], g
+    try:
+        call('name_part', {'name': 'hood', 'point': [500, 500, 500]})
+        raise AssertionError('a point far from the body must be refused')
+    except McpError as e:
+        assert 'within 20 mm' in str(e), e
+
+
+@case
 def export_glb_for_three_js():
     # GLB: метры вместо миллиметров, Y вверх; имена узлов — контракт с IEGarage
     call('new_shape', {'shape': 'cube', 'size': 400})

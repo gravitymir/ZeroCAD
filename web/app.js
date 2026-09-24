@@ -6747,6 +6747,7 @@ function showChordHint(){
     row('O', 'Revolve a profile around an axis', true) +
     row('W', 'Sweep a profile along the selected lines', edgeSel.length > 0) +
     row('F', 'Loft between two profiles', true) +
+    row('P', 'Pen: Bezier curve (over a reference photo in Trace)', true) +
     row('I', 'Mirror a body', true) +
     row('B', 'Move / copy / scale a body', true) +
     row('H', 'Shell — hollow a body', true) +
@@ -12333,6 +12334,13 @@ window.addEventListener('keydown', e=>{
       return;
     }
   }
+  // G,P — Перо: кривая Безье (Pen в Illustrator и Inkscape; просто P — точка)
+  if((e.code === 'KeyP' || (e.key || '').toLowerCase() === 'p') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
+     && document.activeElement.tagName !== 'INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    setActiveTool(activeTool === penTool ? null : penTool);
+    return;
+  }
   // G,O — Revolve (тело вращения профиля), G,W — Sweep (профиль вдоль пути),
   // G,F — Loft (тело между двумя профилями); раньше O — отступ грани, F — заливка
   for(const [code, ch, kind] of [['KeyO', 'o', 'revolve'], ['KeyW', 'w', 'sweep'], ['KeyF', 'f', 'loft']]){
@@ -15380,6 +15388,88 @@ const ZC_COMMANDS = {
       return Object.assign({opened, lines: guides.length}, zcSummary());
     }
   },
+  // режим Trace: габариты машины и фотографии-референсы — то же, что панель
+  trace_car: {
+    run(a){
+      if(a.preset){
+        const p = TRACE_PRESETS[a.preset];
+        if(!p) throw new Error('preset must be one of: ' + Object.keys(TRACE_PRESETS).join(', '));
+        [traceBox.L, traceBox.W, traceBox.H] = p;
+      }
+      for(const [k, f] of [['length', 'L'], ['width', 'W'], ['height', 'H']])
+        if(a[k] != null){
+          const v = +a[k];
+          if(!(v >= 500 && v <= 20000)) throw new Error(k + ' must be 500…20000 mm');
+          traceBox[f] = v;
+        }
+      setTrace(a.on == null ? true : !!a.on);
+      traceRebuild(); traceUI(); scheduleAutosave();
+      if(a.view) traceGoView(a.view);
+      return {trace: traceOn, box: {...traceBox}, photos: Object.keys(traceRefs)};
+    }
+  },
+  trace_reference: {
+    async run(a){
+      const view = TRACE_VIEWS.find(v => v.id === a.view);
+      if(!view) throw new Error('view must be one of: ' + TRACE_VIEWS.map(v => v.id).join(', '));
+      const r = traceRefs[a.view];
+      if(a.data_base64){
+        const url = 'data:' + (a.mime || 'image/jpeg') + ';base64,' + a.data_base64;
+        traceSetImage(a.view, url);
+      }else if(!r) throw new Error('path is required for a view without a photo');
+      const t = traceRefs[a.view];
+      if(a.width != null) t.width = Math.max(100, +a.width);
+      if(a.opacity != null) t.opacity = Math.max(0.05, Math.min(1, +a.opacity));
+      if(a.shift_u != null) t.cu = +a.shift_u;
+      if(a.shift_v != null) t.cv = +a.shift_v;
+      if(a.flip != null) t.flip = !!a.flip;
+      // картинка грузится асинхронно: дождёмся, чтобы ответ был о готовой плоскости
+      for(let i = 0; i < 100 && !t.tex; i++) await new Promise(res => setTimeout(res, 20));
+      traceBuildPlane(a.view); traceUI(); scheduleAutosave();
+      if(a.view !== traceSel && a.go !== false) traceGoView(a.view);
+      return {view: a.view, width: t.width, opacity: t.opacity, shift: [t.cu, t.cv],
+              image: t.tex && t.tex.image ? [t.tex.image.width, t.tex.image.height] : null,
+              trace: traceOn, box: {...traceBox}};
+    }
+  },
+  draw_curve: {
+    run(a){
+      if(!Array.isArray(a.points) || a.points.length < 2) throw new Error('points must list at least two [x, y, z]');
+      const pts = a.points.map((p, i) => zcV3(p, 'points[' + i + ']'));
+      const closed = !!a.closed;
+      const anchors = a.smooth === false
+        ? pts.map(P => ({P, hIn: null, hOut: null}))
+        : smoothAnchors(pts, closed, a.tension == null ? 1/3 : +a.tension);
+      const chord = curveChordPoints(anchors, closed, a.tolerance == null ? PEN_TOL : Math.max(0.05, +a.tolerance));
+      pushUndo();
+      const made = layCurve(chord, closed, a.on_face !== false);
+      if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+      return Object.assign({segments: made, points: chord.length}, zcSummary());
+    }
+  },
+  name_part: {
+    run(a){
+      const name = String(a.name || '');
+      if(!PART_NAMES.includes(name) && !HOTSPOT_NAMES.includes(name))
+        throw new Error('name must be one of the standard part or hotspot names');
+      const P = zcV3(a.point, 'point');
+      const pos = mesh.geometry.attributes.position.array;
+      // ближайшая ГРАНЬ тела к точке — как клик по грани в редакторе
+      const near = nearestTri(pos, P), best = near.tri, bd = near.d * near.d;
+      if(name.startsWith('hotspot-')){
+        hotspots = hotspots.filter(h => h.name !== name);
+        hotspots.push({name, p: [P.x, P.y, P.z]});
+      }else{
+        if(best < 0 || near.d > 20) throw new Error('no face of the body within 20 mm of this point');
+        const o = best * 9;
+        partNames = partNames.filter(x => x.name !== name);
+        partNames.push({name, p: [pos[o], pos[o+1], pos[o+2]]});
+      }
+      partsUI(); markHotspotsInScene(); scheduleAutosave();
+      return {parts: partNames.map(x => x.name), hotspots: hotspots.map(x => x.name),
+              glb_nodes: glbParts().map(p => p.name)};
+    }
+  },
   export_glb: {
     run(a){
       const buf = exportGLB();
@@ -15936,15 +16026,27 @@ const HOTSPOT_NAMES = ['hotspot-engine', 'hotspot-battery', 'hotspot-oil-fill',
   'hotspot-air-filter', 'hotspot-brakes-front', 'hotspot-brakes-rear', 'hotspot-wipers'];
 let partNames = [];   // [{name, p:[x,y,z]}] — имя детали и точка на ней
 let hotspots = [];    // [{name, p:[x,y,z]}] — пустые узлы
-// деталь (связная компонента), которой принадлежит точка
-function compAtPoint(pos, comp, P){
+// ближайший к точке треугольник тела и расстояние до него (до самой грани,
+// а не до её вершин: середина большой грани от вершин далеко)
+function nearestTri(pos, P){
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+  const tri = new THREE.Triangle(), q = new THREE.Vector3(), box = new THREE.Box3();
   let best = -1, bd = Infinity;
-  for(let t = 0; t < comp.length; t++) for(let j = 0; j < 3; j++){
-    const o = t*9 + j*3;
-    const d = (pos[o]-P[0])**2 + (pos[o+1]-P[1])**2 + (pos[o+2]-P[2])**2;
+  for(let t = 0; t < pos.length / 9; t++){
+    const o = t*9;
+    A.fromArray(pos, o); B.fromArray(pos, o+3); C.fromArray(pos, o+6);
+    box.makeEmpty(); box.expandByPoint(A); box.expandByPoint(B); box.expandByPoint(C);
+    if(box.distanceToPoint(P) > bd) continue;
+    tri.set(A, B, C);
+    const d = tri.closestPointToPoint(P, q).distanceTo(P);
     if(d < bd){ bd = d; best = t; }
   }
-  return bd <= 25 ? comp[best] : -1;    // не дальше 5 мм от детали
+  return {tri: best, d: bd};
+}
+// деталь (связная компонента), которой принадлежит точка
+function compAtPoint(pos, comp, P){
+  const r = nearestTri(pos, new THREE.Vector3(P[0], P[1], P[2]));
+  return r.tri >= 0 && r.d <= 5 ? comp[r.tri] : -1;
 }
 // что уходит в GLB: именованные детали, остальное — одним узлом body-main
 function glbParts(){
@@ -16023,6 +16125,178 @@ function markHotspotsInScene(){
     partsUI(); markHotspotsInScene(); scheduleAutosave();
   });
 }
+// ---------- Кривые Безье: перо (G,P) ----------
+// Кривая режется на хорды не по числу кусков, а по отклонению от настоящей
+// кривой (flatness): прямой участок — один отрезок, крутой поворот — много.
+// Так силуэт машины остаётся гладким, а лишних точек в сетке не появляется
+const PEN_TOL = 0.4;          // мм, допуск хорды
+function bezierPoints(p0, c1, c2, p3, tol, out, depth){
+  tol = tol || PEN_TOL;
+  out = out || [p0.clone()];
+  depth = depth || 0;
+  // насколько ручки отходят от прямой p0→p3
+  const d = new THREE.Vector3().subVectors(p3, p0), L = d.length();
+  let flat;
+  if(L < 1e-9) flat = Math.max(c1.distanceTo(p0), c2.distanceTo(p0));
+  else{
+    const u = d.clone().multiplyScalar(1 / L);
+    const off = P => { const w = new THREE.Vector3().subVectors(P, p0); return w.addScaledVector(u, -w.dot(u)).length(); };
+    flat = Math.max(off(c1), off(c2));
+  }
+  if(depth >= 12 || flat <= tol){ out.push(p3.clone()); return out; }
+  // деление пополам по де Кастельжо
+  const mid = (a, b) => a.clone().add(b).multiplyScalar(0.5);
+  const a1 = mid(p0, c1), a2 = mid(c1, c2), a3 = mid(c2, p3);
+  const b1 = mid(a1, a2), b2 = mid(a2, a3), m = mid(b1, b2);
+  bezierPoints(p0, a1, b1, m, tol, out, depth + 1);
+  bezierPoints(m, b2, a3, p3, tol, out, depth + 1);
+  return out;
+}
+// узлы с ручками -> точки ломаной. anchors: [{P, hIn, hOut}]
+function curveChordPoints(anchors, closed, tol){
+  const pts = [];
+  const n = anchors.length;
+  if(n < 2) return anchors.map(a => a.P.clone());
+  const last = closed ? n : n - 1;
+  for(let i = 0; i < last; i++){
+    const A = anchors[i], B = anchors[(i + 1) % n];
+    const c1 = A.hOut || A.P, c2 = B.hIn || B.P;
+    const part = bezierPoints(A.P, c1, c2, B.P, tol);
+    // последний кусок замкнутой кривой возвращается в первый узел — его не
+    // повторяем: замыкает уже сам обход (layCurve), иначе выйдет нулевой отрезок
+    const stop = (closed && i === last - 1) ? part.length - 1 : part.length;
+    for(let k = (i ? 1 : 0); k < stop; k++) pts.push(part[k]);
+  }
+  return pts;
+}
+// Гладкая кривая через заданные точки (Catmull-Rom → ручки Безье): так
+// рисует агент командой draw_curve — он даёт точки, касательные считаются сами
+function smoothAnchors(points, closed, tension){
+  const t = tension == null ? 1/3 : tension;
+  const n = points.length, out = [];
+  for(let i = 0; i < n; i++){
+    const P = points[i];
+    const prev = points[closed ? (i - 1 + n) % n : Math.max(0, i - 1)];
+    const next = points[closed ? (i + 1) % n : Math.min(n - 1, i + 1)];
+    const dir = new THREE.Vector3().subVectors(next, prev).multiplyScalar(t);
+    out.push({P: P.clone(), hIn: P.clone().sub(dir), hOut: P.clone().add(dir)});
+  }
+  return out;
+}
+// кривая в сцену: одни направляющие, один curve id — как у круга
+function layCurve(pts, closed, onFace){
+  if(pts.length < 2) return 0;
+  const cid = ++curveSeq;
+  const list = closed ? pts.concat([pts[0]]) : pts;
+  let made = 0;
+  for(let i = 0; i + 1 < list.length; i++){
+    const a = list[i], b = list[i + 1];
+    if(a.distanceTo(b) < 1e-4) continue;
+    addGuide(a, b, true, cid);      // noExt: сегменты кривой не продлеваются
+    if(onFace) splitMeshByChord(a, b, 'segment');
+    made++;
+  }
+  if(onFace) cleanupMesh();
+  extractEdges();
+  return made;
+}
+// Плоскость рисования: в режиме Trace — плоскость выбранного фото (иначе
+// обводить по фотографии нельзя: точки уезжали бы на грань тела или на землю)
+function penPlane(q){
+  if(traceOn){
+    const view = TRACE_VIEWS.find(v => v.id === traceSel);
+    if(view){
+      const u = new THREE.Vector3().fromArray(view.u), v = new THREE.Vector3().fromArray(view.v);
+      return {n: new THREE.Vector3().crossVectors(u, v).normalize(), P0: traceCenter(traceSel), face: false};
+    }
+  }
+  const pk = pickOnFace(q);
+  if(pk) return {n: pk.n.clone(), P0: pk.pos.clone(), face: pk.faceIndex != null};
+  return {n: new THREE.Vector3(0, 0, 1), P0: new THREE.Vector3(), face: false};
+}
+const penTool = {
+  hud: 'PEN (Bezier) · click — corner point · click and drag — smooth point · click the first point to close · Enter — finish · Backspace — undo point · Esc',
+  anchors: [], plane: null, drag: null, ghostLine: null, handles: null, hoverP: null,
+  on(){
+    this.anchors = []; this.plane = null; this.drag = null; this.hoverP = null;
+    this.preview();
+  },
+  off(){ this.kill(); this.anchors = []; ghost.visible = false; tipHide(); },
+  kill(){
+    for(const k of ['ghostLine', 'handles']) if(this[k]){ scene.remove(this[k]); this[k].geometry.dispose(); this[k] = null; }
+  },
+  // точка под курсором на плоскости рисования, с магнитами редактора
+  at(q){
+    if(!this.plane) this.plane = penPlane(q);
+    const hit = planePick(q, this.plane.n, this.plane.P0);
+    return hit ? hit.pos : null;
+  },
+  closingAt(P){    // курсор у первого узла — замкнём контур
+    return this.anchors.length > 2 && P && P.distanceTo(this.anchors[0].P) < Math.max(20, camDist * 0.01);
+  },
+  preview(){
+    this.kill();
+    const list = this.anchors.slice();
+    const closing = this.closingAt(this.hoverP);
+    if(this.hoverP && !closing) list.push({P: this.hoverP.clone()});
+    if(list.length >= 2){
+      const pts = curveChordPoints(list, closing);
+      const geo = new THREE.BufferGeometry().setFromPoints(closing ? pts.concat([pts[0]]) : pts);
+      this.ghostLine = new THREE.Line(geo, new THREE.LineBasicMaterial({color: closing ? 0x6aff3d : C_EDGE}));
+      scene.add(this.ghostLine);
+    }
+    // ручки узла, который сейчас тянут
+    const hp = [];
+    for(const a of this.anchors) if(a.hOut && a.hIn){ hp.push(a.hIn, a.P, a.P, a.hOut); }
+    if(hp.length){
+      this.handles = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(hp),
+        new THREE.LineBasicMaterial({color: 0xffaa00}));
+      scene.add(this.handles);
+    }
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside) return;
+    const P = this.at(q);
+    if(!P) return;
+    if(this.closingAt(P)){ this.commit(true); return; }
+    this.anchors.push({P: P.clone(), hIn: null, hOut: null});
+    this.drag = {i: this.anchors.length - 1, from: P.clone(), moved: false};
+    this.preview();
+  },
+  move(e, q){
+    if(!q.inside){ ghost.visible = false; tipHide(); return; }
+    const P = this.at(q);
+    if(!P) return;
+    if(this.drag){
+      // протяжка от узла — симметричные касательные (гладкий узел)
+      const a = this.anchors[this.drag.i];
+      if(P.distanceTo(this.drag.from) > 1){
+        a.hOut = P.clone();
+        a.hIn = a.P.clone().multiplyScalar(2).sub(P);
+        this.drag.moved = true;
+      }
+    }else this.hoverP = P.clone();
+    showPickGhost(e, q, this.closingAt(P) ? 'Pen · close: ' : 'Pen · point: ');
+    this.preview();
+  },
+  up(){ this.drag = null; },
+  key(e){
+    if(e.key === 'Enter'){ this.commit(false); return true; }
+    if(e.key === 'Backspace'){ this.anchors.pop(); this.preview(); return true; }
+    return false;
+  },
+  commit(closed){
+    if(this.anchors.length < 2){ setActiveTool(null); return; }
+    const pts = curveChordPoints(this.anchors, closed);
+    pushUndo();
+    const made = layCurve(pts, closed, !!(this.plane && this.plane.face));
+    if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+    this.anchors = []; this.hoverP = null; this.plane = null;
+    this.kill();
+    warnTip('Curve: ' + made + ' segments');
+    setActiveTool(null);
+  }
+};
 // ---------- Trace (car): обводка машины по фотографиям ----------
 // Отдельный режим, не мешающий обычному черчению: 6 плоскостей-референсов
 // (front/rear/left/right/top/bottom) с фотографиями, габариты машины и
@@ -16104,6 +16378,7 @@ function traceSetImage(id, url){
   const r = traceRefs[id] || (traceRefs[id] = {opacity: 0.5, visible: true, cu: 0, cv: 0, flip: false});
   const view = TRACE_VIEWS.find(v => v.id === id);
   r.url = url;
+  r.tex = null;        // ждущие (MCP) должны дождаться именно новой картинки
   const img = new Image();
   img.onload = () => {
     const tex = new THREE.Texture(img);

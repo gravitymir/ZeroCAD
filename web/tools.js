@@ -266,6 +266,67 @@ const ZC_TOOLS = [
     }
   },
   {
+    "name": "trace_car",
+    "description": "Turn on Trace (car) mode and set the car's bounding box in mm: reference photo planes stand on that box. preset picks a standard body size (City car, Hatchback, Sedan, SUV medium, SUV large, Van small, Van medium, Van large, Wagon, Coupe, Pickup). The car stands on the ground: X is width, +Y is the nose, Z is height, origin at the centre of the wheelbase on the tarmac.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "preset": {"type": "string"},
+        "length": {"type": "number", "description": "mm along Y"},
+        "width": {"type": "number", "description": "mm along X"},
+        "height": {"type": "number", "description": "mm along Z"},
+        "view": {"type": "string", "enum": ["front", "rear", "left", "right", "top", "bottom"], "description": "also jump to this orthographic view"},
+        "on": {"type": "boolean", "description": "default true"}
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "trace_reference",
+    "description": "Put a photo on one of the six reference planes and calibrate it. path is an image file (png/jpg) the server reads. width is how many mm of the car the photo spans across the plane (for a side view: the car's length), shift_u / shift_v move the photo inside the plane, opacity 0.05…1. Draw over the photo with the ordinary tools, then export_glb.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "view": {"type": "string", "enum": ["front", "rear", "left", "right", "top", "bottom"]},
+        "path": {"type": "string", "description": "absolute path to a png/jpg, or a bare file name in the server's exports folder"},
+        "width": {"type": "number", "description": "mm the photo spans along the plane"},
+        "opacity": {"type": "number"},
+        "shift_u": {"type": "number", "description": "mm, right in the photo's own plane"},
+        "shift_v": {"type": "number", "description": "mm, up in the photo's own plane"},
+        "flip": {"type": "boolean", "description": "mirror the photo"}
+      },
+      "required": ["view"]
+    }
+  },
+  {
+    "name": "draw_curve",
+    "description": "Draw a smooth curve (Bezier) through the given points — the same builder as the Pen tool (G,P). By default the curve is smoothed with Catmull-Rom tangents and cut into chords no further than tolerance mm from the true curve; smooth: false joins the points with straight lines. Use it to trace a car silhouette over a reference photo: keep every point in the plane of that photo.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 2},
+        "closed": {"type": "boolean", "description": "close the curve into a loop"},
+        "smooth": {"type": "boolean", "description": "default true"},
+        "tension": {"type": "number", "description": "how far the tangents reach, default 0.333"},
+        "tolerance": {"type": "number", "description": "mm, max distance from chord to curve, default 0.4"},
+        "on_face": {"type": "boolean", "description": "cut the chords into the face they lie on, default true"}
+      },
+      "required": ["points"]
+    }
+  },
+  {
+    "name": "name_part",
+    "description": "Name the part of the body under a point, or place a hotspot there. Names are the IEGarage contract: body-main, hood, roof, trunk, door-front-l/r, door-rear-l/r, door-sliding, windshield, window-rear, window-side-l/r, wheel-fl/fr/rl/rr, headlight-l/r, taillight-l/r, turnsignal-l/r, bumper-front/rear, mirror-l/r, wipers, fuel-cap-l/r; hotspots: hotspot-engine, hotspot-battery, hotspot-oil-fill, hotspot-air-filter, hotspot-brakes-front, hotspot-brakes-rear, hotspot-wipers. Each name becomes a node in export_glb.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "mm; for a part — a point on its face, for a hotspot — where the marker goes"}
+      },
+      "required": ["name", "point"]
+    }
+  },
+  {
     "name": "export_glb",
     "description": "Export the model as GLB (glTF 2.0 binary) for Three.js viewers such as IEGarage: metres (1 unit = 1 m), Y up, the car's nose along -Z. Named parts become separate nodes (body-main, hood, wheel-fl...), hotspots become empty nodes with a position. The server saves the file to its exports folder and returns the path.",
     "inputSchema": {
