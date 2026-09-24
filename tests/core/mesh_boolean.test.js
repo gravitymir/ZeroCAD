@@ -7,7 +7,8 @@ const assert = require('node:assert/strict');
 const {loadCore} = require('./load.js');
 const {makeSolids} = require('./solids.js');
 
-const core = loadCore(['meshBoolean']);
+const core = loadCore(['earClip', 'orientSolid', 'loopPlaneNormal', 'sweepLoopTris',
+  'bezierPoints', 'curveChordPoints', 'smoothAnchors', 'meshBoolean']);
 const S = makeSolids(core.THREE);
 const {V, box, frustum, ngonArea, flat, toTris, volume, edgeStats, rng} = S;
 
@@ -164,4 +165,69 @@ test('two silhouettes crossed: a round bar out of two cylinders', () => {
   closed(out, 'crossed cylinders');
   // тело Штейнмеца: 16/3 R³ у настоящих цилиндров, у 48-гранников чуть меньше
   near(volume(out), 16/3 * R*R*R, 60, 'Steinmetz solid');
+});
+
+// Кузов из обводки по фотографии (гладкий профиль из 180 точек, выдавленный
+// поперёк) против простой коробки: на этой паре «отрезание ушей» застревало —
+// однажды срезав неверное ухо, оно оставляло запутанный остаток, и падали ВСЕ
+// три операции. Теперь застрявший кусок раскладывается earcut'ом заново
+test('a traced car body against a box: all three ops agree', () => {
+  const THREE = core.THREE;
+  const V2 = (y, z) => new THREE.Vector3(0, y, z);
+  const pts = [[2177, 93], [2227, 342], [2040, 777], [1244, 964], [964, 1057], [187, 1555],
+               [-933, 1586], [-1493, 1430], [-1835, 1150], [-2053, 995], [-2177, 684],
+               [-2084, 217], [-1742, 143], [-311, 81], [1368, 81]].map(([y, z]) => V2(y, z));
+  // натяжение 0.25: при 1/3 сглаживание перехлёстывает на остром углу и
+  // контур сам себя пересекает — такое тело неверно само по себе
+  const loop = core.curveChordPoints(core.smoothAnchors(pts, true, 0.25), true, 1);
+  assert.ok(loop.length > 100, 'the smoothed outline is dense');
+  // выдавливаем поперёк: стенки по контуру, крышки — earcut из three (он
+  // сохраняет все точки контура, поэтому стык стенок с крышкой плотный)
+  const prism = [];
+  const at = (i, x) => V(x, loop[i].y, loop[i].z);
+  for(let i = 0; i < loop.length; i++){
+    const j = (i + 1) % loop.length;
+    prism.push([at(i, -905), at(j, -905), at(j, 905)], [at(i, -905), at(j, 905), at(i, 905)]);
+  }
+  const faces = THREE.ShapeUtils.triangulateShape(loop.map(p => new THREE.Vector2(p.y, p.z)), []);
+  for(const [i, j, k] of faces){
+    prism.push([at(i, 905), at(j, 905), at(k, 905)]);
+    prism.push([at(k, -905), at(j, -905), at(i, -905)]);
+  }
+  const A = flat(prism);
+  closed(A, 'the traced body itself');
+  const B = flat(box(-700, -2500, 10, 700, 2500, 1300));
+  const vA = volume(A), vB = volume(B);
+  const inter = core.meshBoolean(toTris(A), toTris(B), 'intersect');
+  const uni = core.meshBoolean(toTris(A), toTris(B), 'union');
+  const sub = core.meshBoolean(toTris(A), toTris(B), 'subtract');
+  closed(inter, 'intersect'); closed(uni, 'union'); closed(sub, 'subtract');
+  const vI = volume(inter);
+  assert.ok(vI > 0 && vI < Math.min(vA, vB), 'the common part is smaller than either body');
+  near(volume(uni), vA + vB - vI, Math.abs(vA) * 1e-6, 'union = A + B - common');
+  near(volume(sub), vA - vI, Math.abs(vA) * 1e-6, 'subtract = A - common');
+});
+
+// Регресс: обводка машины по фотографии (18 точек контура, сглаживание 1/3 —
+// как в draw_curve по умолчанию) и коробка. Раньше здесь падали ВСЕ три
+// операции: «отрезание ушей» однажды срезало ухо, которое перекрыто соседней
+// точкой, и на запутанном остатке застревало. Теперь такой кусок
+// раскладывается earcut'ом заново. Сетка из сырого Sweep слегка негерметична
+// (редактор её лечит после булевой) — здесь важно, что операция доходит до конца
+test('a photo-traced outline does not break the boolean any more', () => {
+  const THREE = core.THREE;
+  const pts = [[2177, 93], [2227, 342], [2040, 777], [1244, 964], [964, 1057], [187, 1555],
+               [-933, 1586], [-1493, 1430], [-1835, 1150], [-2053, 995], [-2177, 684],
+               [-2084, 217], [-1742, 143], [-311, 81], [1368, 81]]
+              .map(([y, z]) => new THREE.Vector3(0, y, z));
+  const loop = core.curveChordPoints(core.smoothAnchors(pts, true, 1/3), true, 1);
+  const A = flat(core.sweepLoopTris(loop, [V(-905, 0, 0), V(905, 0, 0)], false));
+  const B = flat(box(-700, -2500, 10, 700, 2500, 1300));
+  const vA = volume(A);
+  for(const op of ['intersect', 'union', 'subtract']){
+    const r = core.meshBoolean(toTris(A), toTris(B), op);
+    assert.ok(r.length > 0, op + ': got a result');
+    const v = volume(r);
+    assert.ok(v > 0 && v < vA + volume(B), op + ': plausible volume ' + v);
+  }
 });

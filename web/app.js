@@ -8703,6 +8703,15 @@ function meshBoolean(aTris, bTris, op){
       }
       const cr = (a, b, c) => (X[b][0]-X[a][0])*(X[c][1]-X[a][1]) - (X[b][1]-X[a][1])*(X[c][0]-X[a][0]);
       const idx = poly.slice();
+      // Обход куска может прийти по часовой (после мостов к отверстиям или
+      // когда грань смотрит против базиса): «отрезание ушей» ждёт обхода
+      // против часовой, иначе ни один угол не подходит и кусок остаётся
+      // необработанным — так падала булева на тонком четырёхугольнике.
+      // Разворачиваем обход, а выходные треугольники возвращаем как были
+      const cw = area(idx) < 0;
+      if(cw) idx.reverse();
+      const emit = (a, b, c) => out.push(cw ? [G[c], G[b], G[a]] : [G[a], G[b], G[c]]);
+      const outStart = out.length;
       let guard = idx.length * idx.length + 10;
       while(idx.length > 3 && guard-- > 0){
         let cut = -1;
@@ -8725,17 +8734,32 @@ function meshBoolean(aTris, bTris, op){
           if(cut >= 0) break;
         }
         if(cut < 0) break;
-        out.push([G[idx[(cut-1+idx.length)%idx.length]], G[idx[cut]], G[idx[(cut+1)%idx.length]]]);
+        emit(idx[(cut-1+idx.length)%idx.length], idx[cut], idx[(cut+1)%idx.length]);
         idx.splice(cut, 1);
       }
-      if(idx.length === 3) out.push([G[idx[0]], G[idx[1]], G[idx[2]]]);
+      if(idx.length === 3) emit(idx[0], idx[1], idx[2]);
       else if(idx.length > 3){
         // застрял на щепке уже EPS (точки почти на одной прямой, любое ухо
         // перекрыто соседней точкой): веер — топологически замкнут, ширина
         // и так нулевая
         let per = 0; for(let i=0;i<idx.length;i++){ const p = X[idx[i]], q = X[idx[(i+1)%idx.length]]; per += Math.hypot(q[0]-p[0], q[1]-p[1]); }
-        if(Math.abs(area(idx)) > EPS * per) throw new Error('could not triangulate an intersected triangle');
-        for(let i=1;i+1<idx.length;i++) out.push([G[idx[0]], G[idx[i]], G[idx[i+1]]]);
+        if(Math.abs(area(idx)) > EPS * per){
+          // Застряли на настоящем куске: значит раньше срезали «ухо», которое
+          // срезать было нельзя (допуск EPS), и остаток запутался. Раскладываем
+          // ВЕСЬ кусок заново проверенным earcut из three — он держит и тонкие,
+          // и невыпуклые контуры. Обход берём как у исходного куска
+          const cont = poly.map(i => new THREE.Vector2(X[i][0], X[i][1]));
+          const faces = THREE.ShapeUtils.triangulateShape(cont, []);
+          if(!faces || !faces.length) throw new Error('could not triangulate an intersected triangle');
+          out.length = outStart;
+          const want = area(poly) >= 0 ? 1 : -1;
+          for(const f of faces){
+            const i0 = poly[f[0]], i1 = poly[f[1]], i2 = poly[f[2]];
+            const cr2 = (X[i1][0]-X[i0][0])*(X[i2][1]-X[i0][1]) - (X[i1][1]-X[i0][1])*(X[i2][0]-X[i0][0]);
+            out.push(cr2 * want >= 0 ? [G[i0], G[i1], G[i2]] : [G[i0], G[i2], G[i1]]);
+          }
+        }
+        else for(let i=1;i+1<idx.length;i++) emit(idx[0], idx[i], idx[i+1]);
       }
     }
     return out;
