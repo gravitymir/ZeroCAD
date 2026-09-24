@@ -408,6 +408,11 @@ function markNewFoldEdges(prevPos, allNew){
 // Линия в воздухе — ярко-красная: чёрная на тёмном фоне сцены не видна, а
 // красная ещё и честно говорит, что эта часть не лежит на теле
 const C_AIR = 0xff4d4d, C_GUIDE = 0x23262c;
+// поверх светлой фотографии тёмная линия не видна: в режиме Trace рисуем
+// бирюзовым (и в воздухе, и по грани) — фото при этом остаётся читаемым
+const C_TRACE = 0x00e5ff;
+const guideColor = () => (typeof traceOn !== 'undefined' && traceOn) ? C_TRACE : C_GUIDE;
+const airColor = () => (typeof traceOn !== 'undefined' && traceOn) ? C_TRACE : C_AIR;
 const AIR_RGB = new THREE.Color(C_AIR), GUIDE_RGB = new THREE.Color(C_GUIDE);
 function airColoredLine(pts, onColor, closed){
   const test = getFaceTester();
@@ -8552,15 +8557,19 @@ function meshBoolean(aTris, bTris, op){
   const shell = (T, flipIt) => T.flatMap(([i, j, k]) => (flipIt ? [i, k, j] : [i, j, k]).flatMap(v => [P[v].x, P[v].y, P[v].z]));
   if(!pairs){ // не касаются: куски B внутри A или врозь, либо A внутри B
     const cen = ([i, j, k]) => P[i].clone().add(P[j]).add(P[k]).multiplyScalar(1/3);
-    if(TA.length && inside(cen(TA[0]), TB)) return new Float32Array(op === 'union' ? shell(TB) : []);
+    if(TA.length && inside(cen(TA[0]), TB))
+      return new Float32Array(op === 'union' ? shell(TB) : op === 'intersect' ? shell(TA) : []);
     const par = TB.map((_, i) => i), root = i => { while(par[i] !== i){ par[i] = par[par[i]]; i = par[i]; } return i; };
     const byV = new Map();
     TB.forEach((t, i) => { for(const v of t){ const j = byV.get(v); if(j === undefined) byV.set(v, i); else { const r1 = root(i), r2 = root(j); if(r1 !== r2) par[r1] = r2; } } });
     const comps = new Map(); TB.forEach((t, i) => { const r = root(i); if(!comps.has(r)) comps.set(r, []); comps.get(r).push(t); });
-    let out = shell(TA);
+    // пересечение начинается с пустоты: от A остаётся только то, что внутри B,
+    // а этот путь — когда тела вообще не пересекаются гранями
+    let out = op === 'intersect' ? [] : shell(TA);
     for(const c of comps.values()){
       const inA = inside(cen(c[0]), TA);
       if(op === 'union' && !inA) out = out.concat(shell(c));
+      if(op === 'intersect' && inA) out = out.concat(shell(c));
       if(op === 'subtract' && inA) out = out.concat(shell(c, true));
     }
     return new Float32Array(out);
@@ -8775,7 +8784,11 @@ function meshBoolean(aTris, bTris, op){
     const fr = frags[best], [p, q, r] = fr.ids;
     const inOther = inside(P[p].clone().add(P[q]).add(P[r]).multiplyScalar(1/3), fr.side === 0 ? TB : TA);
     let k, fl = false;
-    if(op === 'union') k = !inOther;
+    // пересечение: от обоих тел остаётся то, что внутри другого, обход не
+    // трогаем — так по двум видам чертежа получается тело, совпадающее с
+    // каждым силуэтом (классический приём blueprint-моделирования)
+    if(op === 'intersect') k = inOther;
+    else if(op === 'union') k = !inOther;
     else { if(fr.side === 0) k = !inOther; else { k = inOther; fl = true; } }
     for(const i of list){ keep[i] = k; flip[i] = fl; }
   }
@@ -8783,7 +8796,7 @@ function meshBoolean(aTris, bTris, op){
     const st = onState[i]; if(!st) return;
     // объединение: попутные — одна грань (от A), встречные — исчезают;
     // вычитание: грань A остаётся только там, где B подходит к ней встречно
-    if(op === 'union') keep[i] = st === 'same' && fr.side === 0;
+    if(op === 'union' || op === 'intersect') keep[i] = st === 'same' && fr.side === 0;
     else keep[i] = st === 'opposite' && fr.side === 0;
   });
   const arr = [];
@@ -14594,7 +14607,8 @@ function zcApplySolid(tris, op, round = true){
     // round: false — второе тело из точек самой модели (призма лоскута):
     // округление сдвинуло бы его стенки с рёбер контура на доли микрона
     const R = t => round ? t.map(v => new THREE.Vector3(q3(v.x), q3(v.y), q3(v.z))) : t;
-    out = meshBoolean(body, tris.map(R), op === 'cut' ? 'subtract' : 'union');
+    out = meshBoolean(body, tris.map(R),
+      op === 'cut' ? 'subtract' : op === 'intersect' ? 'intersect' : 'union');
     lastBoolPath = 'exact';
   }
   if(!out.length) throw new Error('the result is empty');
@@ -15821,6 +15835,14 @@ const ZC_COMMANDS = {
         camDist = Math.max(20, Math.min(camFarLimit(), r / Math.sin(persp.fov * Math.PI / 360) * 1.15));
       }
       // снимок своего размера: вкладка может быть узкой или фоновой (цикл стоит)
+      // в фоновой вкладке requestAnimationFrame не работает: перелёт к виду и
+      // дальняя плоскость камеры не пересчитывались, и снимок приходил чёрным
+      if(viewAnim){
+        if(viewAnim.y1 !== null) yaw = viewAnim.y1;
+        pitch = viewAnim.p1;
+        viewAnim = null;
+      }
+      updateCamRange();
       const W = Math.max(200, Math.min(2000, Math.round(+a.width || 1000)));
       const H = Math.max(200, Math.min(2000, Math.round(+a.height || 700)));
       const pr = renderer.getPixelRatio();
@@ -16409,6 +16431,7 @@ function setTrace(on){
   markHotspotsInScene();
   for(const id in traceRefs) if(traceRefs[id].mesh)
     traceRefs[id].mesh.visible = traceOn && traceRefs[id].visible !== false;
+  recolorGuides();     // поверх фотографии линии должны быть видны
   traceUI();
 }
 function traceToggleAll(){

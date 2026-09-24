@@ -9,7 +9,7 @@ const {makeSolids} = require('./solids.js');
 
 const core = loadCore(['meshBoolean']);
 const S = makeSolids(core.THREE);
-const {box, frustum, ngonArea, flat, toTris, volume, edgeStats, rng} = S;
+const {V, box, frustum, ngonArea, flat, toTris, volume, edgeStats, rng} = S;
 
 // Замкнутость — по ключу редактора (0.001 мм), как её видит редактор: он
 // сваривает вершины по ключу. Точка пересечения в углу треугольника
@@ -128,4 +128,40 @@ test('random pairs: closed results and V(A∪B) = V(B) + V(A−B)', () => {
     }
   }
   assert.deepEqual(failures, [], `worst relative volume error ${worst}`);
+});
+
+// Пересечение (Boolean Intersect): по двум видам чертежа тело должно
+// совпасть с каждым силуэтом — этим в режиме Trace скругляют бока машины
+test('intersect keeps only what lies in both bodies', () => {
+  const A = flat(box(0, 0, 0, 40, 40, 40));
+  const B = flat(box(20, -10, 10, 80, 50, 30));
+  const out = core.meshBoolean(toTris(A), toTris(B), 'intersect');
+  closed(out, 'intersect');
+  // общая часть: x 20…40, y 0…40, z 10…30
+  near(volume(out), 20 * 40 * 20, 1e-6, 'intersection volume');
+  const e = edgeStats(out, false);
+  assert.equal(e.open, 0);
+});
+
+test('intersect of disjoint bodies is empty, of nested — the inner one', () => {
+  const A = flat(box(0, 0, 0, 10, 10, 10));
+  const far = flat(box(100, 0, 0, 110, 10, 10));
+  assert.equal(core.meshBoolean(toTris(A), toTris(far), 'intersect').length, 0, 'nothing in common');
+  const big = flat(box(-10, -10, -10, 20, 20, 20));
+  const inner = core.meshBoolean(toTris(big), toTris(A), 'intersect');
+  near(volume(inner), 1000, 1e-6, 'the inner body survives');
+  const inner2 = core.meshBoolean(toTris(A), toTris(big), 'intersect');
+  near(volume(inner2), 1000, 1e-6, 'the order does not matter');
+});
+
+test('two silhouettes crossed: a round bar out of two cylinders', () => {
+  // цилиндр вдоль X и такой же вдоль Y: пересечение — тело, которое с обоих
+  // видов выглядит кругом (приём blueprint-моделирования: два силуэта)
+  const R = 10;
+  const a = flat(frustum([-30, 0, 0], [30, 0, 0], R, R, 48));
+  const b = flat(frustum([0, -30, 0], [0, 30, 0], R, R, 48));
+  const out = core.meshBoolean(toTris(a), toTris(b), 'intersect');
+  closed(out, 'crossed cylinders');
+  // тело Штейнмеца: 16/3 R³ у настоящих цилиндров, у 48-гранников чуть меньше
+  near(volume(out), 16/3 * R*R*R, 60, 'Steinmetz solid');
 });

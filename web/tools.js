@@ -494,7 +494,7 @@ const ZC_TOOLS = [
   },
   {
     "name": "add_frustum",
-    "description": "Solid truncated cone (or cylinder when r1 = r2) from point \"from\" (radius r1) to point \"to\" (radius r2). operation: join — merge with the body, cut — subtract it, new — replace the whole model with this solid.",
+    "description": "Solid truncated cone (or cylinder when r1 = r2) from point \"from\" (radius r1) to point \"to\" (radius r2). operation: join — merge with the body, cut — subtract it, intersect — keep only what lies inside both (how two blueprint silhouettes are crossed), new — replace the whole model with this solid.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -531,6 +531,7 @@ const ZC_TOOLS = [
           "enum": [
             "join",
             "cut",
+            "intersect",
             "new"
           ]
         }
@@ -545,7 +546,7 @@ const ZC_TOOLS = [
   },
   {
     "name": "add_revolve",
-    "description": "Solid of revolution (Revolve / lathe): profile [[r, h], ...] is turned around the axis through \"base\" along \"axis\" (default Z). r is the distance from the axis, h the height along it; the profile must start and end on the axis (r = 0) and must not cross itself. Sample curves densely yourself. operation: join, cut or new.",
+    "description": "Solid of revolution (Revolve / lathe): profile [[r, h], ...] is turned around the axis through \"base\" along \"axis\" (default Z). r is the distance from the axis, h the height along it; the profile must start and end on the axis (r = 0) and must not cross itself. Sample curves densely yourself. operation: join, cut, intersect (keep only what lies inside both — crossing two blueprint views) or new.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -586,6 +587,7 @@ const ZC_TOOLS = [
           "enum": [
             "join",
             "cut",
+            "intersect",
             "new"
           ]
         }
@@ -597,7 +599,7 @@ const ZC_TOOLS = [
   },
   {
     "name": "add_sweep",
-    "description": "Solid tube swept along a path (Sweep / pipe): an ellipse section follows the polyline \"path\" [[x,y,z], ...], ends capped. radius: mm, one number or one per path point; side_radius: the other semi-axis (default = radius), measured along \"side\" (a direction; default chosen automatically). The section is carried along the path without twisting. Sample curves densely and keep the radius below the bend radius. operation: join, cut or new.",
+    "description": "Solid tube swept along a path (Sweep / pipe): an ellipse section follows the polyline \"path\" [[x,y,z], ...], ends capped. radius: mm, one number or one per path point; side_radius: the other semi-axis (default = radius), measured along \"side\" (a direction; default chosen automatically). The section is carried along the path without twisting. Sample curves densely and keep the radius below the bend radius. operation: join, cut, intersect (keep only what lies inside both — crossing two blueprint views) or new.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -636,6 +638,7 @@ const ZC_TOOLS = [
           "enum": [
             "join",
             "cut",
+            "intersect",
             "new"
           ]
         }
@@ -682,7 +685,7 @@ const ZC_TOOLS = [
     "inputSchema": {"type": "object", "properties": {
       "profile_a": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 3},
       "profile_b": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 3},
-      "operation": {"type": "string", "enum": ["join", "cut", "new"], "description": "default join"}
+      "operation": {"type": "string", "enum": ["join", "cut", "intersect", "new"], "description": "default join"}
     }, "required": ["profile_a", "profile_b"]}
   },
   {
@@ -694,7 +697,7 @@ const ZC_TOOLS = [
       "axis_direction": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
       "angle": {"type": "number", "description": "degrees, default 360; negative turns the other way"},
       "segments": {"type": "integer", "description": "per full turn, default 64"},
-      "operation": {"type": "string", "enum": ["join", "cut", "new"], "description": "default join"}
+      "operation": {"type": "string", "enum": ["join", "cut", "intersect", "new"], "description": "default join"}
     }, "required": ["profile", "axis_point", "axis_direction"]}
   },
   {
@@ -704,7 +707,7 @@ const ZC_TOOLS = [
       "profile": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 3},
       "path": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 2},
       "closed": {"type": "boolean"},
-      "operation": {"type": "string", "enum": ["join", "cut", "new"], "description": "default join"}
+      "operation": {"type": "string", "enum": ["join", "cut", "intersect", "new"], "description": "default join"}
     }, "required": ["profile", "path"]}
   },
   {
