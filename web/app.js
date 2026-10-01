@@ -12002,12 +12002,14 @@ let divN = 1;
 let divDots = [];    // превью-точки
 function clearDivDots(){ for(const m of divDots) scene.remove(m); divDots = []; }
 function divideCounts(L){
-  const counts = [];
-  for(let k=1;k<=19;k++){
+  // одна точка (середина) нужна чаще всего — она в списке всегда, даже если
+  // половина длины не ложится на сетку 0.1 мм (линия 84.9 → 42.45)
+  const counts = [1];
+  for(let k=2;k<=19;k++){
     const s = L/(k+1);
     if(Math.abs(s*10 - Math.round(s*10)) < 1e-6) counts.push(k);
   }
-  return counts.length ? counts : [1,2,3,4,9]; // редкая длина без ровных вариантов
+  return counts.length > 1 ? counts : [1,2,3,4,9]; // редкая длина без ровных вариантов
 }
 // ---- квадранты окружностей (Quadrant в AutoCAD, Snap к оси) ----
 // Точка окружности, в которую ведёт луч из центра строго вдоль мировой оси:
@@ -12264,9 +12266,11 @@ function openDivideRing(ring, P, seedUndo){
 }
 function openDivide(ch){
   divCtx = {chain: ch};
-  document.getElementById('dv_cntrow').style.display = 'none';
+  document.getElementById('dv_cntrow').style.display = '';   // число точек можно и ввести
+  document.getElementById('dv_auto').style.display = 'none';
   document.getElementById('dv_hint').style.display = 'none';
   divN = divideCounts(ch.total)[0];
+  dv_n.min = '1'; dv_n.value = divN;
   // будущие точки показывает превью — призрак в центре только путает
   ghost.visible = false; hideHints(); setHover(null); tipHide();
   const vr = view.getBoundingClientRect();
@@ -12322,6 +12326,7 @@ function renderDividePreview(){
   }
   dv_sugg.innerHTML = divideCounts(L)
     .map(k => '<button class="dvs'+(k===divN?' sel':'')+'" data-n="'+k+'">'+k+'</button>').join('');
+  if(document.activeElement !== dv_n) dv_n.value = divN;
 }
 dv_sugg.addEventListener('click', ev=>{
   const n = ev.target.dataset && ev.target.dataset.n;
@@ -12329,7 +12334,10 @@ dv_sugg.addEventListener('click', ev=>{
 });
 dv_n.addEventListener('input', ()=>{
   const v = Math.round(+dv_n.value);
-  if(divCtx && divCtx.ring && v >= 2 && v <= 360){ divN = v; divCtx.auto = false; renderDividePreview(); }
+  if(!divCtx) return;
+  // у окружности точек минимум 2 (одна точка круг не делит), у линии — от 1
+  const lo = divCtx.ring ? 2 : 1, hi = divCtx.ring ? 360 : 200;
+  if(v >= lo && v <= hi){ divN = v; if(divCtx.ring) divCtx.auto = false; renderDividePreview(); }
 });
 dv_n.addEventListener('keydown', e=>{
   if(e.key === 'Enter'){ e.preventDefault(); commitDivide(); }
