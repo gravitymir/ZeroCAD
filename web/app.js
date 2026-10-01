@@ -8931,6 +8931,11 @@ function buildPrismTris(loop, n, above, below){
 // пользователя накопилось 188 игл высотой от 0.003 мм
 function tidyAfterEdit(){
   try{ tidySlivers(); }catch(err){ console.warn('tidySlivers failed', err); }
+  // линии, под которыми выдавливание убрало материал, повисают в воздухе —
+  // убираем их так же, как после сквозного выреза и среза плоскостью.
+  // Снимок в истории сделан до операции, по нему и видно, что было на грани
+  const snap = undoStack[undoStack.length - 1];
+  if(snap && snap.pos) try{ dropAirGuides(snap.pos); }catch(err){ console.warn('dropAirGuides failed', err); }
   extractEdges();
 }
 function commitPocketCSG(snap, patchTris, n, depth){
@@ -11306,7 +11311,12 @@ function loadProjectData(d, name){
   }
   undoStack = []; redoStack = [];
   modified = true; s_mod.textContent = 'yes';
+  // Щепки из старого файла отравляют следующие операции: вырез грани на
+  // модели со 156 щепками рвал сетку (49 открытых рёбер), а на той же
+  // почищенной проходил точно. Поэтому чистим сразу при открытии
+  const fixed = tidySlivers();
   extractEdges();
+  if(fixed) warnTip('Cleaned ' + fixed + ' sliver triangles from this file');
   if(name) projectName = name.replace(/\.zcad$/i, '');
   setProjectDirty(false);
 }
@@ -11420,6 +11430,7 @@ function importMeshArray(raw, name){
   setMeshFromArray(arr);
   restoreGuides([]); clearAnchors(); curveSeq = 0; hardEdges = [];
   cleanupMesh();
+  tidySlivers();   // в чужих сетках щепки обычное дело
   modified = true; s_mod.textContent = 'yes';
   extractEdges();
   // камера на модель
