@@ -8880,6 +8880,13 @@ function buildPrismTris(loop, n, above, below){
 // Карман — честное булево вычитание нашим BSP прямо в браузере: тело
 // минус призма контура. Режет насквозь, под углом, через углы — без
 // антиматерии (сервеный /api/bool с csgrs остаётся запасным путём).
+// Хвост правки геометрии: убрать иглы (их края рисуются лишними рёбрами) и
+// пересчитать видимые рёбра. Выдавливание шло мимо чистки — на шестерне
+// пользователя накопилось 188 игл высотой от 0.003 мм
+function tidyAfterEdit(){
+  try{ tidySlivers(); }catch(err){ console.warn('tidySlivers failed', err); }
+  extractEdges();
+}
 function commitPocketCSG(snap, patchTris, n, depth){
   setMeshFromArray(snap.pos.slice()); // предпросмотрные стенки выбрасываем
   // Призму строим по треугольникам самого лоскута: крышки — его копии,
@@ -8913,7 +8920,7 @@ function commitPocketCSG(snap, patchTris, n, depth){
     undo(true);
     return;
   }
-  extractEdges();
+  tidyAfterEdit();
 }
 
 let exLive = null; // живой предпросмотр: {idx, set, n, applied, sheet}
@@ -9234,7 +9241,7 @@ function commitExtrude(){
       console.warn('extrude operation failed', err);
       undo(true); warnTip('Extrude failed'); return;
     }
-    extractEdges();
+    tidyAfterEdit();
     return;
   }
   if(applied < 0 && ppPatch){
@@ -9246,12 +9253,12 @@ function commitExtrude(){
     // рассчитан на встречные стенки и разрушает корректную сетку, если
     // грань просто опустилась
     cleanupMesh();
-    if(prismClear && extrudeLooksClean(snap.pos, applied, patchArea)){ extractEdges(); return; }
+    if(prismClear && extrudeLooksClean(snap.pos, applied, patchArea)){ tidyAfterEdit(); return; }
     // лечилка ради быстрого пути имеет смысл, только если призма целиком в
     // теле: сквозной вырез в шестерне тратил на неё 2.2 с перед булевой
     if(prismClear){
       healAll();
-      if(extrudeLooksClean(snap.pos, applied, patchArea)){ extractEdges(); return; }
+      if(extrudeLooksClean(snap.pos, applied, patchArea)){ tidyAfterEdit(); return; }
     }
     // не сошлось — карман режет соседний материал, нужна булева
     commitPocketCSG(snap, patchTris, n, -applied);
@@ -9262,7 +9269,7 @@ function commitExtrude(){
   // подъём грани), берём его как есть: ни булевых, ни лечилок
   cleanupMesh();
   if(patchTris && prismClear && extrudeLooksClean(undoStack[undoStack.length-1].pos, applied, patchArea)){
-    extractEdges();
+    tidyAfterEdit();
     return;
   }
   // Выдавливание наружу = Pad: во FreeCAD это всегда булев союз, и мы
@@ -9302,7 +9309,7 @@ function commitExtrude(){
     }
   }
   if(!padded) healAll();
-  extractEdges();
+  tidyAfterEdit();
 }
 // Операция прошла честно? Сетка замкнута, а объём изменился ровно на
 // площадь лоскута x высоту. Если да — лечить нечего и звать булевы незачем
@@ -14673,8 +14680,22 @@ function zcSummary(){
     open_edges: openEdgeCount(),   // 0 — тело замкнуто
     nonmanifold_edges: nonManifoldEdgeCount(), // рёбра с 3+ треугольниками: слайсеры на них ругаются
     lines: guides.length,
+    // щепки-иглы: треугольники с ребром короче 0.05 мм. Их края рисуются
+    // лишними рёбрами, поэтому агенту полезно видеть, что правка их не
+    // наплодила. По высоте считать нельзя: тонкие грани мелкого отверстия с
+    // частыми сегментами (Ø5 из 360 хорд — 0.044 мм) законны
+    slivers: sliverCount(pos),
     undo_steps: undoStack.length
   };
+}
+function sliverCount(pos){
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+  let n = 0;
+  for(let o = 0; o < pos.length; o += 9){
+    A.fromArray(pos, o); B.fromArray(pos, o+3); C.fromArray(pos, o+6);
+    if(Math.min(A.distanceTo(B), B.distanceTo(C), C.distanceTo(A)) < 0.05) n++;
+  }
+  return n;
 }
 // грань под точкой: треугольник, содержащий точку (до 0.05 мм); с нормалью —
 // ещё и смотрящий в её сторону (точка на ребре принадлежит двум граням)

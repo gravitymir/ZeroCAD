@@ -496,6 +496,21 @@ def draw_curve_and_name_a_part():
 
 
 @case
+def extrude_leaves_no_slivers():
+    # выдавливание шло мимо чистки игл: на шестерне пользователя их накопилось
+    # 188, и их края рисовались лишними рёбрами
+    before = call('new_shape', {'shape': 'gear', 'size': 120})
+    top = before['bbox_max'][2]
+    p = [36, 0, top]          # на верхней грани, в стороне от отверстия вала
+    d = call('extrude_face', {'point': p, 'distance': -3})
+    closed(d, 'extrude pocket')
+    assert d['slivers'] <= before['slivers'], ('extrude added slivers', before, d)
+    e = call('extrude_face', {'point': [p[0], p[1], top - 3], 'distance': 2})
+    closed(e, 'extrude back')
+    assert e['slivers'] <= before['slivers'], ('extrude added slivers', before, e)
+
+
+@case
 def export_glb_for_three_js():
     # GLB: метры вместо миллиметров, Y вверх; имена узлов — контракт с IEGarage
     call('new_shape', {'shape': 'cube', 'size': 400})
