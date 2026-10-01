@@ -7840,23 +7840,69 @@ function flipNeedles(pos, hMax = 0.01, maxPasses = 12){
   }
   return cur;
 }
+// Ребро в 1 мкм, которое не схлопнуть: у его концов есть «третий общий сосед»,
+// и схлопывание отклоняется как опасное (порвало бы сетку). Но такое ребро
+// короче шага ключа вершин (0.001 мм) — концы просто свариваются, а
+// выродившиеся и задвоившиеся треугольники выпадают. Союз-поиск: микрорёбра
+// могут идти цепочкой
+function weldTinyEdges(pos, maxLen = 0.01){
+  const nT = pos.length / 9, keyAt = new Array(nT * 3), P = new Map();
+  for(let t = 0; t < nT; t++) for(let j = 0; j < 3; j++){
+    const o = t*9 + j*3, k = keyOf(pos[o], pos[o+1], pos[o+2]);
+    keyAt[t*3 + j] = k;
+    if(!P.has(k)) P.set(k, [pos[o], pos[o+1], pos[o+2]]);
+  }
+  const par = new Map();
+  const find = k => { while(par.get(k) !== k){ par.set(k, par.get(par.get(k))); k = par.get(k); } return k; };
+  for(const k of P.keys()) par.set(k, k);
+  let welds = 0;
+  for(let t = 0; t < nT; t++) for(let e = 0; e < 3; e++){
+    const a = keyAt[t*3 + e], b = keyAt[t*3 + (e+1)%3];
+    if(a === b) continue;
+    const pa = P.get(a), pb = P.get(b);
+    if(Math.hypot(pa[0]-pb[0], pa[1]-pb[1], pa[2]-pb[2]) > maxLen) continue;
+    const ra = find(a), rb = find(b);
+    if(ra !== rb){ par.set(ra, rb); welds++; }
+  }
+  if(!welds) return pos;
+  const out = [];
+  for(let t = 0; t < nT; t++){
+    const k = [0, 1, 2].map(j => find(keyAt[t*3 + j]));
+    if(k[0] === k[1] || k[1] === k[2] || k[0] === k[2]) continue;
+    for(const kk of k){ const p = P.get(kk); out.push(p[0], p[1], p[2]); }
+  }
+  return new Float32Array(out);
+}
 function tidySlivers(maxLen = 0.05){
   const before = mesh.geometry.attributes.position.array;
-  const keep = before.slice(), v0 = meshVolumeOf(before);
-  const collapsed = collapseShortEdges(before, maxLen);
-  const out = flipNeedles(collapsed);
-  if(out === before) return 0;
-  setMeshFromArray(out);
-  cleanupMesh();
-  const pos = mesh.geometry.attributes.position.array;
-  // допуск по объёму — от размера детали: у колеса Ø140 это 0.14 мм³ при
-  // канавке в 565 мм³, то есть заметное изменение всё равно откатится
-  const tol = Math.max(0.05, Math.abs(v0) * 1e-6);
-  if(openEdgeCount() || nonManifoldEdgeCount() || Math.abs(meshVolumeOf(pos) - v0) > tol){
-    setMeshFromArray(keep);
-    return 0;
+  const keep = before.slice(), nBefore = before.length;
+  // 1) сварка микрорёбер. Объём здесь не проверяем: вершины двигаются не
+  // дальше 0.01 мм (меньше шага ключа), и на большой грани это законно даёт
+  // заметные в мм³ доли. Требуем только, чтобы сетка осталась замкнутой
+  let base = before;
+  const welded = weldTinyEdges(before);
+  if(welded !== before){
+    setMeshFromArray(welded);
+    cleanupMesh();
+    if(openEdgeCount() || nonManifoldEdgeCount()) setMeshFromArray(keep);
+    base = mesh.geometry.attributes.position.array;
   }
-  return Math.max(1, (before.length - pos.length) / 9);
+  // 2) схлопывание коротких рёбер и переворот щепок — эти правки объём
+  // менять не должны
+  const v0 = meshVolumeOf(base), baseKeep = base.slice();
+  const out = flipNeedles(collapseShortEdges(base, maxLen));
+  if(out !== base){
+    setMeshFromArray(out);
+    cleanupMesh();
+    // допуск по объёму — от размера детали: у колеса Ø140 это 0.14 мм³ при
+    // канавке в 565 мм³, то есть заметное изменение всё равно откатится
+    const tol = Math.max(0.05, Math.abs(v0) * 1e-6);
+    if(openEdgeCount() || nonManifoldEdgeCount()
+       || Math.abs(meshVolumeOf(mesh.geometry.attributes.position.array) - v0) > tol)
+      setMeshFromArray(baseKeep);
+  }
+  const pos = mesh.geometry.attributes.position.array;
+  return pos.length === nBefore ? 0 : Math.max(1, (nBefore - pos.length) / 9);
 }
 function cleanupMesh(){
   const pos = mesh.geometry.attributes.position.array;

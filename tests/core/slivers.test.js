@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const {loadCore} = require('./load.js');
 const {makeSolids} = require('./solids.js');
 
-const core = loadCore(['collapseShortEdges', 'flipNeedles']);
+const core = loadCore(['collapseShortEdges', 'flipNeedles', 'weldTinyEdges']);
 const {V, box, flat, volume, edgeStats} = makeSolids(core.THREE);
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b} (±${tol})`);
 const stats = arr => {
@@ -88,4 +88,37 @@ test('a long needle with no short side is flipped away', () => {
 test('a clean mesh is not flipped', () => {
   const clean = flat(box(0,0,0,10,10,10));
   assert.equal(core.flipNeedles(clean, 0.01), clean, 'same array back');
+});
+
+test('a 1 micron edge is welded even when collapsing it would be unsafe', () => {
+  // куб 40, у которого угол крыши «расщеплён» на две точки в 0.001 мм друг от
+  // друга. На модели пользователя у таких рёбер оказывался «третий общий
+  // сосед», из-за чего схлопывание отказывалось их трогать (порвало бы сетку),
+  // и щепки оставались. Сварка короче 0.01 мм берёт их в любом случае
+  const tris = box(0,0,0,40,40,40).filter(t => !t.every(p => p.z === 40) && !t.every(p => p.y === 0));
+  const A = V(0,0,40), A2 = V(0.001,0,40), B = V(40,0,40), C = V(40,40,40), D = V(0,40,40);
+  const A0 = V(0,0,0), B0 = V(40,0,0);
+  tris.push([A, A2, D], [A2, B, D], [B, C, D]);        // крыша через расщеплённый угол
+  tris.push([A, A0, A2], [A2, A0, B0], [A2, B0, B]);   // боковая грань через него же
+  const before = flat(tris);
+  const s0 = stats(before);
+  assert.equal(s0.open, 0, 'the test body is closed');
+  const after = core.weldTinyEdges(before, 0.01);
+  const s1 = stats(after);
+  assert.equal(s1.open, 0, 'still closed');
+  assert.equal(s1.nonManifold, 0, 'still manifold');
+  // сварка сдвигает поверхность не дальше 0.001 мм, но грань широкая:
+  // 40 x 40 x 0.001 = 1.6 мм³ — законный предел для такого шва
+  near(s1.vol, s0.vol, 40 * 40 * 0.001, 'volume within the welded offset');
+  let minSide = Infinity;
+  for(let o=0;o<after.length;o+=9){
+    const P = [0,1,2].map(j => V(after[o+j*3], after[o+j*3+1], after[o+j*3+2]));
+    minSide = Math.min(minSide, ...[0,1,2].map(j => P[j].distanceTo(P[(j+1)%3])));
+  }
+  assert.ok(minSide > 0.01, 'no micron edges left: ' + minSide);
+});
+
+test('a clean mesh is not welded', () => {
+  const clean = flat(box(0,0,0,10,10,10));
+  assert.equal(core.weldTinyEdges(clean, 0.01), clean, 'same array back');
 });
