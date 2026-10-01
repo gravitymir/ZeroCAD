@@ -315,6 +315,18 @@ const ZC_TOOLS = [
     }
   },
   {
+    "name": "bend_line",
+    "description": "Bend a drawn straight line into an arc through its own ends and a handle point — the same thing as holding Alt and dragging a point placed on that line. The line is replaced by chords of the arc (no further than 0.05 mm from the true arc) and they are cut into the face, so the face splits along the arc.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "any point on the line, mm"},
+        "through": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "the point the arc must pass through, mm — keep it in the plane of the face"}
+      },
+      "required": ["point", "through"]
+    }
+  },
+  {
     "name": "name_part",
     "description": "Name the part of the body under a point, or place a hotspot there. Names are the IEGarage contract: body-main, hood, roof, trunk, door-front-l/r, door-rear-l/r, door-sliding, windshield, window-rear, window-side-l/r, wheel-fl/fr/rl/rr, headlight-l/r, taillight-l/r, turnsignal-l/r, bumper-front/rear, mirror-l/r, wipers, fuel-cap-l/r; hotspots: hotspot-engine, hotspot-battery, hotspot-oil-fill, hotspot-air-filter, hotspot-brakes-front, hotspot-brakes-rear, hotspot-wipers. Each name becomes a node in export_glb.",
     "inputSchema": {

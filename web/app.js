@@ -9908,6 +9908,9 @@ function showPointPalette(){
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     (!hintsChk.checked ? '' :
     '<div><span class="key">Drag</span> — move point</div>' +
+    // изгиб дугой есть только у точки, поставленной на линию или ребро
+    (selAnchor && selAnchor.bend
+      ? '<div><span class="key">Alt+drag</span> — bend the line into an arc</div>' : '') +
     '<div><span class="key">G,V</span> — edit X/Y/Z</div>' +
     '<div><span class="key">Del</span> — delete point</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
@@ -10656,6 +10659,9 @@ function showEdgePalette(ch){
     '<div><span class="key">M</span> — move edge</div>' +
     '<div><span class="key">G,V</span> — move by X/Y/Z</div>' +
     '<div><span class="key">G,Y</span> — point / divide</div>' +
+    // изгиб дугой: точка на линии + Alt — её ручка гнёт линию через концы
+    (ch && !ch.closed
+      ? '<div><span class="key">G,Y</span>, then <span class="key">Alt+drag</span> the point — bend into an arc</div>' : '') +
     '<div><span class="key">Del</span> — erase edge / line</div>' +
     (edgeSel.length === 1 && ch && !ch.closed ? '<div><span class="key">B</span> — select the closed contour through it</div>' : '') +
     (() => { // выбран замкнутый контур, который можно залить
@@ -10942,6 +10948,58 @@ function arcSampler(A,B,P){
     .addScaledVector(v, Math.sin(t*sweep)*R);
   f.R = R;
   return f;
+}
+// Нарисованная прямая, проходящая через точку: собираем все отрезки-линии,
+// лежащие на одной прямой и сцепленные концами, и отдаём её концы. Нужно для
+// изгиба дугой: после постановки точки линия в цепочках уже разрезана надвое
+function guideLineThrough(P, tol = 0.02){
+  // точка может лежать и посреди отрезка (её поставили на линию), поэтому
+  // ищем отрезок, который через неё проходит, а не совпадение с концом
+  const onSeg = g => {
+    const u = new THREE.Vector3().subVectors(g.b, g.a), L2 = u.lengthSq();
+    if(L2 < 1e-12) return false;
+    const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(P, g.a).dot(u) / L2));
+    return g.a.clone().addScaledVector(u, t).distanceTo(P) < tol;
+  };
+  const start = guides.find(onSeg);
+  if(!start) return null;
+  const dir = new THREE.Vector3().subVectors(start.b, start.a).normalize();
+  const onLine = g => {
+    const u = new THREE.Vector3().subVectors(g.b, g.a);
+    if(u.lengthSq() < 1e-12 || Math.abs(u.normalize().dot(dir)) < 0.9999) return false;
+    const w = new THREE.Vector3().subVectors(g.a, P);
+    return w.addScaledVector(dir, -w.dot(dir)).length() < tol;
+  };
+  const run = guides.filter(onLine);
+  if(!run.length) return null;
+  // крайние точки по параметру вдоль прямой
+  let lo = Infinity, hi = -Infinity, A = null, B = null;
+  for(const g of run) for(const q of [g.a, g.b]){
+    const t = new THREE.Vector3().subVectors(q, P).dot(dir);
+    if(t < lo){ lo = t; A = q.clone(); }
+    if(t > hi){ hi = t; B = q.clone(); }
+  }
+  if(!A || !B || A.distanceTo(B) < 0.5) return null;
+  return {A, B, segments: run.length, curve: run[0].curve || 0, noExt: !!run[0].noExt};
+}
+// сколько хорд нужно дуге, чтобы она отходила от настоящей не дальше 0.05 мм
+function arcChordCount(R, sweep){
+  if(!(R > 0) || !(Math.abs(sweep) > 1e-6)) return 1;
+  const step = 2 * Math.acos(Math.max(-1, 1 - 0.05 / R));
+  return Math.max(2, Math.min(96, Math.ceil(Math.abs(sweep) / Math.max(step, 1e-6))));
+}
+// точки дуги через концы A, B и ручку P
+function arcBendPoints(A, B, P){
+  const f = arcSampler(A, B, P);
+  if(!f.R) return [A.clone(), P.clone(), B.clone()];   // ручка на прямой — просто линия
+  // развёрнутый угол: по хорде и радиусу
+  const half = Math.min(1, A.distanceTo(B) / (2 * f.R));
+  let sweep = 2 * Math.asin(half);
+  if(P.distanceTo(A.clone().lerp(B, 0.5)) > f.R) sweep = 2 * Math.PI - sweep; // дуга больше полукруга
+  const n = arcChordCount(f.R, sweep);
+  const out = [];
+  for(let i = 0; i <= n; i++) out.push(f(i / n));
+  return out;
 }
 // индексы вершин буфера для набора точек (один проход по мешу)
 function buildIndexMap(points){
@@ -12760,6 +12818,18 @@ function beginDrag(a, c, q, altKey, pointerId, ctrlKey, shiftKey){
       if(it) it.idx.push(i);
     }
     dragPt.ringRun = {items, r0: Math.hypot(tgt.x, tgt.y), z0: tgt.z};
+  } else if(a && altKey && guideLineThrough(a.pos)){
+    // Alt у точки на нарисованной линии — изгиб дугой: линия заменится дугой
+    // через свои концы и эту точку (как Arc из SketchUp). Пока тянем —
+    // показываем призрак, саму геометрию меняем один раз при отпускании
+    dragPt.arcBend = guideLineThrough(a.pos);
+    {   // дуга обязана остаться в плоскости грани, на которой лежит линия:
+        // курсор тянется в плоскости экрана и увёл бы её из грани
+      const fi = zcFaceAt(a.pos);
+      const ab = dragPt.arcBend;
+      ab.n = fi >= 0 ? triNormalAt(fi).clone().normalize() : null;
+      ab.P0 = a.pos.clone();
+    }
   } else if(a && a.bend && altKey){ // Alt = режим дуги (как модификаторы Move в SketchUp)
     const im = buildIndexMap(a.bend.pts0);
     dragPt.bendRun = {
@@ -13123,6 +13193,27 @@ canvas.addEventListener('pointerup', e=>{
       hidePatch(); ppPatch = null;
     }
   }
+  if(dragPt && dragPt.arcBend){
+    const ab = dragPt.arcBend;
+    if(ab.ghost){ scene.remove(ab.ghost); ab.ghost.geometry.dispose(); ab.ghost = null; }
+    if(ab.pts && ab.pts.length > 2){
+      pushUndo();
+      eraseGuideSegment(ab.A, ab.B);          // прямая уходит
+      const cid = ab.curve || ++curveSeq;     // сегменты дуги — одна кривая
+      for(let i = 0; i + 1 < ab.pts.length; i++){
+        addGuide(ab.pts[i], ab.pts[i+1], true, cid);
+        splitMeshByChord(ab.pts[i], ab.pts[i+1], 'segment');
+      }
+      cleanupMesh();
+      tidySlivers();   // врезка хорд оставляет щепки, как любая другая правка
+      if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+      warnTip('Line bent into an arc · ' + (ab.pts.length - 1) + ' chords');
+    }
+    setAxisLock(null); snapDot.visible = false;
+    dragPt = null; tipHide(); extractEdges();
+    drag = null;
+    return;
+  }
   if(dragPt){
     normalsFlush();
     // после изгиба запоминаем новые позиции цепочки для следующего раза
@@ -13343,6 +13434,26 @@ canvas.addEventListener('pointermove', e=>{
     if(!dragPt.snapPushed){ // первый сдвиг — пишем историю для Ctrl+Z
       pushHistory(dragPt.snap);
       dragPt.snapPushed = true;
+    }
+    if(dragPt.arcBend){
+      const ab = dragPt.arcBend;
+      // ручку прижимаем к плоскости грани, на которой лежит линия: курсор
+      // тянется в плоскости экрана и увёл бы дугу из грани
+      let H = hit;
+      if(ab.n){
+        const d = new THREE.Vector3().subVectors(hit, ab.P0).dot(ab.n);
+        H = hit.clone().addScaledVector(ab.n, -d);
+      }
+      ab.pts = arcBendPoints(ab.A, ab.B, H);
+      if(ab.ghost){ scene.remove(ab.ghost); ab.ghost.geometry.dispose(); }
+      ab.ghost = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ab.pts),
+        new THREE.LineBasicMaterial({color: 0x6aff3d}));
+      scene.add(ab.ghost);
+      for(const m of dragPt.markers) m.position.copy(H);
+      if(dragPt.a) dragPt.a.pos.copy(H);
+      const f = arcSampler(ab.A, ab.B, H);
+      tipAt(e, f.R ? 'Arc R <b>' + f.R.toFixed(1) + '</b> mm · ' + (ab.pts.length - 1) + ' chords' : 'straight');
+      return;
     }
     const pos = mesh.geometry.attributes.position.array;
     if(dragPt.bendRun){
@@ -15580,6 +15691,31 @@ const ZC_COMMANDS = {
       const made = layCurve(chord, closed, a.on_face !== false);
       if(!modified){ modified = true; s_mod.textContent = 'yes'; }
       return Object.assign({segments: made, points: chord.length}, zcSummary());
+    }
+  },
+  // изгиб нарисованной линии дугой — то же, что Alt+перетаскивание точки на ней
+  bend_line: {
+    run(a){
+      const P = zcV3(a.point, 'point');
+      const line = guideLineThrough(P, 0.2);
+      if(!line) throw new Error('no drawn line through this point');
+      const H = zcV3(a.through, 'through');
+      const pts = arcBendPoints(line.A, line.B, H);
+      if(pts.length < 3) throw new Error('the handle lies on the line — there is nothing to bend');
+      pushUndo();
+      eraseGuideSegment(line.A, line.B);
+      const cid = line.curve || ++curveSeq;
+      for(let i = 0; i + 1 < pts.length; i++){
+        addGuide(pts[i], pts[i+1], true, cid);
+        splitMeshByChord(pts[i], pts[i+1], 'segment');
+      }
+      cleanupMesh();
+      tidySlivers();
+      extractEdges();
+      if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+      const f = arcSampler(line.A, line.B, H);
+      return Object.assign({chords: pts.length - 1, radius_mm: f.R ? +f.R.toFixed(3) : 0,
+        ends: [line.A.toArray().map(v => +v.toFixed(3)), line.B.toArray().map(v => +v.toFixed(3))]}, zcSummary());
     }
   },
   name_part: {

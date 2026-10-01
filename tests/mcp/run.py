@@ -511,6 +511,24 @@ def extrude_leaves_no_slivers():
 
 
 @case
+def bend_a_line_into_an_arc():
+    # то же ядро, что у Alt+перетаскивания точки на линии
+    call('new_shape', {'shape': 'cube', 'size': 100})
+    call('draw_line', {'from': [20, 50, 100], 'to': [80, 50, 100]})
+    d = call('bend_line', {'point': [50, 50, 100], 'through': [50, 75, 100]})
+    # хорда 60, стрелка 25 -> R = (60^2/4 + 25^2) / (2*25)
+    near(d['radius_mm'], (3600/4 + 625) / 50, 0.5, 'arc radius')
+    assert d['chords'] > 8, d
+    assert d['lines'] == d['chords'], ('the line became the arc', d)
+    closed(d, 'after bending')
+    try:
+        call('bend_line', {'point': [50, 10, 100], 'through': [50, 20, 100]})
+        raise AssertionError('a point with no line under it must be refused')
+    except McpError as e:
+        assert 'no drawn line' in str(e), e
+
+
+@case
 def export_glb_for_three_js():
     # GLB: метры вместо миллиметров, Y вверх; имена узлов — контракт с IEGarage
     call('new_shape', {'shape': 'cube', 'size': 400})
