@@ -5153,6 +5153,10 @@ const arrTool = {
 // ---------- «Окружность» (G,C — круг в Sketcher FreeCAD) ----------
 // центр (с магнитами) -> радиус мышью или цифрами+Enter -> врезка 48 хордами
 let circleMode = false, circleCenter = null, circlePlane = null, circleR = 0, circleRStr = '';
+// Shift — круг по диаметру: первая точка лежит НА окружности, курсор —
+// противоположная ей точка. Ctrl в режимах рисования занят временной
+// орбитой камеры, поэтому модификатор именно Shift
+let circleAnchor = null, circleDia = false;
 let circleDown = null; // точка нажатия: press-drag-release ставит круг за один жест
 // Число сегментов окружности: SketchUp рисует круг 24 отрезками, Blender —
 // 32; берём 24 и даём менять вживую (настоящих дуг у нас нет, круг всегда
@@ -5221,7 +5225,7 @@ function updateCircInfo(snapKind, beyond){
   circ_info.innerHTML = h;
   circ_typed.hidden = !circleRStr;
   circ_typed.textContent = circleRStr ? 'typed Ø ' + circleRStr + ' mm (Enter)' : '';
-  circ_state.textContent = live ? 'size' : (R > 0.1 ? 'placed' : 'center');
+  circ_state.textContent = live ? (circleDia ? 'size · by diameter' : 'size') : (R > 0.1 ? 'placed' : 'center');
   if(!live && circFixedR) circ_state.textContent += ' · fixed Ø';
   circ_auto.hidden = !circAuto;
   circ_hint.hidden = !hintsChk.checked;
@@ -5294,7 +5298,7 @@ let circleRing = null;
 function killRing(){ if(circleRing){ scene.remove(circleRing); circleRing.geometry.dispose(); circleRing = null; } }
 function setCircleMode(on){
   circleMode = on;
-  circleCenter = null; circlePlane = null; circleRStr = '';
+  circleCenter = null; circleAnchor = null; circleDia = false; circlePlane = null; circleRStr = '';
   killRing(); hidePlaneTargets();
   circleDown = null; circLast = null; circAuto = true; circFixedR = null; circRLock = false;
   if(on){
@@ -5340,7 +5344,7 @@ function commitCircle(){
   cleanupMesh(); // врезка оставляет треугольники нулевой площади
   extractEdges();
   killRing(); hidePlaneTargets(); ghost.visible = false;
-  circleCenter = null; circleRStr = ''; circleDown = null; circRLock = false;
+  circleCenter = null; circleAnchor = null; circleDia = false; circleRStr = ''; circleDown = null; circRLock = false;
   tipHide();
   updateCircInfo();
 }
@@ -12931,6 +12935,7 @@ canvas.addEventListener('pointerdown', e=>{
         if(pk){
           circlePlane = pk.n;
           circleCenter = pk.pos.clone(); // центр строго в плоскости грани/земли
+          circleAnchor = circleCenter.clone();
           circleR = 0;
           circleDown = {x: e.clientX, y: e.clientY};
           circPatch = pk.faceIndex !== undefined ? facePatchCached(pk.faceIndex) : null;
@@ -13415,6 +13420,9 @@ canvas.addEventListener('pointermove', e=>{
   if(offLive){ offMove(e, q); return; }
   if(activeTool){ activeTool.move(e, q); return; }
   if(circleMode){ // превью окружности за курсором
+    let circCursor = null;
+    // считаем всегда от точки клика: на прошлом кадре Shift мог сдвинуть центр
+    if(circleAnchor && circleCenter) circleCenter.copy(circleAnchor);
     if(!q.inside){ ghost.visible=false; killRing(); tipHide(); return; }
     if(!circleCenter){
       const pt = pickOnFace(q); // грань, а если под курсором её нет — земля XY
@@ -13464,8 +13472,10 @@ canvas.addEventListener('pointermove', e=>{
           if(Math.hypot(sc.x - q.mx, sc.y - q.my) < 14){ P = best; kind = 'perpendicular'; }
         }
       }
-      circleR = Math.max(0.1, new THREE.Vector3().subVectors(P, circleCenter)
-        .addScaledVector(circlePlane, -new THREE.Vector3().subVectors(P, circleCenter).dot(circlePlane)).length());
+      const flat = new THREE.Vector3().subVectors(P, circleCenter);
+      flat.addScaledVector(circlePlane, -flat.dot(circlePlane));
+      circCursor = circleCenter.clone().add(flat);
+      circleR = Math.max(0.1, flat.length());
       ghost.material.color.setHex(pt.kind==='vertex' || pt.kind==='center' || kind==='perpendicular' ? C_VERT : C_EDGE);
       ghost.position.copy(P); ghost.visible = true;
       snapKind = circSnapHtml('Radius', pt.kind === 'on edge' && kind !== 'perpendicular' ? 'on edge' : (kind === 'perpendicular' ? kind : pt.kind));
@@ -13474,7 +13484,16 @@ canvas.addEventListener('pointermove', e=>{
       snapKind = circRLock ? '' : circSnapHtml('Radius', 'free · 0.1 mm step');
       // свободно — по плоскости круга (за краем грани тоже: черчение в воздухе)
       const p = rayOnPlane(q, circlePlane, circleCenter);
-      if(p) circleR = Math.max(0.1, snapMM(p.distanceTo(circleCenter)));
+      if(p){ circCursor = p.clone(); circleR = Math.max(0.1, snapMM(p.distanceTo(circleCenter))); }
+    }
+    // Shift: клик был не центром, а точкой НА окружности — центр посередине
+    // между ней и курсором (2-point circle во Fusion и FreeCAD)
+    circleDia = !!e.shiftKey && !!circleAnchor && !!circCursor;
+    if(circleAnchor){
+      if(circleDia){
+        circleCenter = circleAnchor.clone().lerp(circCursor, 0.5);
+        circleR = Math.max(0.1, circleAnchor.distanceTo(circCursor) / 2);
+      } else circleCenter = circleAnchor.clone();
     }
     if(circAuto) circ_seg.value = autoCircSegs(circleR);
     updateCircInfo(snapKind, drawCircleRing(circleCenter, circlePlane, circleR));
