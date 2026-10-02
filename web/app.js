@@ -11084,6 +11084,10 @@ function splitEdgeAt(chain, s){
   const A=chain.pts[i-1], B=chain.pts[i];
   const ka=keyOf(A.x,A.y,A.z), kb=keyOf(B.x,B.y,B.z), kp=keyOf(P.x,P.y,P.z);
   if(kp===ka || kp===kb) return null; // попали в существующую вершину — просто ставим точку
+  // ближе 0.05 мм к вершине ребра резать нельзя: получится микроребро, то есть
+  // щепка, которая потом рвёт булевы операции. Точка просто садится на вершину
+  if(P.distanceTo(A) < 0.05){ P.copy(A); return null; }
+  if(P.distanceTo(B) < 0.05){ P.copy(B); return null; }
   const pos = mesh.geometry.attributes.position.array;
   const out = [];
   const V=[new THREE.Vector3(),new THREE.Vector3(),new THREE.Vector3()];
