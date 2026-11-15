@@ -570,9 +570,9 @@ pub fn mcp(body: &[u8]) -> (&'static str, String) {
         "tools/call" => {
             let name = params.get("name").and_then(Json::as_str).unwrap_or("").to_string();
             let args = params.get("arguments").cloned().unwrap_or(Json::Obj(vec![]));
-            // import_3mf: файл читает сервер (вкладке диск недоступен) и отдаёт
-            // вкладке содержимое — тот же разбор, что у Open… в редакторе
-            let args = if name == "import_3mf" || name == "trace_reference" {
+            // import_3mf, open_project: файл читает сервер (вкладке диск
+            // недоступен) и отдаёт вкладке содержимое — тот же разбор, что у Open…
+            let args = if name == "import_3mf" || name == "open_project" || name == "trace_reference" {
                 match read_file_arg(&args, &name) {
                     Ok(a) => a,
                     Err(e) => return ("200 OK", Json::obj(vec![("jsonrpc", Json::str("2.0")), ("id", id), ("result",
@@ -607,7 +607,7 @@ fn tool_result(name: &str, r: Result<Json, String>) -> Json {
             if let Some(data) = res.get("stl_base64").and_then(Json::as_str) {
                 return save_export(&res, data, "stl");
             }
-            if let (Some(data), Some(ext @ ("3mf" | "glb"))) =
+            if let (Some(data), Some(ext @ ("3mf" | "glb" | "zcad" | "obj" | "step" | "stl"))) =
                 (res.get("file_base64").and_then(Json::as_str), res.get("ext").and_then(Json::as_str))
             {
                 return save_export(&res, data, ext);
@@ -627,7 +627,7 @@ fn tool_result(name: &str, r: Result<Json, String>) -> Json {
 }
 
 /// Файл с диска для вкладки (ей диск недоступен): 3MF для import_3mf,
-/// фотография для trace_reference. Путь абсолютный или имя в `exports/`;
+/// проект .zcad для open_project, фотография для trace_reference. Путь абсолютный или имя в `exports/`;
 /// не больше 64 МБ. Остальные поля команды остаются как есть
 fn read_file_arg(args: &Json, tool: &str) -> Result<Json, String> {
     let photo = tool == "trace_reference";
@@ -643,6 +643,8 @@ fn read_file_arg(args: &Json, tool: &str) -> Result<Json, String> {
     }
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let mime = match (photo, ext.as_str()) {
+        (false, "zcad") if tool == "open_project" => "application/json",
+        (false, _) if tool == "open_project" => return Err(format!("{} is not a .zcad project", path.display())),
         (false, "3mf") => "model/3mf",
         (true, "png") => "image/png",
         (true, "jpg" | "jpeg") => "image/jpeg",
@@ -678,7 +680,7 @@ fn base64_encode(b: &[u8]) -> String {
     out
 }
 
-/// Экспорт STL и 3MF: файл пишет сервер (вкладке браузера на диск нельзя) в
+/// Экспорт и сохранение (STL, 3MF, GLB, OBJ, STEP, проект .zcad): файл пишет сервер (вкладке браузера на диск нельзя) в
 /// папку `exports/` рядом с запуском; агенту — путь, размер и пригодность к печати
 fn save_export(res: &Json, b64: &str, ext: &str) -> Json {
     let text = |s: String| Json::obj(vec![("type", Json::str("text")), ("text", Json::Str(s))]);

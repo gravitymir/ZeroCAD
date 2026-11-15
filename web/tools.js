@@ -23,7 +23,7 @@ const ZC_TOOLS = [
   },
   {
     "name": "new_shape",
-    "description": "Start a new model from a preset shape, replacing the current model. size is the cube side or the gear/sphere diameter in mm. Note: \"gear\" is the peanut dispenser wheel this project started from — a disc with a central shaft bore and 4 V-shaped pockets in the rim. It is NOT a toothed gear; there is no involute tooth generator. Build a toothed gear from add_revolve plus a polar set of cut_through.",
+    "description": "Start a new model from a preset shape, replacing the current model. size is the cube side or the gear/sphere/cylinder diameter in mm. Note: \"gear\" is the peanut dispenser wheel this project started from — a disc with a central shaft bore and 4 V-shaped pockets in the rim. It is NOT a toothed gear; there is no involute tooth generator. Build a toothed gear from add_revolve plus a polar set of cut_through.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -33,13 +33,18 @@ const ZC_TOOLS = [
             "cube",
             "gear",
             "sphere",
-            "pyramid"
+            "pyramid",
+            "cylinder"
           ],
-          "description": "cube: corner at the origin, spans 0..size on each axis. gear: dispenser wheel with pockets, centred on the Z axis. sphere/pyramid: sit on the ground plane."
+          "description": "cube: corner at the origin, spans 0..size on each axis. gear: dispenser wheel with pockets, centred on the Z axis. sphere/pyramid/cylinder: sit on the ground plane (cylinder: axis Z, base centre at (size/2, size/2, 0))."
         },
         "size": {
           "type": "number",
           "description": "mm"
+        },
+        "height": {
+          "type": "number",
+          "description": "cylinder height in mm (default 40)"
         }
       },
       "required": [
@@ -252,6 +257,17 @@ const ZC_TOOLS = [
     }
   },
   {
+    "name": "open_project",
+    "description": "Open a ZeroCAD project (.zcad, written by save_file or the File menu), replacing the current model: mesh, lines, part names and the parametric history — continue with get_history / edit_step.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "absolute path to a .zcad file, or a bare file name in the server's exports folder (where save_file writes)"}
+      },
+      "required": ["path"]
+    }
+  },
+  {
     "name": "import_3mf",
     "description": "Open a 3MF file, replacing the current model (undo brings it back). A 3MF written by ZeroCAD opens as the full project; one from another program (or edited there) opens as its mesh, converted to mm from its unit, with component transforms applied. Answer says opened: project or mesh.",
     "inputSchema": {
@@ -350,6 +366,18 @@ const ZC_TOOLS = [
         }
       },
       "required": []
+    }
+  },
+  {
+    "name": "save_file",
+    "description": "Save the model to a file — the same as the File menu. format: zcad (the ZeroCAD project: mesh, lines, names — opens back with Open project), stl (printing), 3mf (printing; also carries the project inside and opens back with import_3mf), glb (three.js), obj, step (faceted AP214 solid; needs a closed mesh). The server writes it to its exports folder and returns the path, size and whether the mesh is printable.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "format": {"type": "string", "enum": ["zcad", "stl", "3mf", "glb", "obj", "step"]},
+        "name": {"type": "string", "description": "file name without extension (letters, digits, - and _), default: project name"}
+      },
+      "required": ["format"]
     }
   },
   {
@@ -491,6 +519,12 @@ const ZC_TOOLS = [
     "name": "add_hole",
     "description": "Drill a hole in a face — the same builder as the user's Hole window (G,D). point: the centre on a face (+ normal when the point is on an edge); the hole goes along the face normal into the body. type simple (default), counterbore (a flat seat for a cheese head) or countersink (a cone for a flat head, angle 90 by default); head_diameter and head_depth (counterbore) or angle (countersink). depth in mm, or through: true to go right through. tip: a 118 degree drill point instead of a flat bottom. Clearance and head sizes for M3…M6 screws: M3 3.4/6.0/6.5x3, M4 4.5/8.0/8.0x4, M5 5.5/10/10x5, M6 6.6/12/11x6 (hole / countersink head / counterbore).",
     "inputSchema": {"type": "object", "properties": {
+      "pattern": {"type": "object", "description": "circular pattern of this operation: the solid is built once and cut/added count times around the axis in one step (fins on a wall, holes on a flange). angle 360 (default) spreads them evenly, less goes from 0 to angle inclusive", "properties": {
+        "count": {"type": "integer", "description": "2…360, the original included"},
+        "axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "direction, default [0, 0, 1]"},
+        "angle": {"type": "number", "description": "degrees, default 360"}
+      }, "required": ["count", "axis_point"]},
       "point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
       "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
       "diameter": {"type": "number", "description": "mm"},
@@ -510,6 +544,12 @@ const ZC_TOOLS = [
     "inputSchema": {
       "type": "object",
       "properties": {
+        "pattern": {"type": "object", "description": "circular pattern of this operation: the solid is built once and cut/added count times around the axis in one step (fins on a wall, holes on a flange). angle 360 (default) spreads them evenly, less goes from 0 to angle inclusive", "properties": {
+        "count": {"type": "integer", "description": "2…360, the original included"},
+        "axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "direction, default [0, 0, 1]"},
+        "angle": {"type": "number", "description": "degrees, default 360"}
+      }, "required": ["count", "axis_point"]},
         "from": {
           "type": "array",
           "items": {
@@ -562,6 +602,12 @@ const ZC_TOOLS = [
     "inputSchema": {
       "type": "object",
       "properties": {
+        "pattern": {"type": "object", "description": "circular pattern of this operation: the solid is built once and cut/added count times around the axis in one step (fins on a wall, holes on a flange). angle 360 (default) spreads them evenly, less goes from 0 to angle inclusive", "properties": {
+        "count": {"type": "integer", "description": "2…360, the original included"},
+        "axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "direction, default [0, 0, 1]"},
+        "angle": {"type": "number", "description": "degrees, default 360"}
+      }, "required": ["count", "axis_point"]},
         "profile": {
           "type": "array",
           "items": {
@@ -615,6 +661,12 @@ const ZC_TOOLS = [
     "inputSchema": {
       "type": "object",
       "properties": {
+        "pattern": {"type": "object", "description": "circular pattern of this operation: the solid is built once and cut/added count times around the axis in one step (fins on a wall, holes on a flange). angle 360 (default) spreads them evenly, less goes from 0 to angle inclusive", "properties": {
+        "count": {"type": "integer", "description": "2…360, the original included"},
+        "axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "direction, default [0, 0, 1]"},
+        "angle": {"type": "number", "description": "degrees, default 360"}
+      }, "required": ["count", "axis_point"]},
         "path": {
           "type": "array",
           "items": {
@@ -692,9 +744,26 @@ const ZC_TOOLS = [
     }}
   },
   {
+    "name": "pattern_body",
+    "description": "Circular pattern of a body — the same as the user's G,A on a body: keeps the body and adds copies turned around the axis. body_point: a point on the surface of the body (a connected part of the mesh); omit it for the whole model. count includes the original; angle 360 (default) spreads them evenly, less goes from 0 to angle inclusive. Copies touching the rest are united with exact booleans. To repeat a feature that merges into a wall (fins, holes) use the pattern option of the solid commands instead.",
+    "inputSchema": {"type": "object", "properties": {
+      "body_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "direction, default [0, 0, 1]"},
+      "count": {"type": "integer", "description": "2…360, the original included"},
+      "angle": {"type": "number", "description": "degrees, default 360"}
+    }, "required": ["axis_point", "count"]}
+  },
+  {
     "name": "loft_profiles",
     "description": "Stretch a solid between two flat closed profiles given in 3D — the same builder as the user's Loft tool (G,F): a funnel, an adapter, a neck. Vertices are stitched by the share of the outline length from the closest starting vertex, so the corners of both profiles stay and the walls run straight from one to the other. Both profiles must be flat and not in the same place.",
     "inputSchema": {"type": "object", "properties": {
+      "pattern": {"type": "object", "description": "circular pattern of this operation: the solid is built once and cut/added count times around the axis in one step (fins on a wall, holes on a flange). angle 360 (default) spreads them evenly, less goes from 0 to angle inclusive", "properties": {
+        "count": {"type": "integer", "description": "2…360, the original included"},
+        "axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "direction, default [0, 0, 1]"},
+        "angle": {"type": "number", "description": "degrees, default 360"}
+      }, "required": ["count", "axis_point"]},
       "profile_a": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 3},
       "profile_b": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 3},
       "operation": {"type": "string", "enum": ["join", "cut", "intersect", "new"], "description": "default join"}
@@ -704,6 +773,12 @@ const ZC_TOOLS = [
     "name": "revolve_profile",
     "description": "Revolve a flat closed profile given in 3D around an axis — the same builder as the user's Revolve tool (G,O). The axis must lie in the plane of the profile and the profile on one side of it (points on the axis are fine). |angle| < 360 makes a sector with flat ends.",
     "inputSchema": {"type": "object", "properties": {
+      "pattern": {"type": "object", "description": "circular pattern of this operation: the solid is built once and cut/added count times around the axis in one step (fins on a wall, holes on a flange). angle 360 (default) spreads them evenly, less goes from 0 to angle inclusive", "properties": {
+        "count": {"type": "integer", "description": "2…360, the original included"},
+        "axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "direction, default [0, 0, 1]"},
+        "angle": {"type": "number", "description": "degrees, default 360"}
+      }, "required": ["count", "axis_point"]},
       "profile": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 3},
       "axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
       "axis_direction": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
@@ -716,6 +791,12 @@ const ZC_TOOLS = [
     "name": "sweep_profile",
     "description": "Sweep a flat closed profile given in 3D along a polyline path — the same builder as the user's Sweep tool (G,W). The profile is carried without twisting from the path end nearest to it; corners are mitred (no sharper than 30°). closed: the path is a loop (no end caps).",
     "inputSchema": {"type": "object", "properties": {
+      "pattern": {"type": "object", "description": "circular pattern of this operation: the solid is built once and cut/added count times around the axis in one step (fins on a wall, holes on a flange). angle 360 (default) spreads them evenly, less goes from 0 to angle inclusive", "properties": {
+        "count": {"type": "integer", "description": "2…360, the original included"},
+        "axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "direction, default [0, 0, 1]"},
+        "angle": {"type": "number", "description": "degrees, default 360"}
+      }, "required": ["count", "axis_point"]},
       "profile": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 3},
       "path": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 2},
       "closed": {"type": "boolean"},
@@ -754,22 +835,57 @@ const ZC_TOOLS = [
     }
   },
   {
-    "name": "screenshot",
-    "description": "Picture of the 3D view (JPEG). fit: frame the whole model first (moves the user view too); yaw/pitch in degrees turn the camera.",
+    "name": "get_history",
+    "description": "The parametric history: every model-changing command so far as {index, command, args, status, volume_change_mm3}. Step 0 is new_shape or 'base' — a snapshot of a model without a recipe (imported, or edited by the user's mouse). If the user changed the model by hand after the last command, the history folds into a new 'base' of the current model. failed lists steps that did not apply on the last rebuild.",
+    "inputSchema": {"type": "object", "properties": {}, "required": []}
+  },
+  {
+    "name": "edit_step",
+    "description": "Change the parameters of a history step and rebuild the model from scratch by replaying all steps (like editing a feature in the Fusion timeline). args: only the keys to change; null removes a key. A step that no longer applies is marked failed and skipped, the rest still run — fix it with another edit_step. One undo reverts the whole rebuild.",
+    "inputSchema": {"type": "object", "properties": {
+      "index": {"type": "integer"},
+      "args": {"type": "object", "description": "parameters to change, e.g. {\"thickness\": 3}"}
+    }, "required": ["index", "args"]}
+  },
+  {
+    "name": "delete_step",
+    "description": "Remove a history step (not step 0) and rebuild the model from scratch by replaying the rest. One undo reverts the rebuild.",
+    "inputSchema": {"type": "object", "properties": {
+      "index": {"type": "integer"}
+    }, "required": ["index"]}
+  },
+  {
+    "name": "set_view",
+    "description": "Turn the user's 3D view — the same as the ViewCube and orbiting: a named view, yaw/pitch, the point to look at, the distance, or fit the whole model. Applied in the order view, yaw/pitch, fit, target, distance. Returns the resulting camera. Does not close the user's open tool.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "fit": {
-          "type": "boolean"
-        },
-        "yaw": {
-          "type": "number",
-          "description": "degrees around Z"
-        },
-        "pitch": {
-          "type": "number",
-          "description": "degrees above the ground"
-        },
+        "view": {"type": "string", "enum": ["home", "iso", "top", "bottom", "front", "back", "left", "right"], "description": "as on the ViewCube: front looks from -Y, right from +X, top from above; home/iso is the isometric start view"},
+        "yaw": {"type": "number", "description": "degrees around Z"},
+        "pitch": {"type": "number", "description": "degrees above the ground"},
+        "target": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "point the camera looks at, mm"},
+        "distance": {"type": "number", "description": "camera distance from target, mm"},
+        "fit": {"type": "boolean", "description": "frame the whole model (target and distance from its bounding box)"}
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "screenshot",
+    "description": "Picture of the 3D view (JPEG). Camera options are the same as set_view and move the user view too; applied in the order view, yaw/pitch, fit, target, distance. section {point, normal} cuts the picture only: the side the normal points to is not drawn, so walls, ribs and fins inside show (inner faces are grey-blue).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "view": {"type": "string", "enum": ["home", "iso", "top", "bottom", "front", "back", "left", "right"], "description": "as on the ViewCube: front looks from -Y, right from +X, top from above; home/iso is the isometric start view"},
+        "yaw": {"type": "number", "description": "degrees around Z"},
+        "pitch": {"type": "number", "description": "degrees above the ground"},
+        "target": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "point the camera looks at, mm"},
+        "distance": {"type": "number", "description": "camera distance from target, mm"},
+        "fit": {"type": "boolean", "description": "frame the whole model (target and distance from its bounding box)"},
+        "section": {"type": "object", "properties": {
+          "point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+          "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+        }, "required": ["point", "normal"], "description": "cut-away for this picture only"},
         "width": {
           "type": "integer",
           "description": "px, default 1000"

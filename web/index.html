@@ -325,7 +325,7 @@
   #stTip b{color:var(--accent);font-family:ui-monospace,Consolas,monospace;margin-right:8px}
   #startScreen .st-sub{color:var(--muted);font-size:15px;letter-spacing:.04em;margin-top:-6px}
   #startScreen .st-head{color:var(--accent2);font-size:12px;text-transform:uppercase;letter-spacing:.12em;margin-top:22px}
-  #startScreen .st-cards{display:grid;grid-template-columns:repeat(4, 150px);gap:16px}
+  #startScreen .st-cards{display:grid;grid-template-columns:repeat(5, 150px);gap:16px}
   #startScreen .st-card{display:flex;flex-direction:column;align-items:center;gap:10px;padding:18px 10px 14px;
     background:var(--panel);border:1px solid var(--line);border-radius:12px;color:var(--text);
     font-size:17px;font-weight:600;cursor:pointer;transition:border-color .12s, transform .12s}
@@ -335,7 +335,8 @@
   #startScreen .st-links{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-top:14px}
   #startScreen .st-links button{flex:none;padding:9px 16px;font-size:14px}
   #startScreen .st-foot{position:absolute;bottom:12px;left:0;right:0;text-align:center;color:var(--muted);font-size:12px;z-index:1}
-  @media (max-width: 700px){ #startScreen .st-cards{grid-template-columns:repeat(2, 150px)} }
+  @media (max-width: 860px){ #startScreen .st-cards{grid-template-columns:repeat(3, 150px)} }
+  @media (max-width: 560px){ #startScreen .st-cards{grid-template-columns:repeat(2, 150px)} }
 </style>
 </head>
 <body>
@@ -350,6 +351,7 @@
     <button class="st-card" data-shape="cube"><svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M32 6 56 19v26L32 58 8 45V19z"/><path d="M8 19l24 13 24-13M32 32v26"/></svg>Cube<small>40 mm block</small></button>
     <button class="st-card" data-shape="wheel"><svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M28 6h8l1.5 7 6 2.5 6-4 5.7 5.7-4 6L53.5 29 60 30.5v8l-6.5 1.5-2.5 6 4 6-5.7 5.7-6-4-6 2.5L36 61h-8l-1.5-6.5-6-2.5-6 4-5.7-5.7 4-6L10.5 38.5 4 37v-8l6.5-1.5 2.5-6-4-6 5.7-5.7 6 4 6-2.5z" transform="translate(0 -1.5)"/><circle cx="32" cy="32" r="8"/></svg>Gear<small>dispenser wheel</small></button>
     <button class="st-card" data-shape="sphere"><svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><circle cx="32" cy="32" r="25"/><ellipse cx="32" cy="32" rx="25" ry="9"/><ellipse cx="32" cy="32" rx="9" ry="25"/></svg>Sphere<small>Ø 40 mm</small></button>
+    <button class="st-card" data-shape="cylinder"><svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><ellipse cx="32" cy="14" rx="22" ry="8"/><path d="M10 14v36c0 4.4 9.8 8 22 8s22-3.6 22-8V14"/></svg>Cylinder<small>Ø 40 × 40 mm</small></button>
     <button class="st-card" data-shape="pyramid"><svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M32 6 58 44 38 56 6 46z"/><path d="M32 6 38 56"/></svg>Pyramid<small>40 mm base</small></button>
   </div>
   <div class="st-links">
@@ -623,12 +625,18 @@
       <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
         <input type="radio" name="shape" value="sphere"> sphere</label>
       <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="radio" name="shape" value="cylinder"> cylinder</label>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
         <input type="radio" name="shape" value="pyramid"> pyramid</label>
     </div>
 
     <div class="sec">Dimensions</div>
     <div class="row"><label id="dia_label">Size <span id="v_dia">40 mm</span></label>
       <input type="range" id="dia" min="10" max="160" step="1" value="40"></div>
+    <div id="cylOnly" hidden>
+    <div class="row"><label>Height <span id="v_cyh">40 mm</span></label>
+      <input type="range" id="cyh" min="1" max="160" step="0.5" value="40"></div>
+    </div>
     <div id="wheelOnly">
     <div class="row"><label>Thickness (= nut width) <span id="v_thk">11 mm</span></label>
       <input type="range" id="thk" min="4" max="30" step="0.1" value="11"></div>

@@ -9,6 +9,7 @@
     python tests/mcp/run.py --yes --url http://127.0.0.1:9001/mcp
     python tests/mcp/run.py --yes -k bevel            # только тесты с «bevel»
 
+Файлы, которые тесты экспортируют в exports/, после прогона удаляются.
 Только стандартная библиотека. Код выхода 0 — всё прошло.
 """
 import argparse, json, math, sys, time, urllib.request
@@ -18,6 +19,12 @@ URL = 'http://127.0.0.1:9000/mcp'
 
 class McpError(Exception):
     pass
+
+
+# файлы, которые тесты заставили сервер записать в exports/ (export_*,
+# save_file): после прогона удаляются — в папке остаётся только работа
+# пользователя, тестовые кубы не путаются с его моделями в слайсере
+CREATED = set()
 
 
 def call(tool, args=None):
@@ -30,7 +37,22 @@ def call(tool, args=None):
     c = res['content'][0]
     if res.get('isError'):
         raise McpError(c.get('text', ''))
-    return json.loads(c['text']) if c['type'] == 'text' else c
+    out = json.loads(c['text']) if c['type'] == 'text' else c
+    if (tool.startswith('export_') or tool == 'save_file') and isinstance(out, dict) and out.get('path'):
+        CREATED.add(out['path'])
+    return out
+
+
+def cleanup_exports():
+    import os
+    for path in sorted(CREATED):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f'cannot remove {path}: {e}')
+    CREATED.clear()
 
 
 def closed(d, what=''):
@@ -267,6 +289,158 @@ def mirror_move_copy_scale_body():
         assert '> 0' in str(e), str(e)
     else:
         raise AssertionError('scale 0 must be refused')
+
+
+@case
+def polar_pattern_body_and_features():
+    # Круговой массив (G,A по телу, Circular Pattern во Fusion): pattern_body —
+    # копии тела по кругу; pattern у команд тела — элемент строится раз и
+    # режется/добавляется count раз одним шагом (плавники по стенке, отверстия
+    # по фланцу). Числа — точные объёмы
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    d = call('pattern_body', {'axis_point': [50, 10, 0], 'count': 4})
+    closed(d, 'apart'); near(d['volume_mm3'], 32000, 1e-3, '4 cubes apart')
+    assert d['boolean'] == 'none' and d['undo_steps'] == 1, d
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    d = call('pattern_body', {'axis_point': [15, 10, 0], 'count': 4})
+    closed(d, 'overlap'); exact(d, 'overlap'); near(d['volume_mm3'], 16000, 1e-2, '4 overlapping cubes')
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    d = call('pattern_body', {'axis_point': [50, 10, 0], 'count': 3, 'angle': 180})
+    near(d['bbox_max'][0], 100, 1e-3, 'half turn: 0, 90, 180')
+    # плавники на стенке трубы: 6 штук одним вызовом = 6 по отдельности
+    call('new_shape', {'shape': 'cube', 'size': 100})
+    call('add_revolve', {'profile': [[0, 0], [40, 0], [40, 50], [0, 50]], 'base': [50, 50, 0], 'segments': 96, 'operation': 'intersect'})
+    d0 = call('add_revolve', {'profile': [[0, -1], [37, -1], [37, 51], [0, 51]], 'base': [50, 50, 0], 'segments': 96, 'operation': 'cut'})
+    fin = lambda s: [[50 + 37.5, 50 + s, 40], [50 + 33, 50 + s, 40], [50 + 37.5, 50 + s, 30]]
+    one = call('loft_profiles', {'profile_a': fin(-1.5), 'profile_b': fin(1.5)})
+    call('undo')
+    d = call('loft_profiles', {'profile_a': fin(-1.5), 'profile_b': fin(1.5),
+                               'pattern': {'count': 6, 'axis_point': [50, 50, 0]}})
+    closed(d, 'fins'); exact(d, 'fins'); assert d['pattern_copies'] == 6 and d['undo_steps'] == d0['undo_steps'] + 1, d
+    near(d['volume_change_mm3'], 6 * one['volume_change_mm3'], 0.05, '6 fins = 6 × one fin')
+    # отверстия по фланцу: 8 × Ø6 сквозь плиту 10
+    call('new_shape', {'shape': 'cube', 'size': 100})
+    call('cut_plane', {'point': [0, 0, 10], 'normal': [0, 0, 1]})
+    d = call('add_hole', {'point': [80, 50, 10], 'diameter': 6, 'through': True, 'segments': 48,
+                          'pattern': {'count': 8, 'axis_point': [50, 50, 0]}})
+    closed(d, 'holes'); near(d['volume_change_mm3'], -8 * ngon(3) * 10, 0.05, '8 holes')
+    for bad, msg in [({'count': 1, 'axis_point': [0, 0, 0]}, 'count'), ({'count': 4}, 'axis_point')]:
+        try:
+            call('add_frustum', {'from': [0, 0, 0], 'to': [0, 0, 5], 'r1': 2, 'r2': 2, 'pattern': bad})
+        except McpError as e:
+            assert msg in str(e), str(e)
+        else:
+            raise AssertionError('bad pattern must be refused: %r' % bad)
+    try:
+        call('add_text', {'text': 'A', 'point': [50, 50, 10], 'pattern': {'count': 2, 'axis_point': [0, 0, 0]}})
+    except McpError as e:
+        assert 'not supported' in str(e), str(e)
+    else:
+        raise AssertionError('pattern on add_text must be refused')
+
+
+@case
+def view_section_and_save_formats():
+    # set_view — виды ViewCube для агента; screenshot с разрезом только на
+    # снимке; save_file — проект .zcad и все форматы экспорта в exports/
+    call('new_shape', {'shape': 'cylinder', 'size': 40, 'height': 30})
+    d = call('set_view', {'view': 'front', 'fit': True})
+    assert d['yaw_deg'] == -90 and d['pitch_deg'] == 0, d
+    near(d['target'][2], 15, 1e-6, 'fit centre')
+    d = call('set_view', {'view': 'top', 'target': [1, 2, 3], 'distance': 150})
+    assert d['pitch_deg'] > 85 and d['target'] == [1, 2, 3] and d['distance_mm'] == 150, d
+    try:
+        call('set_view', {'view': 'sideways'})
+    except McpError as e:
+        assert 'view must be one of' in str(e), str(e)
+    else:
+        raise AssertionError('unknown view must be refused')
+    img = call('screenshot', {'view': 'iso', 'fit': True, 'width': 300, 'height': 200,
+                              'section': {'point': [20, 20, 0], 'normal': [0, -1, 0]}})
+    assert img['type'] == 'image' and len(img['data']) > 1000, img.get('type')
+    import base64, os
+    for fmt in ['zcad', 'stl', '3mf', 'glb', 'obj', 'step']:
+        d = call('save_file', {'format': fmt, 'name': 'zc_test_save'})
+        assert d['path'].endswith('zc_test_save.' + fmt) and os.path.getsize(d['path']) == d['bytes'], d
+        assert d['printable'], d
+        head = open(d['path'], 'rb').read(64)
+        sig = {'zcad': b'{', '3mf': b'PK', 'glb': b'glTF', 'step': b'ISO-10303-21', 'obj': b'#'}.get(fmt)
+        if sig:
+            assert head.startswith(sig), (fmt, head[:16])
+        os.remove(d['path'])
+    try:
+        call('save_file', {'format': 'dwg'})
+    except McpError as e:
+        assert 'format must be' in str(e), str(e)
+    else:
+        raise AssertionError('unknown format must be refused')
+
+
+@case
+def parametric_history_edit_delete_undo():
+    # История операций: команды записываются шагами, edit_step / delete_step
+    # пересобирают модель повтором с нуля — результат обязан совпасть с
+    # моделью, построенной сразу с новыми числами; сломанный шаг — failed и
+    # пропускается; undo возвращает и модель, и историю; история едет в
+    # проекте (3MF несёт .zcad). Правка мышью мимо истории (base) проверена
+    # сценарием в браузере (README, «История операций»)
+    def build(t, hole=8.0):
+        call('new_shape', {'shape': 'cube', 'size': 100})
+        call('add_revolve', {'profile': [[0, 0], [40, 0], [40, 60], [0, 60]], 'base': [50, 50, 0], 'segments': 96, 'operation': 'intersect'})
+        d = call('shell_body', {'thickness': t, 'open_faces': [{'point': [50, 50, 60]}]})
+        if hole:
+            d = call('add_hole', {'point': [50, 50, 0], 'normal': [0, 0, -1], 'diameter': hole, 'through': True, 'segments': 48})
+        return d
+    ref = {k: build(*k)['volume_mm3'] for k in [(3, 8.0), (3, 12.0), (3, None), (2, 12.0)]}
+    d = build(2)
+    assert d['history_step'] == 3, d
+    h = call('get_history')
+    assert [s['command'] for s in h['steps']] == ['new_shape', 'add_revolve', 'shell_body', 'add_hole'], h
+    d = call('edit_step', {'index': 2, 'args': {'thickness': 3}})
+    closed(d, 'wall 3'); near(d['volume_mm3'], ref[(3, 8.0)], 1e-3, 'wall 3'); assert d['failed'] == [], d
+    d = call('edit_step', {'index': 3, 'args': {'diameter': 12}})
+    near(d['volume_mm3'], ref[(3, 12.0)], 1e-3, 'hole 12')
+    d = call('delete_step', {'index': 3})
+    near(d['volume_mm3'], ref[(3, None)], 1e-3, 'no hole'); assert len(d['steps']) == 3, d
+    d = call('undo')
+    near(d['volume_mm3'], ref[(3, 12.0)], 1e-3, 'undo brings the hole back')
+    assert len(call('get_history')['steps']) == 4, 'undo brings the step back too'
+    d = call('edit_step', {'index': 2, 'args': {'thickness': 45}})
+    assert d['failed'] == [2] and d['steps'][2]['status'].startswith('failed'), d
+    d = call('edit_step', {'index': 2, 'args': {'thickness': 3}})
+    assert d['failed'] == [], d
+    near(d['volume_mm3'], ref[(3, 12.0)], 1e-3, 'fixed again')
+    # история в проекте: свой 3MF открывается обратно вместе с ней
+    import os
+    path = call('save_file', {'format': '3mf', 'name': 'zc_test_history'})['path']
+    call('new_shape', {'shape': 'cube', 'size': 10})
+    call('import_3mf', {'path': path})
+    os.remove(path)
+    h = call('get_history')
+    assert [s['command'] for s in h['steps']] == ['new_shape', 'add_revolve', 'shell_body', 'add_hole'], h
+    d = call('edit_step', {'index': 2, 'args': {'thickness': 2}})
+    near(d['volume_mm3'], ref[(2, 12.0)], 1e-3, 'edit after reopening')
+    # .zcad: open_project открывает проект с историей и правится дальше
+    path = call('save_file', {'format': 'zcad', 'name': 'zc_test_history'})['path']
+    call('new_shape', {'shape': 'cube', 'size': 10})
+    d = call('open_project', {'path': 'zc_test_history.zcad'})
+    assert d['opened'] == 'project' and d['history_steps'] == 4, d
+    d = call('edit_step', {'index': 2, 'args': {'thickness': 3}})
+    near(d['volume_mm3'], ref[(3, 12.0)], 1e-3, 'edit after open_project')
+    try:
+        call('open_project', {'path': 'no_such_file.zcad'})
+    except McpError as e:
+        assert 'cannot read' in str(e), str(e)
+    else:
+        raise AssertionError('missing file must be refused')
+    # ошибки: шаг 0 не удаляется, индекс вне истории
+    for tool, args, msg in [('delete_step', {'index': 0}, 'step 0'), ('edit_step', {'index': 9, 'args': {'x': 1}}, 'index must be')]:
+        try:
+            call(tool, args)
+        except McpError as e:
+            assert msg in str(e), str(e)
+        else:
+            raise AssertionError('must be refused: %s %r' % (tool, args))
 
 
 @case
@@ -575,16 +749,19 @@ def main():
         print(f'Cannot reach an editor tab through {URL}: {e}')
         return 2
     failed = 0
-    for fn in TESTS:
-        if a.k and a.k not in fn.__name__:
-            continue
-        t = time.time()
-        try:
-            fn()
-            print(f'ok    {fn.__name__} ({time.time() - t:.1f} s)')
-        except (AssertionError, McpError) as e:
-            failed += 1
-            print(f'FAIL  {fn.__name__}: {e}')
+    try:
+        for fn in TESTS:
+            if a.k and a.k not in fn.__name__:
+                continue
+            t = time.time()
+            try:
+                fn()
+                print(f'ok    {fn.__name__} ({time.time() - t:.1f} s)')
+            except (AssertionError, McpError) as e:
+                failed += 1
+                print(f'FAIL  {fn.__name__}: {e}')
+    finally:
+        cleanup_exports()
     print('all passed' if not failed else f'{failed} failed')
     return 1 if failed else 0
 

@@ -2701,6 +2701,25 @@ function scaleMatrix(C, s){
     .multiply(new THREE.Matrix4().makeScale(s.x, s.y, s.z))
     .multiply(new THREE.Matrix4().makeTranslation(-C.x, -C.y, -C.z));
 }
+// круговой массив: углы копий (без оригинала). 360° — ровно по кругу,
+// count шагов по 360/count; меньше — от 0 до angle включительно,
+// count − 1 шагов (как Polar pattern во FreeCAD/Fusion). Общие для G,A
+// (линии и тела) и MCP pattern_body / pattern
+function polarAngles(count, totalDeg){
+  const cnt = Math.max(2, Math.min(360, Math.round(+count || 6)));
+  const total = Math.max(1, Math.min(360, +totalDeg || 360));
+  const step = Math.abs(total - 360) < 1e-6 ? 360 / cnt : total / (cnt - 1);
+  const out = [];
+  for(let k=1;k<cnt;k++) out.push(k * step * Math.PI / 180);
+  return out;
+}
+// поворот вокруг оси через C по направлению n на каждый из углов
+function polarMatrices(C, n, angles){
+  const u = n.clone().normalize();
+  return angles.map(a => new THREE.Matrix4().makeTranslation(C.x, C.y, C.z)
+    .multiply(new THREE.Matrix4().makeRotationAxis(u, a))
+    .multiply(new THREE.Matrix4().makeTranslation(-C.x, -C.y, -C.z)));
+}
 function bodyBox(pos, tris){
   const b = new THREE.Box3(), v = new THREE.Vector3();
   for(const t of tris) for(let k=0;k<3;k++) b.expandByPoint(v.fromArray(pos, t*9 + k*3));
@@ -5031,8 +5050,10 @@ function arrayAxisGuides(items, C, n){
 // размножаются вокруг центра. Угол 360 — копии ровно по кругу, меньше —
 // веером от исходника до крайней копии включительно
 const arrTool = {
-  hud: 'POLAR ARRAY · click the center · count and angle in the window · Enter — OK · Esc',
-  items: null, center: null, n: null, ghosts: [], cyl: null, auto: false,
+  hud: 'POLAR ARRAY · lines or a body · click the center · count and angle in the window · Enter — OK · Esc',
+  // items — выбранные линии; null — массив тела (G,A без выделения):
+  // bodyTris undefined — тело ещё не выбрано, null — вся модель
+  items: null, center: null, n: null, ghosts: [], cyl: null, auto: false, bodyTris: undefined, bodyG: null,
   on(){
     this.center = null;
     const vr = view.getBoundingClientRect();
@@ -5040,6 +5061,14 @@ const arrTool = {
     arrPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 420) + 'px';
     arr_status.textContent = 'click the array center';
     arrPopup.hidden = false;
+    if(!this.items){ // G,A без линий — массив тела (одно тело — сразу вся модель)
+      bodyPick.reset();
+      this.cyl = null; this.auto = false;
+      this.bodyTris = bodyPick.single() ? null : undefined;
+      if(this.bodyTris === undefined) arr_status.textContent = 'click the body to repeat · Enter — the whole model';
+      this.preview();
+      return;
+    }
     // линии на стенке цилиндра: ось найдена сама, число копий — «ровное»
     this.cyl = cylinderFor(this.items);
     this.auto = !!this.cyl;
@@ -5078,16 +5107,24 @@ const arrTool = {
     arr_sugg.innerHTML = ringCounts(c.segs)
       .map(v => '<button class="dvs' + (v === cnt && Math.abs(total - 360) < 1e-6 ? ' sel' : '') + '" data-n="' + v + '">' + v + '</button>').join('');
   },
-  off(){ killObjs(this.ghosts); arrPopup.hidden = true; releaseToolInput(); ghost.visible = false; tipHide(); },
-  angles(){
-    const cnt = Math.max(2, Math.min(360, Math.round(+arr_n.value || 6)));
-    const total = Math.max(1, Math.min(360, +arr_a.value || 360));
-    const step = Math.abs(total - 360) < 1e-6 ? 360 / cnt : total / (cnt - 1);
-    const out = [];
-    for(let k=1;k<cnt;k++) out.push(k * step * Math.PI / 180);
-    return out;
+  off(){
+    killObjs(this.ghosts); this.bodyG = killGroup(this.bodyG); hidePatch();
+    arrPopup.hidden = true; releaseToolInput(); ghost.visible = false; tipHide();
   },
+  angles(){ return polarAngles(arr_n.value, arr_a.value); },
   preview(center, n){
+    if(!this.items){ // тело: копии полупрозрачными призраками
+      this.bodyG = killGroup(this.bodyG);
+      const C = center || this.center, N = n || this.n;
+      if(C && N && this.bodyTris !== undefined){
+        const pos = mesh.geometry.attributes.position.array;
+        const tris = this.bodyTris || Array.from({length: pos.length / 9}, (_, i) => i);
+        this.bodyG = bodyGhost(pos, tris, polarMatrices(C, N, this.angles()), 0x2ecc40);
+      }
+      this.offFaces = null;
+      this.ui();
+      return;
+    }
     killObjs(this.ghosts);
     const C = center || this.center, N = n || this.n;
     this.offFaces = null;
@@ -5109,10 +5146,17 @@ const arrTool = {
         : Math.abs(r.ctr.distanceTo(pt.pos) - r.R) < 0.05 && Math.abs(new THREE.Vector3().subVectors(pt.pos, r.ctr).dot(r.n)) < 0.05);
       if(ring) return {pos: pt.kind === 'center' ? pt.pos.clone() : ring.ctr.clone(), n: ring.n.clone(), kind: pt.kind};
     }
-    return pickToolCenter(q, this.items);
+    return pickToolCenter(q, this.items || {segs: [], pts: []});
   },
   down(e, q){
     if(e.button !== 0 || !q.inside) return;
+    if(!this.items && this.bodyTris === undefined){
+      const t = bodyPick.take(q);
+      if(!t) return;
+      this.bodyTris = t; hidePatch(); bodyPick.hoverRoot = -1;
+      arr_status.textContent = 'click the array center';
+      return;
+    }
     const pk = this.pickCenter(q);
     if(!pk) return;
     this.center = pk.pos; this.n = pk.n;
@@ -5127,6 +5171,7 @@ const arrTool = {
   },
   move(e, q){
     if(!q.inside){ ghost.visible = false; tipHide(); if(!this.center) this.preview(); return; }
+    if(!this.items && this.bodyTris === undefined){ bodyPick.hover(e, q, 'Array'); return; }
     showPickGhost(e, q, this.center ? 'Array · move center: ' : 'Array · center: ');
     // центр ещё не поставлен — копии и ось видны сразу за курсором
     if(!this.center){
@@ -5135,11 +5180,24 @@ const arrTool = {
     }
   },
   key(e){
+    if(e.key === 'Enter' && !this.items && this.bodyTris === undefined){
+      this.bodyTris = null; hidePatch(); // Enter на шаге тела — вся модель
+      arr_status.textContent = 'the whole model · click the array center';
+      e.preventDefault(); return true;
+    }
     if(e.key === 'Enter'){ this.commit(); e.preventDefault(); return true; }
     return false;
   },
   commit(){
+    if(!this.items && this.bodyTris === undefined){ arr_status.textContent = 'click the body first'; return; }
     if(!this.center){ arr_status.textContent = 'click the array center first'; return; }
+    if(!this.items){ // тело: копии по кругу, касающиеся — точной булевой
+      try{ applyBodyTransform(this.bodyTris, polarMatrices(this.center, this.n, this.angles()), true); }
+      catch(err){ warnTip(String(err && err.message || err)); return; }
+      hideChordHint();
+      setActiveTool(null);
+      return;
+    }
     pushUndo();
     const sn = copySnapper();
     for(const a of this.angles()) placeRotated(this.items, this.center, this.n, a, new Map(), sn);
@@ -11162,6 +11220,20 @@ function buildPyramidArray(s){
     ...A, ...B, ...T,  ...B, ...C, ...T,  ...C, ...D, ...T,  ...D, ...A, ...T
   ]);
 }
+// цилиндр: ось Z, стоит на рабочей плоскости в углу начала координат, как
+// куб и шар — центр основания (r, r). Сегменты по размеру (autoCircSegs, как
+// у круга и цилиндра на грани), крышки веером из центра (как frustumTris)
+function buildCylinderArray(d, h){
+  const r = d / 2, S = autoCircSegs(r), out = [];
+  const P = (i, z) => { const t = 2 * Math.PI * (i % S) / S; return [r + r * Math.cos(t), r + r * Math.sin(t), z]; };
+  for(let i=0;i<S;i++){
+    const b0 = P(i, 0), b1 = P(i+1, 0), t0 = P(i, h), t1 = P(i+1, h);
+    out.push(r, r, 0, ...b1, ...b0);          // дно (−Z)
+    out.push(r, r, h, ...t0, ...t1);          // крышка (+Z)
+    out.push(...b0, ...b1, ...t1,  ...b0, ...t1, ...t0); // боковина наружу
+  }
+  return new Float32Array(out);
+}
 // колесо-дозатор: контур (окружность с V-карманами) на угловой сетке 2°,
 // крышки кольцевыми поясами (мелкие ячейки — чистые врезки), стенки
 const WHEEL_STEPS = 180, WHEEL_CAP_RINGS = 4;
@@ -11242,13 +11314,14 @@ async function rebuild(){
   v_dia.textContent = p.dia+' mm'; v_thk.textContent = p.thk+' mm';
   v_sh.textContent = p.shaft+' mm'; v_n.textContent = p.n;
   v_dep.textContent = p.depth+' mm'; v_w.textContent = p.mouth+'°';
+  v_cyh.textContent = cyh.value+' mm';
 
   if(inflight){ inflight.abort(); inflight = null; }
   const shape = document.querySelector('input[name=shape]:checked').value;
   const engine = document.querySelector('input[name=engine]:checked').value;
   const cp = wheelClamped(p);
   let arr, genUs;
-  if(engine === 'csg' && shape !== 'cube' && HAS_SERVER){
+  if(engine === 'csg' && shape === 'wheel' && HAS_SERVER){
     // резервный движок — колесо булевыми csgrs на сервере
     const ctl = inflight = new AbortController();
     let res;
@@ -11265,6 +11338,7 @@ async function rebuild(){
     arr = shape === 'cube' ? buildCubeArray(size)
       : shape === 'sphere' ? buildSphereArray(size)
       : shape === 'pyramid' ? buildPyramidArray(size)
+      : shape === 'cylinder' ? buildCylinderArray(size, clampN(+cyh.value, 0.5, 400))
       : buildWheelArray(cp);
     genUs = Math.round((performance.now() - t0) * 1000);
   }
@@ -11281,8 +11355,9 @@ async function rebuild(){
   updateOrthoFrusta();
   bedGrid.position.z = -0.05; // рабочая плоскость z=0, сетка и оси лежат на ней
   // орбита и орто-виды смотрят на центр модели (куб растёт из начала координат)
-  const isBlock = shape !== 'wheel'; // куб, шар, пирамида растут из начала координат
-  if(isBlock) camTarget.set(p.dia/2, p.dia/2, p.dia/2);
+  const isBlock = shape !== 'wheel'; // куб, шар, пирамида, цилиндр растут из начала координат
+  if(shape === 'cylinder') camTarget.set(p.dia/2, p.dia/2, +cyh.value/2);
+  else if(isBlock) camTarget.set(p.dia/2, p.dia/2, p.dia/2);
   else camTarget.set(0, 0, p.thk/2);
   updateOrthoPoses();
   projectHandle = null; projectName = 'untitled'; setProjectDirty(false);
@@ -11340,7 +11415,8 @@ function projectData(){
     trace: traceData(),
     parts: partNames.map(x => ({name: x.name, p: x.p.slice()})),
     hotspots: hotspots.map(x => ({name: x.name, p: x.p.slice()})),
-    camera: {yaw, pitch, camDist, target: v3a(camTarget)}
+    camera: {yaw, pitch, camDist, target: v3a(camTarget)},
+    history: zcHistToJSON()
   };
 }
 function loadProjectData(d, name){
@@ -11382,6 +11458,9 @@ function loadProjectData(d, name){
   // почищенной проходил точно. Поэтому чистим сразу при открытии
   const fixed = tidySlivers();
   extractEdges();
+  // история шагов (если сохранена): правка шага пересоберёт модель с нуля.
+  // После чистки щепок — она меняет сетку, и отпечаток истории разошёлся бы
+  try{ zcHistFromJSON(d.history); }catch(err){ zcHist = []; zcHistFp = null; console.warn('history not loaded', err); }
   if(fixed) warnTip('Cleaned ' + fixed + ' sliver triangles from this file');
   if(name) projectName = name.replace(/\.zcad$/i, '');
   setProjectDirty(false);
@@ -11393,8 +11472,10 @@ function scheduleAutosave(){
   autosaveT = setTimeout(()=>{
     // тяжёлая сетка может не влезть в квоту localStorage — тогда молча
     // пропускаем: файл проекта (Ctrl+S) остаётся надёжным путём
-    try{ localStorage.setItem(AUTOSAVE_KEY,
-      JSON.stringify(Object.assign(projectData(), {name: projectName}))); }catch(_){}
+    // История с base-снимком удваивает размер — не влезла, пишем без неё
+    const d = Object.assign(projectData(), {name: projectName});
+    try{ localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(d)); }
+    catch(_){ if(d.history){ d.history = null; try{ localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(d)); }catch(_2){} } }
   }, 800);
 }
 async function saveProject(saveAs){
@@ -11434,6 +11515,7 @@ function loadProjectText(text, name){
 // STL — это экспорт для принтера, без линий, точек и истории, но открыть
 // свою же выгрузку обратно должно быть можно без поиска кнопки Import
 async function openFileAny(file, handle){
+  closeStartScreen(); // файл выбран — стартовый экран больше не нужен
   if(/\.stl$/i.test(file.name)){ importSTL(await file.arrayBuffer(), file.name); return; }
   if(/\.3mf$/i.test(file.name)){ await open3MFFile(await file.arrayBuffer(), file.name); return; }
   loadProjectText(await file.text(), file.name);
@@ -12545,13 +12627,14 @@ window.addEventListener('keydown', e=>{
     setActiveTool(activeTool === sliceTool ? null : sliceTool);
     return;
   }
-  // G,A — круговой массив выбранных линий или точки (PolarPattern во FreeCAD)
+  // G,A — круговой массив выбранных линий или точки, без выделения — тела
+  // (PolarPattern во FreeCAD, Circular Pattern во Fusion)
   if((e.code==='KeyA' || e.key.toLowerCase()==='a') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
      && document.activeElement.tagName!=='INPUT'){
     e.preventDefault(); chordG = 0; hideChordHint();
+    // ничего не выбрано — массив тела: тело кликом, потом центр
     const it = collectRotItems();
-    if(rotItemsEmpty(it)){ warnTip('Select drawn lines or a point for the array'); return; }
-    arrTool.items = it; setActiveTool(arrTool);
+    arrTool.items = rotItemsEmpty(it) ? null : it; setActiveTool(arrTool);
     return;
   }
   // T — рулетка (Tape Measure в SketchUp); G,T занят 3D-текстом
@@ -13929,7 +14012,7 @@ function loop(t){
 }
 
 // ---------- привязка UI ----------
-['dia','thk','sh','n','dep','w'].forEach(id=>{
+['dia','thk','sh','n','dep','w','cyh'].forEach(id=>{
   document.getElementById(id).addEventListener('input', rebuild);
 });
 document.querySelectorAll('input[name=engine]').forEach(r=>r.addEventListener('change', rebuild));
@@ -13945,7 +14028,8 @@ const SHAPE_PRESET = {
   cube:    {dia:40},
   wheel:   {dia:140, thk:11, sh:5, n:4, dep:10, w:4},
   sphere:  {dia:40},
-  pyramid: {dia:40}
+  pyramid: {dia:40},
+  cylinder: {dia:40, cyh:40}
 };
 function applyShapePreset(){
   const kind = document.querySelector('input[name=shape]:checked').value;
@@ -13954,8 +14038,9 @@ function applyShapePreset(){
 function applyShapeUI(){
   const kind = document.querySelector('input[name=shape]:checked').value;
   document.getElementById('wheelOnly').hidden = kind !== 'wheel';
+  document.getElementById('cylOnly').hidden = kind !== 'cylinder';
   document.getElementById('dia_label').childNodes[0].nodeValue =
-    kind === 'wheel' || kind === 'sphere' ? 'Diameter ' : 'Size ';
+    kind === 'wheel' || kind === 'sphere' || kind === 'cylinder' ? 'Diameter ' : 'Size ';
 }
 document.querySelectorAll('input[name=shape]').forEach(r=>r.addEventListener('change', ()=>{
   applyShapePreset(); applyShapeUI(); rebuild();
@@ -13982,6 +14067,7 @@ document.getElementById('f_import').addEventListener('click', ()=>{ f_stl.value 
 f_stl.addEventListener('change', async ()=>{
   const file = f_stl.files && f_stl.files[0];
   if(!file) return;
+  closeStartScreen();
   if(/\.3mf$/i.test(file.name)) await open3MFFile(await file.arrayBuffer(), file.name);
   else importSTL(await file.arrayBuffer(), file.name);
 });
@@ -14779,8 +14865,12 @@ async function startWithShape(kind){
 startScreen.querySelectorAll('.st-card').forEach(b =>
   b.addEventListener('click', () => startWithShape(b.dataset.shape)));
 document.getElementById('st_continue').addEventListener('click', closeStartScreen);
-document.getElementById('st_open').addEventListener('click', () => { closeStartScreen(); openProject(); });
-document.getElementById('st_import').addEventListener('click', () => { closeStartScreen(); f_stl.value = ''; f_stl.click(); });
+// Open… / Import… со стартового экрана: экран закрывается, только когда файл
+// выбран (openFileAny, f_stl). Раньше он закрывался до окна выбора — под ним
+// показывалась прошлая сессия, и казалось, что файл подгрузился заранее;
+// Cancel оставлял в прошлой сессии вместо карточек
+document.getElementById('st_open').addEventListener('click', () => { openProject(); });
+document.getElementById('st_import').addEventListener('click', () => { f_stl.value = ''; f_stl.click(); });
 // обучение через игру — сразу, без 30 секунд ожидания демо
 document.getElementById('st_learn').addEventListener('click', e => {
   e.currentTarget.blur(); // Space в игре — выстрел, а не повторное нажатие кнопки
@@ -14817,10 +14907,36 @@ const zcV3 = (a, name) => {
 // Готовое замкнутое тело из треугольников (конус, тело вращения, труба) —
 // в модель: new заменяет её, join/cut — через BSP с лечением швов.
 // Ориентация — по знаку объёма, координаты округляются до 0.001 мм
+// MCP pattern: матрицы копий второго тела на время одной команды (zcRun)
+let zcPatternMats = null;
+// копии второго тела по кругу заранее сливаются в одно (касающиеся —
+// точной булевой, остальные просто добавляются), и дальше идёт обычная
+// одна операция: вырез, добавление или пересечение с этим телом
+function patternTool(tris, mats){
+  const V = (arr, o) => new THREE.Vector3(arr[o], arr[o+1], arr[o+2]);
+  const boxOf = list => { const b = new THREE.Box3(); for(const t of list) for(const p of t) b.expandByPoint(p); return b; };
+  const tb = new THREE.Box3();
+  let cur = tris.map(t => t.map(v => v.clone()));
+  for(const M of mats){
+    const piece = tris.map(t => t.map(v => v.clone().applyMatrix4(M)));
+    const pb = boxOf(piece).expandByScalar(0.01);
+    const touches = cur.some(t => { tb.makeEmpty(); tb.expandByPoint(t[0]); tb.expandByPoint(t[1]); tb.expandByPoint(t[2]); return tb.intersectsBox(pb); });
+    if(!touches){ cur = cur.concat(piece); continue; }
+    const arr = meshBoolean(cur, piece, 'union');
+    cur = [];
+    for(let o=0;o<arr.length;o+=9) cur.push([V(arr, o), V(arr, o+3), V(arr, o+6)]);
+  }
+  return cur;
+}
 function zcApplySolid(tris, op, round = true){
   let vol = 0;
   for(const [p, q, r] of tris) vol += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
   if(vol < 0) tris = tris.map(t => [t[0], t[2], t[1]]);
+  if(zcPatternMats){
+    tris = patternTool(tris, zcPatternMats);
+    vol = 0;
+    for(const [p, q, r] of tris) vol += p.dot(new THREE.Vector3().crossVectors(q, r)) / 6;
+  }
   const q3 = x => Math.round(x*1000)/1000;
   const toArr = list => {
     const arr = [];
@@ -15539,12 +15655,16 @@ const ZC_COMMANDS = {
   new_shape: {
     async run(a){
       const kind = a.shape === 'gear' ? 'wheel' : a.shape;
-      if(!['cube', 'wheel', 'sphere', 'pyramid'].includes(kind)) throw new Error('unknown shape ' + a.shape);
+      if(!['cube', 'wheel', 'sphere', 'pyramid', 'cylinder'].includes(kind)) throw new Error('unknown shape ' + a.shape);
       const radio = document.querySelector('input[name=shape][value="' + kind + '"]');
       radio.checked = true; applyShapePreset(); applyShapeUI();
       if(a.size != null){
         const dia = document.getElementById('dia');
         dia.value = Math.max(+dia.min, Math.min(+dia.max, +a.size));
+      }
+      if(kind === 'cylinder' && a.height != null){
+        const h = document.getElementById('cyh');
+        h.value = Math.max(+h.min, Math.min(+h.max, +a.height));
       }
       closeStartScreen();
       await rebuild();
@@ -15651,6 +15771,22 @@ const ZC_COMMANDS = {
       for(let i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i);
       const opened = await import3MF(u8.buffer, a.name || 'model.3mf');
       return Object.assign({opened, lines: guides.length}, zcSummary());
+    }
+  },
+  // то же, что Open project: проект .zcad целиком — сетка, линии, имена и
+  // история шагов (её можно править дальше через edit_step)
+  open_project: {
+    run(a){
+      if(typeof a.data_base64 !== 'string') throw new Error('path is required');
+      const bin = atob(a.data_base64), u8 = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i);
+      let d;
+      try{ d = JSON.parse(new TextDecoder().decode(u8)); }
+      catch(_){ throw new Error('not a ZeroCAD project (.zcad is JSON)'); }
+      loadProjectData(d, a.name || 'model.zcad');
+      projectHandle = null;
+      closeStartScreen();
+      return Object.assign({opened: 'project', history_steps: zcHist.length, lines: guides.length}, zcSummary());
     }
   },
   // режим Trace: габариты машины и фотографии-референсы — то же, что панель
@@ -15767,6 +15903,30 @@ const ZC_COMMANDS = {
       for(let i=0;i<buf.length;i+=0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
       return Object.assign({file_base64: btoa(bin), ext: 'glb', name: String(a.name || projectName || 'car'),
         bytes: buf.length, parts: glbParts().map(p => p.name), hotspots: hotspots.map(h => h.name)}, zcSummary());
+    }
+  },
+  save_file: {
+    // то же, что меню File: проект .zcad и все форматы экспорта. Файл пишет
+    // сервер в exports/ (вкладке на диск нельзя), как у export_stl
+    run(a){
+      const fmt = String(a.format || '').toLowerCase().replace(/^\./, '');
+      const enc = s => new TextEncoder().encode(s);
+      let buf;
+      if(fmt === 'zcad') buf = enc(JSON.stringify(projectData()));
+      else if(fmt === 'stl') buf = new Uint8Array(buildSTL());
+      else if(fmt === '3mf') buf = build3MF();
+      else if(fmt === 'glb') buf = exportGLB();
+      else if(fmt === 'obj') buf = enc(buildOBJ());
+      else if(fmt === 'step'){
+        // гранёный STEP описывает твёрдое тело: с дырой файл был бы неверным
+        if(countBoundaryEdges() !== 0) throw new Error('STEP needs a closed solid — the model has open edges');
+        buf = enc(buildSTEP());
+      } else throw new Error('format must be zcad, stl, 3mf, glb, obj or step');
+      if(!(buf instanceof Uint8Array)) buf = new Uint8Array(buf);
+      let bin = '';
+      for(let i=0;i<buf.length;i+=0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      return Object.assign({file_base64: btoa(bin), ext: fmt, name: String(a.name || projectName || 'zerocad'),
+        bytes: buf.length}, zcSummary());
     }
   },
   export_stl: {
@@ -16028,6 +16188,20 @@ const ZC_COMMANDS = {
       return Object.assign({boolean: lastBoolPath || 'none'}, r);
     }
   },
+  pattern_body: {
+    // то же, что G,A по телу: копии тела по кругу, касающиеся сливаются
+    run(a){
+      const cnt = Math.round(+a.count);
+      if(!(cnt >= 2 && cnt <= 360)) throw new Error('count must be 2…360');
+      const total = a.angle == null ? 360 : +a.angle;
+      if(!(total >= 1 && total <= 360)) throw new Error('angle must be 1…360');
+      const n = a.axis != null ? zcV3(a.axis, 'axis') : new THREE.Vector3(0, 0, 1);
+      if(n.length() < 1e-9) throw new Error('axis must not be zero');
+      const mats = polarMatrices(zcV3(a.axis_point, 'axis_point'), n, polarAngles(cnt, total));
+      const r = applyBodyTransform(zcBodyAt(a.body_point), mats, true);
+      return Object.assign({boolean: lastBoolPath || 'none'}, r);
+    }
+  },
   loft_profiles: {
     // тот же построитель, что G,F в редакторе (loftLoopTris)
     run(a){
@@ -16098,19 +16272,42 @@ const ZC_COMMANDS = {
         history_steps: undoStack.length - u0}, zcSummary());
     }
   },
+  get_history: {
+    run(){ zcHistSync(); return zcHistoryInfo(); }
+  },
+  edit_step: {
+    // параметры шага: переданные ключи заменяются, null — убирает ключ;
+    // модель пересобирается повтором всех шагов
+    async run(a){
+      zcHistSync();
+      const i = zcStepIndex(a.index), s = zcHist[i];
+      if(s.command === 'base') throw new Error('step ' + i + ' is a snapshot without parameters');
+      if(!a.args || typeof a.args !== 'object' || Array.isArray(a.args)) throw new Error('args must be an object of parameters to change');
+      const old = s.args;
+      const next = Object.assign({}, old);
+      for(const k in a.args){ if(a.args[k] === null) delete next[k]; else next[k] = a.args[k]; }
+      s.args = JSON.parse(JSON.stringify(next));
+      await zcReplay();
+      return Object.assign(zcHistoryInfo(), {edited: i, previous_args: old}, zcSummary());
+    }
+  },
+  delete_step: {
+    async run(a){
+      zcHistSync();
+      const i = zcStepIndex(a.index);
+      if(i === 0) throw new Error('step 0 starts the model — begin a new one with new_shape instead');
+      const [gone] = zcHist.splice(i, 1);
+      await zcReplay();
+      return Object.assign(zcHistoryInfo(), {deleted: zcStepInfo(gone, i)}, zcSummary());
+    }
+  },
+  set_view: {
+    // то же, что ViewCube и орбита: камера пользователя встаёт на этот вид
+    run(a){ return zcApplyView(a); }
+  },
   screenshot: {
     image: true,
     run(a){
-      if(a.yaw != null) yaw = +a.yaw * Math.PI / 180;
-      if(a.pitch != null) pitch = Math.max(-1.5, Math.min(1.5, +a.pitch * Math.PI / 180));
-      if(a.fit){
-        const pos = mesh.geometry.attributes.position.array, box = new THREE.Box3();
-        for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
-        box.getCenter(camTarget);
-        const r = box.getSize(new THREE.Vector3()).length() / 2;
-        camDist = Math.max(20, Math.min(camFarLimit(), r / Math.sin(persp.fov * Math.PI / 360) * 1.15));
-      }
-      // снимок своего размера: вкладка может быть узкой или фоновой (цикл стоит)
       // в фоновой вкладке requestAnimationFrame не работает: перелёт к виду и
       // дальняя плоскость камеры не пересчитывались, и снимок приходил чёрным
       if(viewAnim){
@@ -16118,7 +16315,18 @@ const ZC_COMMANDS = {
         pitch = viewAnim.p1;
         viewAnim = null;
       }
-      updateCamRange();
+      zcApplyView(a);
+      // разрез только на снимке: сторона, куда смотрит normal, не рисуется —
+      // видно стенки, рёбра и плавники внутри (изнанка — серо-голубая)
+      let clip = null;
+      if(a.section != null){
+        const P = zcV3(a.section.point, 'section.point'), n = zcV3(a.section.normal, 'section.normal');
+        if(n.length() < 1e-9) throw new Error('section.normal must not be zero');
+        n.normalize();
+        clip = [new THREE.Plane(n.clone().negate(), n.dot(P))];
+      }
+      const clipMats = [mat, backMat, edgeLines && edgeLines.material].filter(Boolean);
+      // снимок своего размера: вкладка может быть узкой или фоновой (цикл стоит)
       const W = Math.max(200, Math.min(2000, Math.round(+a.width || 1000)));
       const H = Math.max(200, Math.min(2000, Math.round(+a.height || 700)));
       const pr = renderer.getPixelRatio();
@@ -16128,8 +16336,16 @@ const ZC_COMMANDS = {
       const cp = Math.cos(pitch), sp = Math.sin(pitch);
       persp.position.set(camTarget.x + camDist*cp*Math.cos(yaw), camTarget.y + camDist*cp*Math.sin(yaw), camTarget.z + camDist*sp);
       persp.lookAt(camTarget);
-      renderViewport(persp, 0, 0, W, H, VIEW_GRIDS.persp);
-      const data = renderer.domElement.toDataURL('image/jpeg', 0.88).split(',')[1];
+      renderer.localClippingEnabled = !!clip;
+      for(const m of clipMats){ m.clippingPlanes = clip; m.needsUpdate = true; }
+      let data;
+      try{
+        renderViewport(persp, 0, 0, W, H, VIEW_GRIDS.persp);
+        data = renderer.domElement.toDataURL('image/jpeg', 0.88).split(',')[1];
+      } finally {
+        renderer.localClippingEnabled = false;
+        for(const m of clipMats){ m.clippingPlanes = null; m.needsUpdate = true; }
+      }
       renderer.setPixelRatio(pr);
       resize(); // холст — обратно по размеру окна
       return {image: data, mime: 'image/jpeg'};
@@ -16151,7 +16367,170 @@ function zcToolList(){
       missing.length ? 'нет реализации: ' + missing.join(', ') : '',
       extra.length ? 'нет схемы: ' + extra.join(', ') : '');
 })();
+// pattern {count, axis_point, axis, angle}: команда строит тело один раз,
+// а режет/добавляет его count раз по кругу — одной операцией и одним шагом
+// отмены (плавники по стенке, отверстия по фланцу)
+const PATTERN_COMMANDS = ['add_hole', 'add_frustum', 'add_revolve', 'add_sweep', 'loft_profiles', 'revolve_profile', 'sweep_profile'];
+function zcPatternFrom(p){
+  if(!p || typeof p !== 'object') throw new Error('pattern must be {count, axis_point, axis, angle}');
+  const cnt = Math.round(+p.count);
+  if(!(cnt >= 2 && cnt <= 360)) throw new Error('pattern.count must be 2…360');
+  const C = zcV3(p.axis_point, 'pattern.axis_point');
+  const n = p.axis != null ? zcV3(p.axis, 'pattern.axis') : new THREE.Vector3(0, 0, 1);
+  if(n.length() < 1e-9) throw new Error('pattern.axis must not be zero');
+  const total = p.angle == null ? 360 : +p.angle;
+  if(!(total >= 1 && total <= 360)) throw new Error('pattern.angle must be 1…360');
+  return polarMatrices(C, n, polarAngles(cnt, total));
+}
+// вид камеры для агента — те же виды, что у ViewCube: front смотрит с −Y
+// на +Y (Z вверх, как во Fusion и SketchUp), right — с +X, top — сверху
+const ZC_VIEWS = {
+  home: [HOME_YAW, HOME_PITCH], iso: [HOME_YAW, HOME_PITCH],
+  top: [null, 1.5], bottom: [null, -1.5],
+  front: [-Math.PI / 2, 0], back: [Math.PI / 2, 0], right: [0, 0], left: [Math.PI, 0]
+};
+// порядок: вид → yaw/pitch → fit (центр и расстояние по габариту) → target →
+// distance; камера пользователя встаёт туда же (как клик по ViewCube)
+function zcApplyView(a){
+  viewAnim = null;
+  if(a.view != null){
+    const v = ZC_VIEWS[a.view];
+    if(!v) throw new Error('view must be one of ' + Object.keys(ZC_VIEWS).join(', '));
+    if(v[0] !== null) yaw = v[0];
+    pitch = v[1];
+  }
+  if(a.yaw != null){ if(!Number.isFinite(+a.yaw)) throw new Error('yaw must be a number'); yaw = +a.yaw * Math.PI / 180; }
+  if(a.pitch != null){ if(!Number.isFinite(+a.pitch)) throw new Error('pitch must be a number'); pitch = Math.max(-1.5, Math.min(1.5, +a.pitch * Math.PI / 180)); }
+  if(a.fit){
+    const pos = mesh.geometry.attributes.position.array, box = new THREE.Box3();
+    for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+    box.getCenter(camTarget);
+    const r = box.getSize(new THREE.Vector3()).length() / 2;
+    camDist = Math.max(20, Math.min(camFarLimit(), r / Math.sin(persp.fov * Math.PI / 360) * 1.15));
+  }
+  if(a.target != null) camTarget.copy(zcV3(a.target, 'target'));
+  if(a.distance != null){
+    const d = +a.distance;
+    if(!(d >= 1)) throw new Error('distance must be at least 1 mm');
+    camDist = Math.min(camFarLimit(), d);
+  }
+  updateOrthoPoses(); updateCamRange();
+  const r1 = x => +x.toFixed(2);
+  return {yaw_deg: r1(yaw * 180 / Math.PI), pitch_deg: r1(pitch * 180 / Math.PI),
+          target: [r1(camTarget.x), r1(camTarget.y), r1(camTarget.z)], distance_mm: r1(camDist)};
+}
 // выполнить команду: один вызов — один шаг агента; метка «AI is drawing»
+// ---------- История операций (параметрика, ядро) ----------
+// Каждая команда агента, меняющая модель, запоминается как {command, args}.
+// Шаг можно поправить (edit_step) или убрать (delete_step) — модель
+// пересобирается с нуля повтором всех шагов (как дерево Fusion / FreeCAD).
+// Первый шаг — new_shape или «base»: снимок модели, у которой нет рецепта
+// (импорт, правки мышью). Правки мышью между командами не теряются: если
+// модель изменилась не через историю (отпечаток zcFp не совпал), история
+// сворачивается в base из текущего состояния — дальше рецепт идёт от него.
+// Шаг, который при повторе не прошёл (его грань уехала, размер не влез),
+// помечается failed и пропускается, остальные идут дальше — как красный
+// узел дерева во Fusion
+const ZC_READONLY = ['get_state', 'screenshot', 'set_view', 'export_stl', 'export_3mf', 'export_glb', 'save_file', 'get_history'];
+const ZC_NO_RECORD = new Set([...ZC_READONLY, 'edit_step', 'delete_step', 'undo', 'trace_car', 'trace_reference']);
+let zcHist = [];          // [{command, args, status, change}] | {command: 'base', snap, note}
+let zcHistFp = null;      // отпечаток модели после последнего шага истории
+let zcReplaying = false;  // идёт повтор — команды не записываются
+// отпечаток: массив вершин меняется при любой замене сетки, верх стека отмены —
+// при любой правке (линии, точки) и при отмене
+function zcFp(){
+  return {arr: mesh ? mesh.geometry.attributes.position.array : null, top: undoStack[undoStack.length - 1] || null, n: undoStack.length};
+}
+function zcFpSame(f){
+  const g = zcFp();
+  if(!f || f.top !== g.top || f.n !== g.n) return false;
+  if(f.arr === g.arr) return true;
+  // команда не прошла и откатилась своим снимком: массив новый, вершины те же
+  if(!f.arr || !g.arr || f.arr.length !== g.arr.length) return false;
+  for(let i=0;i<g.arr.length;i++) if(f.arr[i] !== g.arr[i]) return false;
+  f.arr = g.arr;
+  return true;
+}
+// история на каждом шаге отмены: снимок отмены (верх стека) → история и
+// вершины после того действия. Ctrl+Z пользователя или undo агента
+// возвращают модель к состоянию, у которого история известна, — она и
+// возвращается (а не сворачивается в base)
+let zcHistAt = new WeakMap(), zcHistAtEmpty = null;
+function zcHistClone(h){
+  return h.map(s => s.command === 'base' ? Object.assign({}, s) : Object.assign({}, s, {args: JSON.parse(JSON.stringify(s.args))}));
+}
+function zcHistMark(){
+  zcHistFp = zcFp();
+  const rec = {hist: zcHistClone(zcHist), fp: zcFp()};
+  if(zcHistFp.top) zcHistAt.set(zcHistFp.top, rec); else zcHistAtEmpty = rec;
+}
+// модель менялась мимо истории — рецепт продолжается от её нынешнего вида
+function zcHistSync(note){
+  if(zcHistFp && zcFpSame(zcHistFp)) return;
+  if(!mesh){ zcHist = []; zcHistFp = null; return; }
+  const top = undoStack[undoStack.length - 1] || null;
+  const known = top ? zcHistAt.get(top) : zcHistAtEmpty;
+  if(known && zcFpSame(known.fp)){ zcHist = zcHistClone(known.hist); zcHistFp = known.fp; return; }
+  zcHist = [{command: 'base', snap: takeSnapshot(), note: note || (zcHist.length ? 'edits outside the history' : 'model without a recipe')}];
+  zcHistMark();
+}
+function zcStepInfo(s, i){
+  if(s.command === 'base')
+    return {index: i, command: 'base', note: s.note, triangles: s.snap.pos.length / 9, status: 'ok'};
+  const o = {index: i, command: s.command, args: s.args, status: s.status || 'ok'};
+  if(s.change != null) o.volume_change_mm3 = s.change;
+  return o;
+}
+function zcHistoryInfo(){
+  return {steps: zcHist.map(zcStepInfo), failed: zcHist.map((s, i) => s.status && s.status !== 'ok' ? i : -1).filter(i => i >= 0)};
+}
+// повтор всех шагов с нуля; одна отмена (Ctrl+Z) возвращает модель до повтора
+async function zcReplay(){
+  const before = takeSnapshot(), savedUndo = undoStack.slice();
+  zcReplaying = true;
+  try{
+    for(let i=0;i<zcHist.length;i++){
+      const s = zcHist[i];
+      if(s.command === 'base'){ applySnapshot(s.snap); continue; }
+      try{
+        const r = await zcExec(s.command, JSON.parse(JSON.stringify(s.args)));
+        s.status = 'ok';
+        s.change = r && typeof r === 'object' && r.volume_change_mm3 != null ? r.volume_change_mm3 : null;
+      }catch(err){
+        s.status = 'failed: ' + String(err && err.message || err);
+      }
+    }
+  } finally {
+    zcReplaying = false;
+    undoStack = savedUndo; pushHistory(before);
+    if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+    zcHistMark();
+  }
+}
+function zcStepIndex(i){
+  const k = Math.round(+i);
+  if(!(k >= 0 && k < zcHist.length)) throw new Error('index must be 0…' + (zcHist.length - 1));
+  return k;
+}
+// проект: история с base-снимком (вершины base64, линии, точки)
+function zcHistToJSON(){
+  if(!zcHist.length || !zcFpSame(zcHistFp)) return null;
+  if(zcHist.length === 1 && zcHist[0].command === 'base') return null; // рецепта нет — только сама модель
+  return zcHist.map(s => s.command === 'base' ? {command: 'base', note: s.note, snap: {
+      pos: f32ToB64(s.snap.pos), guides: s.snap.guides.map(g => ({a: v3a(g.a), b: v3a(g.b), noExt: !!g.noExt, curve: g.curve || 0})),
+      hard: s.snap.hard.map(h => ({a: v3a(h.a), b: v3a(h.b)})),
+      anchors: s.snap.anchors.map(a => ({pos: v3a(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(v3a), t: a.bend.t.slice(), j: a.bend.j} : null}))}}
+    : {command: s.command, args: s.args, status: s.status || 'ok', change: s.change == null ? null : s.change});
+}
+function zcHistFromJSON(list){
+  zcHist = (list || []).map(s => s.command === 'base' ? {command: 'base', note: s.note, snap: {
+      pos: b64ToF32(s.snap.pos), guides: (s.snap.guides || []).map(g => ({a: a3v(g.a), b: a3v(g.b), noExt: g.noExt, curve: g.curve})),
+      hard: (s.snap.hard || []).map(h => ({a: a3v(h.a), b: a3v(h.b)})),
+      anchors: (s.snap.anchors || []).map(a => ({pos: a3v(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(a3v), t: a.bend.t, j: a.bend.j} : null}))}}
+    : {command: s.command, args: s.args, status: s.status, change: s.change});
+  zcHistAt = new WeakMap(); zcHistAtEmpty = null;
+  if(zcHist.length) zcHistMark(); else zcHistFp = null;
+}
 async function zcRun(name, args){
   const c = ZC_COMMANDS[name];
   if(!c) throw new Error('unknown command ' + name);
@@ -16159,9 +16538,41 @@ async function zcRun(name, args){
   // открытый инструмент с предпросмотром (Slice, Bevel) при закрытии вернул бы
   // свой снимок и затёр изменение агента — закрываем его, как Esc; чтение
   // модели и снимок экрана инструмент не трогают
-  if(activeTool && !['get_state', 'screenshot', 'export_stl', 'export_3mf'].includes(name)) setActiveTool(null);
+  if(activeTool && !ZC_READONLY.includes(name)) setActiveTool(null);
+  const a = args || {};
+  const rec = !zcReplaying && !ZC_NO_RECORD.has(name);
+  if(rec && name !== 'new_shape') zcHistSync();
+  const res = await zcExec(name, a);
+  // отмена агента: история возвращается к шагу, на который вернулась модель
+  if(name === 'undo' && !zcReplaying) zcHistSync();
+  if(rec){
+    if(name === 'new_shape') zcHist = [];
+    // проект (.zcad, свой 3MF) несёт историю — она уже загружена; чужая сетка — base
+    if(name === 'import_3mf' || name === 'open_project'){
+      if(!(zcHistFp && zcFpSame(zcHistFp) && zcHist.length)) zcHist = [{command: 'base', snap: takeSnapshot(), note: name === 'open_project' ? 'project without a recipe' : 'imported 3MF'}];
+    } else{
+      const keep = Object.assign({}, a);
+      zcHist.push({command: name, args: JSON.parse(JSON.stringify(keep)), status: 'ok',
+        change: res && typeof res === 'object' && res.volume_change_mm3 != null ? res.volume_change_mm3 : null});
+    }
+    zcHistMark();
+    if(res && typeof res === 'object' && !Array.isArray(res)) res.history_step = zcHist.length - 1;
+  }
+  return res;
+}
+// исполнение команды без записи в историю (повтор шагов идёт через неё же)
+async function zcExec(name, a){
+  const c = ZC_COMMANDS[name];
+  if(!c) throw new Error('unknown command ' + name);
   lastBoolPath = '';
-  const res = await c.run(args || {});
+  let res;
+  if(a.pattern != null){
+    if(!PATTERN_COMMANDS.includes(name)) throw new Error('pattern is not supported by ' + name);
+    zcPatternMats = zcPatternFrom(a.pattern);
+    try{ res = await c.run(a); }
+    finally{ zcPatternMats = null; }
+    if(res && typeof res === 'object' && !Array.isArray(res)) res.pattern_copies = a.pattern.count | 0;
+  } else res = await c.run(a);
   // каким путём прошли булевы инструментов: exact — точный, bsp — запасной
   if(lastBoolPath && res && typeof res === 'object' && !Array.isArray(res)) res.boolean = lastBoolPath;
   return res;

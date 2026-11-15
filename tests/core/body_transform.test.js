@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 const {loadCore} = require('./load.js');
 const {makeSolids} = require('./solids.js');
 
-const core = loadCore(['bodyComponents', 'bodyTrisOf', 'bodyCount', 'mirrorMatrix', 'scaleMatrix', 'bodyBox', 'bodyTrisTransformed', 'meshBoolean']);
+const core = loadCore(['bodyComponents', 'bodyTrisOf', 'bodyCount', 'mirrorMatrix', 'scaleMatrix', 'bodyBox', 'bodyTrisTransformed', 'meshBoolean', 'polarAngles', 'polarMatrices']);
 const {V, box, flat, volume, edgeStats} = makeSolids(core.THREE);
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b} (±${tol})`);
 const allIdx = pos => Array.from({length: pos.length / 9}, (_, i) => i);
@@ -55,4 +55,24 @@ test('scale around the bottom centre keeps the part on the bed', () => {
   const nb = core.bodyBox(arr.length ? arr : pos, allIdx(arr));
   near(nb.min.z, 0, 1e-9, 'still on the bed');
   near(nb.min.x, 0, 1e-9, 'x around the centre'); near(nb.max.x, 40, 1e-9, 'x around the centre');
+});
+
+test('polar array: angles and turns around an axis', () => {
+  const deg = list => JSON.stringify(Array.from(list, a => +(a * 180 / Math.PI).toFixed(9)));
+  // 360° — ровно по кругу, оригинал не входит; меньше — от 0 до angle включительно
+  assert.equal(deg(core.polarAngles(6, 360)), '[60,120,180,240,300]');
+  assert.equal(deg(core.polarAngles(3, 120)), '[60,120]');
+  assert.equal(deg(core.polarAngles(4, 90)), '[30,60,90]');
+  // поворот вокруг оси через (50, 50) по Z: точка (80, 50) уходит на (50, 80)
+  const [M] = core.polarMatrices(V(50, 50, 0), V(0, 0, 2), core.polarAngles(4, 360));
+  const p = V(80, 50, 7).applyMatrix4(M);
+  near(p.x, 50, 1e-9, 'x'); near(p.y, 80, 1e-9, 'y'); near(p.z, 7, 1e-9, 'z stays');
+  assert.ok(M.determinant() > 0, 'turn keeps handedness — normals stay outward');
+  // копии куба по кругу замкнуты и того же объёма
+  const pos = flat(box(70, 40, 0, 90, 60, 20));
+  for(const R of core.polarMatrices(V(50, 50, 0), V(0, 0, 1), core.polarAngles(6, 360))){
+    const arr = flat(core.bodyTrisTransformed(pos, allIdx(pos), R));
+    near(volume(arr), 8000, 1, 'copy volume (coordinates to 0.001 mm)');
+    assert.equal(edgeStats(arr).open, 0, 'copy closed');
+  }
 });
