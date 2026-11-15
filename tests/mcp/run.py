@@ -529,6 +529,41 @@ def text_projected_onto_cone():
 
 
 @case
+def text_sketch_on_curve_then_extrude_letters():
+    # Чертёжный текст на кривой: add_text с глубиной 0 и project/wrap рисует
+    # контуры линиями (эскиз, объём не меняется); extrude_text по точке
+    # выдавливает или вдавливает одну букву — тем же отображателем, что и
+    # весь текст; whole — всю строку. Каждый шаг — в истории
+    call('new_shape', {'shape': 'cube', 'size': 100})
+    call('add_revolve', {'profile': [[0, 0], [5, 0], [45, 40], [45, 60], [0, 60]], 'base': [50, 50, 0], 'segments': 128, 'operation': 'intersect'})
+    v0 = call('shell_body', {'thickness': 3, 'open_faces': [{'point': [50, 50, 60]}]})['volume_mm3']
+    d = call('add_text', {'center': [50, 70, 45], 'normal': [0, 0, 1], 'text': 'AB', 'height': 10, 'depth': 0, 'project': True})
+    assert d['letters'] == 2 and d['outline_segments'] > 100 and d['lines'] >= d['outline_segments'], d
+    near(d['volume_mm3'], v0, 1e-6, 'outline adds no volume')
+    z = lambda x, y: math.hypot(x - 50, y - 50) - 0.757          # склон изнутри: r = z + 0.757
+    xa, ya = 50 - 15.71 / 2 + 1, 66
+    a = call('extrude_text', {'point': [xa, ya, z(xa, ya)], 'distance': 0.8})
+    unfolded(a, 'letter A'); assert a['volume_change_mm3'] > 0 and a['cells'] < 120, a
+    xb = 50 + 15.71 / 2 - 1
+    b = call('extrude_text', {'point': [xb, ya, z(xb, ya)], 'distance': -0.6})
+    unfolded(b, 'letter B'); assert b['volume_change_mm3'] < 0, b
+    h = call('get_history')
+    assert [s['command'] for s in h['steps']][-3:] == ['add_text', 'extrude_text', 'extrude_text'], h
+    try:
+        call('extrude_text', {'point': [50, 30, z(50, 30)], 'distance': 0.5})
+    except McpError as e:
+        assert 'not on a letter' in str(e), str(e)
+    else:
+        raise AssertionError('a point off the letters must be refused')
+    # на цилиндре (wrap) — вся строка сразу
+    call('new_shape', {'shape': 'cylinder', 'size': 80, 'height': 60})
+    d = call('add_text', {'center': [80, 40, 30], 'normal': [1, 0, 0], 'text': 'PETG', 'height': 8, 'depth': 0, 'wrap': {'axis_point': [40, 40, 0]}})
+    assert d['letters'] == 4, d
+    w = call('extrude_text', {'point': [80, 40, 30], 'distance': 0.5, 'whole': True})
+    unfolded(w, 'whole line'); assert w['volume_change_mm3'] > 0, w
+
+
+@case
 def shell_hollow_parts():
     # Shell (G,H) — shell_body: коробка с открытой крышей и закрытая полость,
     # стакан из цилиндра, куб с бобышкой (вогнутое ребро), колесо-дозатор с

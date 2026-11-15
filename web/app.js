@@ -10937,7 +10937,8 @@ function takeSnapshot(){
     anchors: anchors.map(a=>({pos: a.pos.clone(),
       bend: a.bend ? {pts0: a.bend.pts0.map(p=>p.clone()), t: a.bend.t.slice(), j: a.bend.j} : null})),
     guides: guides.map(g=>({a: g.a.clone(), b: g.b.clone(), noExt: g.noExt, curve: g.curve})),
-    hard: hardEdges.map(h=>({a: h.a.clone(), b: h.b.clone()}))
+    hard: hardEdges.map(h=>({a: h.a.clone(), b: h.b.clone()})),
+    sketches: JSON.parse(JSON.stringify(textSketches))
   };
 }
 let redoStack = [];
@@ -10954,6 +10955,7 @@ function applySnapshot(s){
   clearAnchors();
   for(const sa of s.anchors){ const a = makeAnchor(sa.pos); if(sa.bend) a.bend = sa.bend; }
   restoreGuides(s.guides || []);
+  textSketches = JSON.parse(JSON.stringify(s.sketches || []));
   deselect(); closePopup(); tipHide(); hidePatch(); ppPatch=null;
   extractEdges();
 }
@@ -11388,6 +11390,7 @@ async function rebuild(){
   setMeshFromArray(arr);
   closePopup(); clearAnchors(); deselect(); tipHide(); setLineMode(false);
   restoreGuides([]); curveSeq = 0; // новая модель — старые линии над ней не висят
+  textSketches = [];
   hardEdges = [];
   modified = false; s_mod.textContent = 'no';
   undoStack = []; // новая серверная модель — новая точка отсчёта
@@ -11459,6 +11462,7 @@ function projectData(){
     parts: partNames.map(x => ({name: x.name, p: x.p.slice()})),
     hotspots: hotspots.map(x => ({name: x.name, p: x.p.slice()})),
     camera: {yaw, pitch, camDist, target: v3a(camTarget)},
+    sketches: textSketches,
     history: zcHistToJSON()
   };
 }
@@ -11486,6 +11490,7 @@ function loadProjectData(d, name){
     if(sa.bend) a.bend = {pts0: sa.bend.pts0.map(a3v), t: sa.bend.t, j: sa.bend.j};
   }
   curveSeq = Math.max(d.curveSeq || 0, ...guides.map(g=>g.curve || 0), 0);
+  textSketches = JSON.parse(JSON.stringify(d.sketches || []));
   partNames = (d.parts || []).map(x => ({name: x.name, p: x.p.slice()}));
   hotspots = (d.hotspots || []).map(x => ({name: x.name, p: x.p.slice()}));
   traceLoad(d.trace);
@@ -14950,68 +14955,67 @@ const zcV3 = (a, name) => {
 // Готовое замкнутое тело из треугольников (конус, тело вращения, труба) —
 // в модель: new заменяет её, join/cut — через BSP с лечением швов.
 // Ориентация — по знаку объёма, координаты округляются до 0.001 мм
-// Текст по цилиндру (Emboss с обёрткой во Fusion): плоское тело букв
-// (buildTextSolid) изгибается вокруг оси — координата вдоль строки становится
-// дугой той же длины, глубина — радиусом. Плоский блок на кривой стенке
-// уходил бы краями вглубь (на Ø91.5 строка 43 мм — на 5 мм) и оставлял
-// скрытые полости; изогнутый режет на одну глубину по всей строке.
-// Работает на наружной (выпуклой) и внутренней (вогнутой) стенке; строка
-// идёт вокруг оси, поэтому грань должна быть ей параллельна
-function zcTextWrapped(C, n, p, wrap){
-  if(!wrap || typeof wrap !== 'object') throw new Error('wrap must be {axis_point, axis}');
-  if(p.d === 0) throw new Error('wrap needs depth: + raised or − engraved');
-  const A0 = zcV3(wrap.axis_point, 'wrap.axis_point');
-  const ax = wrap.axis != null ? zcV3(wrap.axis, 'wrap.axis') : new THREE.Vector3(0, 0, 1);
-  if(ax.length() < 1e-9) throw new Error('wrap.axis must not be zero');
-  ax.normalize();
-  const {u, v} = textBasis(n);
-  if(Math.abs(v.dot(ax)) < 0.999) throw new Error('wrap: the face must be parallel to the axis (the line runs around it)');
-  const Ax = A0.clone().addScaledVector(ax, new THREE.Vector3().subVectors(C, A0).dot(ax));
-  const er = new THREE.Vector3().subVectors(C, Ax);
-  const r0 = er.length();
-  if(r0 < 1) throw new Error('wrap: the centre is on the axis');
-  er.normalize();
-  const sgn = n.dot(er); // +1 — наружная стенка, −1 — внутренняя
-  if(Math.abs(Math.abs(sgn) - 1) > 0.01) throw new Error('wrap: normal must point along the radius (away from or to the axis)');
-  if(textWidth(p) > Math.PI * r0) throw new Error('wrap: the text is longer than half the circumference');
-  const dir = Math.sign(u.dot(new THREE.Vector3().crossVectors(ax, er))) || 1;
-  const above = p.d > 0 ? p.d : 1.0, below = p.d > 0 ? 0.5 : -p.d;
-  const flat = buildTextSolid(txLeftFromAnchor(C, n, p), u, v, n, textCellsFine(p.str), p.h / 14, above, below);
-  const bend = X => {
-    const D = new THREE.Vector3().subVectors(X, C);
-    const x = D.dot(u), y = D.dot(v), z = D.dot(n);
-    const e = er.clone().applyAxisAngle(ax, dir * x / r0);
-    return Ax.clone().addScaledVector(e, r0 + z * sgn).addScaledVector(v, y);
-  };
-  const r = zcApplySolid(flat.map(t => t.map(bend)), p.d < 0 ? 'cut' : 'join');
-  if(Math.abs(r.volume_change_mm3) < 1e-6){ undo(true); throw new Error('text could not be placed here — the centre is off the wall'); }
-  return Object.assign({wrapped_radius_mm: +r0.toFixed(3), text_width_mm: +textWidth(p).toFixed(3),
-    arc_deg: +(textWidth(p) / r0 * 180 / Math.PI).toFixed(2)}, r);
-}
-// Текст проекцией (Project / Decal): строка лежит на плоскости, обращённой
-// к зрителю (normal — куда смотрит текст, взгляд — против неё), и каждая
-// точка букв переносится по лучу взгляда на первую встречную грань модели;
-// высота над плоскостью становится сдвигом по нормали этой грани. С той
-// стороны, откуда смотрят, надпись ровная, как на плоскости, — на дне
-// конуса, на сфере, на любой кривой. Обёртка (wrap) на конусе расходилась бы
-// веером. Тело букв непрерывно: одна точка плана — один луч (кэш), у верха и
-// низа столбика общая нормаль
-function zcTextProjected(C, n, p, rotDeg = 0){
-  if(p.d === 0) throw new Error('project needs depth: + raised or − engraved');
-  if(!mesh) throw new Error('the model is empty');
-  // rotate: строка поворачивается в своей плоскости против часовой, если
+// ---------- Текст на кривой поверхности: обёртка (wrap) и проекция (project) ----------
+// Обёртка (Emboss с обёрткой во Fusion): плоское тело букв (buildTextSolid)
+// изгибается вокруг оси — координата вдоль строки становится дугой той же
+// длины, глубина — радиусом. Плоский блок на кривой стенке уходил бы краями
+// вглубь (на Ø91.5 строка 43 мм — на 5 мм) и оставлял скрытые полости. Стенка
+// наружная или внутренняя; строка идёт вокруг оси, грань ей параллельна.
+// Проекция (декаль, проекция эскиза): строка лежит на плоскости через center,
+// обращённой к зрителю (normal); каждая точка букв переносится по лучу
+// (−normal) ОТ ЭТОЙ ПЛОСКОСТИ на первую встречную грань, высота над плоскостью
+// становится сдвигом по нормали грани. Сверху надпись ровная — на дне конуса,
+// на куполе. Всё выше плоскости (плавники, другие надписи) лучи не задевают;
+// раньше они шли «из пустоты» над моделью и у стенки колпака цепляли плавники.
+// textMapper — общий отображатель строки на поверхность: им строятся тело
+// букв (выпуклое/вдавленное), контур-эскиз (глубина 0) и одна буква из эскиза
+// (extrude_text). plan() переводит точку на поверхности обратно в координаты
+// строки — по ним extrude_text находит букву под точкой
+function textMapper(mode, C, n, p, opt){
+  if(mode === 'wrap'){
+    const wrap = opt.wrap;
+    if(!wrap || typeof wrap !== 'object') throw new Error('wrap must be {axis_point, axis}');
+    const A0 = zcV3(wrap.axis_point, 'wrap.axis_point');
+    const ax = wrap.axis != null ? zcV3(wrap.axis, 'wrap.axis') : new THREE.Vector3(0, 0, 1);
+    if(ax.length() < 1e-9) throw new Error('wrap.axis must not be zero');
+    ax.normalize();
+    const {u, v} = textBasis(n);
+    if(Math.abs(v.dot(ax)) < 0.999) throw new Error('wrap: the face must be parallel to the axis (the line runs around it)');
+    const Ax = A0.clone().addScaledVector(ax, new THREE.Vector3().subVectors(C, A0).dot(ax));
+    const er = new THREE.Vector3().subVectors(C, Ax);
+    const r0 = er.length();
+    if(r0 < 1) throw new Error('wrap: the centre is on the axis');
+    er.normalize();
+    const sgn = n.dot(er); // +1 — наружная стенка, −1 — внутренняя
+    if(Math.abs(Math.abs(sgn) - 1) > 0.01) throw new Error('wrap: normal must point along the radius (away from or to the axis)');
+    if(textWidth(p) > Math.PI * r0) throw new Error('wrap: the text is longer than half the circumference');
+    const dir = Math.sign(u.dot(new THREE.Vector3().crossVectors(ax, er))) || 1;
+    const bend = X => {
+      const D = new THREE.Vector3().subVectors(X, C);
+      const x = D.dot(u), y = D.dot(v), z = D.dot(n);
+      const e = er.clone().applyAxisAngle(ax, dir * x / r0);
+      return Ax.clone().addScaledVector(e, r0 + z * sgn).addScaledVector(v, y);
+    };
+    const plan = P => {
+      const w = new THREE.Vector3().subVectors(P, A0);
+      w.addScaledVector(ax, -w.dot(ax));
+      const phi = Math.atan2(ax.dot(new THREE.Vector3().crossVectors(er, w)), er.dot(w));
+      return {x: dir * phi * r0, y: new THREE.Vector3().subVectors(P, C).dot(v), depth: sgn * (w.length() - r0)};
+    };
+    return {u, v, P0: txLeftFromAnchor(C, n, p), mapAll: tris => tris.map(t => t.map(bend)), plan,
+      info: {wrapped_radius_mm: +r0.toFixed(3), arc_deg: +(textWidth(p) / r0 * 180 / Math.PI).toFixed(2)}};
+  }
+  // проекция; rotate — поворот строки в её плоскости против часовой, если
   // смотреть со стороны normal (−10 — на 10° по часовой)
-  const b0 = textBasis(n), ra = rotDeg * Math.PI / 180;
+  if(!mesh) throw new Error('the model is empty');
+  const b0 = textBasis(n), ra = (opt.rotate || 0) * Math.PI / 180;
   const u = b0.u.clone().multiplyScalar(Math.cos(ra)).addScaledVector(b0.v, Math.sin(ra));
   const v = b0.v.clone().multiplyScalar(Math.cos(ra)).addScaledVector(b0.u, -Math.sin(ra));
   const P0 = C.clone().addScaledVector(u, -textWidth(p) / 2).addScaledVector(v, -p.h / 2);
-  const above = p.d > 0 ? p.d : 1.0, below = p.d > 0 ? 0.5 : -p.d;
-  const flat = buildTextSolid(P0, u, v, n, textCellsFine(p.str), p.h / 14, above, below);
   const pos = mesh.geometry.attributes.position.array, box = new THREE.Box3();
   for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
-  const far = box.getSize(new THREE.Vector3()).length() + box.getCenter(new THREE.Vector3()).distanceTo(C) + 10; // дальность луча
-  const look = n.clone().negate();
-  const rc = new THREE.Raycaster();
+  const far = box.getSize(new THREE.Vector3()).length() + box.getCenter(new THREE.Vector3()).distanceTo(C) + 10;
+  const look = n.clone().negate(), rc = new THREE.Raycaster();
   rc.far = far * 2;
   mesh.updateMatrixWorld(true);
   const cache = new Map();
@@ -15020,46 +15024,140 @@ function zcTextProjected(C, n, p, rotDeg = 0){
     const k = Math.round(x * 1e5) + ',' + Math.round(y * 1e5);
     let r = cache.get(k);
     if(r !== undefined) return r;
-    // луч стартует с плоскости текста (как проекция эскиза во Fusion), а не
-    // из пустоты над моделью: всё, что выше плоскости (плавники, надписи на
-    // стенке), он не задевает — плоскость ставят чуть над нужной поверхностью
-    const O = C.clone().addScaledVector(u, x).addScaledVector(v, y).addScaledVector(n, 1e-3);
-    rc.set(O, look);
+    rc.set(C.clone().addScaledVector(u, x).addScaledVector(v, y).addScaledVector(n, 1e-3), look);
     const hit = rc.intersectObject(mesh, false)[0];
     if(!hit || !hit.face){ r = null; missed++; }
     else {
       const nf = hit.face.normal.clone();
       if(nf.dot(n) < 0) nf.negate(); // грань смотрит на зрителя
-      if(nf.dot(n) < 0.17) r = 'steep'; // грань почти вдоль взгляда (> 80°) — буква легла бы ребром
-      else r = {S: hit.point.clone(), nf};
+      r = nf.dot(n) < 0.17 ? 'steep' : {S: hit.point.clone(), nf}; // > 80° — буква встала бы ребром
     }
     cache.set(k, r);
     return r;
   };
-  const bad = new Set();
-  const map = X => {
-    const D = new THREE.Vector3().subVectors(X, C);
-    const x = D.dot(u), y = D.dot(v), z = D.dot(n);
-    const r = hitAt(x, y);
-    if(!r || r === 'steep'){ bad.add(r === 'steep' ? 'steep' : 'miss'); return X.clone(); }
-    return r.S.clone().addScaledVector(r.nf, z);
+  const mapAll = flat => {
+    const bad = new Set();
+    const map = X => {
+      const D = new THREE.Vector3().subVectors(X, C);
+      const r = hitAt(D.dot(u), D.dot(v));
+      if(!r || r === 'steep'){ bad.add(r === 'steep' ? 'steep' : 'miss'); return X.clone(); }
+      return r.S.clone().addScaledVector(r.nf, D.dot(n));
+    };
+    const tris = flat.map(t => t.map(map));
+    if(bad.has('miss')) throw new Error('project: part of the text falls past the model (' + missed + ' points) — move it or make it smaller');
+    if(bad.has('steep')) throw new Error('project: part of the text lands on faces almost parallel to the view — the letters would stand on edge');
+    // луч перескочил на другую поверхность (плавник, ребро, ступень): соседние
+    // точки легли на разную глубину, ребро тела вытянулось «лучом» и сетка
+    // рвалась. Склон сам вытягивает не больше 1/cos(80°) ≈ 5.8 раз
+    for(let i=0;i<flat.length;i++) for(let e=0;e<3;e++){
+      const L0 = flat[i][e].distanceTo(flat[i][(e+1)%3]), L1 = tris[i][e].distanceTo(tris[i][(e+1)%3]);
+      if(L0 > 1e-6 && L1 > 8 * L0 + 0.5)
+        throw new Error('project: the text runs over another surface on the way (a fin, a rib, a step) — part of the letters would jump onto it; move or rotate the text');
+    }
+    return tris;
   };
-  const tris = flat.map(t => t.map(map));
-  if(bad.has('miss')) throw new Error('project: part of the text falls past the model (' + missed + ' points) — move it or make it smaller');
-  if(bad.has('steep')) throw new Error('project: part of the text lands on faces almost parallel to the view — the letters would stand on edge');
-  // Луч зацепил другую поверхность раньше нужной (плавник, ребро, стенку над
-  // склоном): соседние точки буквы легли на разную глубину, и ребро тела букв
-  // вытянулось в «луч» до той поверхности — сетка рвалась. Склон сам по себе
-  // вытягивает не больше 1/cos(80°) ≈ 5.8 раз, поэтому больше 8 — перескок
-  for(let i=0;i<flat.length;i++) for(let e=0;e<3;e++){
-    const a0 = flat[i][e], b0p = flat[i][(e+1)%3], a1 = tris[i][e], b1 = tris[i][(e+1)%3];
-    const L0 = a0.distanceTo(b0p), L1 = a1.distanceTo(b1);
-    if(L0 > 1e-6 && L1 > 8 * L0 + 0.5)
-      throw new Error('project: the text runs over another surface on the way (a fin, a rib, a step) — part of the letters would jump onto it; move or rotate the text');
-  }
-  const r = zcApplySolid(tris, p.d < 0 ? 'cut' : 'join');
+  const plan = P => { const D = new THREE.Vector3().subVectors(P, C); const r = hitAt(D.dot(u), D.dot(v));
+    return {x: D.dot(u), y: D.dot(v), depth: r && r !== 'steep' ? new THREE.Vector3().subVectors(P, r.S).dot(r.nf) : Infinity}; };
+  return {u, v, P0, mapAll, plan, info: {}, points: () => cache.size};
+}
+// тело букв (все или только cells) на поверхность и в модель
+function zcTextOnSurface(mode, C, n, p, opt, cells){
+  if(p.d === 0) throw new Error(mode + ' needs depth: + raised or − engraved');
+  const M = textMapper(mode, C, n, p, opt);
+  const above = p.d > 0 ? p.d : 1.0, below = p.d > 0 ? 0.5 : -p.d;
+  const flat = buildTextSolid(M.P0, M.u, M.v, n, cells || textCellsFine(p.str), p.h / 14, above, below);
+  const r = zcApplySolid(M.mapAll(flat), p.d < 0 ? 'cut' : 'join');
   if(Math.abs(r.volume_change_mm3) < 1e-6){ undo(true); throw new Error('text could not be placed here'); }
-  return Object.assign({projected_points: cache.size, text_width_mm: +textWidth(p).toFixed(3)}, r);
+  const extra = M.points ? {projected_points: M.points()} : {};
+  return Object.assign(extra, M.info, {text_width_mm: +textWidth(p).toFixed(3)}, r);
+}
+function zcTextWrapped(C, n, p, wrap){ return zcTextOnSurface('wrap', C, n, p, {wrap}); }
+function zcTextProjected(C, n, p, rotDeg = 0){ return zcTextOnSurface('project', C, n, p, {rotate: rotDeg}); }
+// Чертёжный текст на кривой (глубина 0 + wrap/project): контуры букв —
+// линиями по поверхности, объёма нет. Сетку не режем (на кривой из сотен
+// граней это медленно и хрупко): строка запоминается эскизом (textSketches),
+// а extrude_text выдавливает или вдавливает по точке одну букву — тело
+// строится из её клеток тем же отображателем, точно по контуру
+let textSketches = [];
+function textCellRuns(cells){
+  const H = new Map(), Vg = new Map();
+  const put = (m, k, x) => { if(!m.has(k)) m.set(k, new Set()); m.get(k).add(x); };
+  for(const key of cells){
+    const [gx, gy] = key.split(',').map(Number);
+    if(!cells.has(gx+','+(gy-1))) put(H, gy, gx);
+    if(!cells.has(gx+','+(gy+1))) put(H, gy+1, gx);
+    if(!cells.has((gx-1)+','+gy)) put(Vg, gx, gy);
+    if(!cells.has((gx+1)+','+gy)) put(Vg, gx+1, gy);
+  }
+  const runs = set => { const a = [...set].sort((x, y) => x - y), r = []; let s0 = a[0], prev = a[0];
+    for(let i=1;i<=a.length;i++){ if(a[i] === prev+1){ prev = a[i]; continue; } r.push([s0, prev+1]); s0 = a[i]; prev = a[i]; } return r; };
+  const out = [];
+  for(const [gy, set] of H) for(const [x0, x1] of runs(set)) out.push([x0, gy, x1, gy]);
+  for(const [gx, set] of Vg) for(const [y0, y1] of runs(set)) out.push([gx, y0, gx, y1]);
+  return out;
+}
+function zcTextOutline(mode, C, n, p, opt){
+  const M = textMapper(mode, C, n, p, opt);
+  const s = p.h / 14, cells = textCellsFine(p.str);
+  const at = (gx, gy) => M.P0.clone().addScaledVector(M.u, gx * s).addScaledVector(M.v, gy * s);
+  const segs = [];
+  for(const [x0, y0, x1, y1] of textCellRuns(cells)){
+    const A = at(x0, y0), B = at(x1, y1), k = Math.max(1, Math.ceil(A.distanceTo(B) / 0.6));
+    for(let i=0;i<k;i++) segs.push([A.clone().lerp(B, i / k), A.clone().lerp(B, (i + 1) / k), A.clone().lerp(B, (i + 1) / k)]);
+  }
+  // отрезки — вырожденными «треугольниками», чтобы пройти тем же отображателем
+  // (с проверками промаха и перескока)
+  const mapped = M.mapAll(segs);
+  pushUndo();
+  for(const [a, b] of mapped) addGuide(a, b, true);
+  const sk = {mode, center: v3a(C), normal: v3a(n), text: p.str, height: p.h,
+    rotate: opt.rotate || 0, wrap: opt.wrap ? JSON.parse(JSON.stringify(opt.wrap)) : null};
+  textSketches.push(sk);
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  extractEdges();
+  return Object.assign({sketch: textSketches.length - 1, outline_segments: mapped.length,
+    letters: textLetterGroups(cells).length}, M.info, zcSummary());
+}
+// буквы — связные группы клеток (4-соседство; у мелкой сетки диагонали уже с мостиками)
+function textLetterGroups(cells){
+  const seen = new Set(), groups = [];
+  for(const k of cells){
+    if(seen.has(k)) continue;
+    const g = new Set([k]), st = [k]; seen.add(k);
+    while(st.length){ const [x, y] = st.pop().split(',').map(Number);
+      for(const q of [(x+1)+','+y, (x-1)+','+y, x+','+(y+1), x+','+(y-1)]) if(cells.has(q) && !seen.has(q)){ seen.add(q); g.add(q); st.push(q); } }
+    groups.push(g);
+  }
+  return groups;
+}
+function zcExtrudeText(a){
+  const d = snapMM(+a.distance);
+  if(!Number.isFinite(d) || Math.abs(d) < 0.05) throw new Error('distance must be a number of mm (+ raised, − engraved)');
+  if(!textSketches.length) throw new Error('no text sketch — draw one with add_text, depth 0 and wrap or project');
+  const P = zcV3(a.point, 'point');
+  for(let i=textSketches.length-1;i>=0;i--){
+    const sk = textSketches[i], C = a3v(sk.center), n = a3v(sk.normal).normalize();
+    const p = {str: sk.text, h: sk.height, d};
+    const opt = {wrap: sk.wrap, rotate: sk.rotate};
+    let M;
+    try{ M = textMapper(sk.mode, C, n, p, opt); }catch(_){ continue; }
+    const pl = M.plan(P);
+    if(!(Math.abs(pl.depth) < 1.5)) continue;             // точка не на поверхности этого эскиза
+    const s = p.h / 14, w0 = -textWidth(p) / 2, h0 = -p.h / 2;
+    const gx = Math.floor((pl.x - w0) / s), gy = Math.floor((pl.y - h0) / s);
+    const cells = textCellsFine(sk.text);
+    let pick = null;
+    if(a.whole) pick = cells;
+    else {
+      // точка на контуре — берём ближайшую клетку буквы в радиусе одной клетки
+      for(const [dx, dy] of [[0,0],[1,0],[-1,0],[0,1],[0,-1]]) if(cells.has((gx+dx)+','+(gy+dy))){
+        pick = textLetterGroups(cells).find(g => g.has((gx+dx)+','+(gy+dy))); break; }
+    }
+    if(!pick) continue;
+    const r = zcTextOnSurface(sk.mode, C, n, p, opt, pick);
+    return Object.assign({sketch: i, cells: pick.size, whole: !!a.whole}, r);
+  }
+  throw new Error('the point is not on a letter of a text sketch');
 }
 // MCP pattern: матрицы копий второго тела на время одной команды (zcRun)
 let zcPatternMats = null;
@@ -15924,6 +16022,8 @@ const ZC_COMMANDS = {
       const rot = a.rotate == null ? 0 : +a.rotate;
       if(!Number.isFinite(rot)) throw new Error('rotate must be a number of degrees');
       if(rot !== 0 && !a.project) throw new Error('rotate works with project for now');
+      if((a.wrap != null || a.project) && d === 0)
+        return zcTextOutline(a.project ? 'project' : 'wrap', C, n, {str, h, d}, a.project ? {rotate: rot} : {wrap: a.wrap});
       if(a.wrap != null) return zcTextWrapped(C, n, {str, h, d}, a.wrap);
       if(a.project) return zcTextProjected(C, n, {str, h, d}, rot);
       if(zcFaceAt(C, n) < 0) throw new Error('no face with this normal at the centre point');
@@ -16459,6 +16559,10 @@ const ZC_COMMANDS = {
   get_history: {
     run(){ zcHistSync(); return zcHistoryInfo(); }
   },
+  extrude_text: {
+    // одна буква чертёжного текста на кривой (или вся строка) — выдавить/вдавить
+    run(a){ return zcExtrudeText(a); }
+  },
   edit_step: {
     // параметры шага: переданные ключи заменяются, null — убирает ключ;
     // модель пересобирается повтором всех шагов
@@ -16703,14 +16807,16 @@ function zcHistToJSON(){
   return zcHist.map(s => s.command === 'base' ? {command: 'base', note: s.note, snap: {
       pos: f32ToB64(s.snap.pos), guides: s.snap.guides.map(g => ({a: v3a(g.a), b: v3a(g.b), noExt: !!g.noExt, curve: g.curve || 0})),
       hard: s.snap.hard.map(h => ({a: v3a(h.a), b: v3a(h.b)})),
-      anchors: s.snap.anchors.map(a => ({pos: v3a(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(v3a), t: a.bend.t.slice(), j: a.bend.j} : null}))}}
+      anchors: s.snap.anchors.map(a => ({pos: v3a(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(v3a), t: a.bend.t.slice(), j: a.bend.j} : null})),
+      sketches: s.snap.sketches || []}}
     : {command: s.command, args: s.args, status: s.status || 'ok', change: s.change == null ? null : s.change});
 }
 function zcHistFromJSON(list){
   zcHist = (list || []).map(s => s.command === 'base' ? {command: 'base', note: s.note, snap: {
       pos: b64ToF32(s.snap.pos), guides: (s.snap.guides || []).map(g => ({a: a3v(g.a), b: a3v(g.b), noExt: g.noExt, curve: g.curve})),
       hard: (s.snap.hard || []).map(h => ({a: a3v(h.a), b: a3v(h.b)})),
-      anchors: (s.snap.anchors || []).map(a => ({pos: a3v(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(a3v), t: a.bend.t, j: a.bend.j} : null}))}}
+      anchors: (s.snap.anchors || []).map(a => ({pos: a3v(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(a3v), t: a.bend.t, j: a.bend.j} : null})),
+      sketches: s.snap.sketches || []}}
     : {command: s.command, args: s.args, status: s.status, change: s.change});
   zcHistAt = new WeakMap(); zcHistAtEmpty = null;
   if(zcHist.length) zcHistMark(); else zcHistFp = null;

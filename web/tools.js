@@ -199,7 +199,7 @@ const ZC_TOOLS = [
   },
   {
     "name": "add_text",
-    "description": "Put text on a face, centred at a point: depth > 0 embosses (raised letters), depth < 0 engraves, 0 only draws the letter outlines. Blocky 5×7 font (A–Z, 0–9, '-', '.'); on vertical faces the text reads upright, on horizontal faces along +X. wrap {axis_point, axis} bends the letters around a cylinder wall (outer or inner) so the depth stays even along the line — use it on round walls, where a flat block would sink at the ends; normal then points along the radius, the axis is parallel to the wall. project: true lays the text on a plane through center facing normal and projects every letter point along -normal from that plane onto the first face it meets (like projecting a sketch): seen from the normal side the text looks flat, on any curved surface (the bottom of a cone, a dome); depth is along the local surface normal. Put the plane just above the target surface: anything above the plane (fins, ribs, other text) is not hit.",
+    "description": "Put text on a face, centred at a point: depth > 0 embosses (raised letters), depth < 0 engraves, 0 only draws the letter outlines. Blocky 5×7 font (A–Z, 0–9, '-', '.'); on vertical faces the text reads upright, on horizontal faces along +X. wrap {axis_point, axis} bends the letters around a cylinder wall (outer or inner) so the depth stays even along the line — use it on round walls, where a flat block would sink at the ends; normal then points along the radius, the axis is parallel to the wall. project: true lays the text on a plane through center facing normal and projects every letter point along -normal from that plane onto the first face it meets (like projecting a sketch): seen from the normal side the text looks flat, on any curved surface (the bottom of a cone, a dome); depth is along the local surface normal. Put the plane just above the target surface: anything above the plane (fins, ribs, other text) is not hit. depth 0 with wrap or project draws the letter outlines as lines on the curved surface (a text sketch, no volume); then extrude_text raises or engraves any single letter of it, or the whole line.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -850,6 +850,15 @@ const ZC_TOOLS = [
         "distance"
       ]
     }
+  },
+  {
+    "name": "extrude_text",
+    "description": "Raise (+) or engrave (−) one letter of a text sketch on a curved surface — the outline drawn by add_text with depth 0 and wrap or project. point: a point on (or at the edge of) the letter on the surface; whole: true takes the whole line. The letter is built from the sketch with the same wrap/projection, so it follows its outline exactly and the depth is along the local surface normal.",
+    "inputSchema": {"type": "object", "properties": {
+      "point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "distance": {"type": "number", "description": "mm, + raised, − engraved"},
+      "whole": {"type": "boolean", "description": "all letters of the sketch"}
+    }, "required": ["point", "distance"]}
   },
   {
     "name": "get_history",
