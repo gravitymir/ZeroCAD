@@ -576,7 +576,7 @@ function markShallowCorners(eMap, pos){
   // нормали, центры и иглы (высота над длинной стороной < 0.05 мм): игла на
   // самом ребре угла (5.5 × 0.004 мм от булевой) давала изломы 31° и 13° вместо
   // одного 12.8°, поэтому у иглы берём грань за ней — через её другую длинную сторону
-  const N = new Array(nT), C = new Array(nT), needle = new Uint8Array(nT), keys = new Array(nT);
+  const N = new Array(nT), C = new Array(nT), needle = new Uint8Array(nT), keys = new Array(nT), H = new Float64Array(nT);
   const P = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
   for(let t=0;t<nT;t++){
     for(let j=0;j<3;j++) P[j].fromArray(pos, t*9 + j*3);
@@ -584,6 +584,7 @@ function markShallowCorners(eMap, pos){
     const a2 = n.length();
     const L = Math.max(P[0].distanceTo(P[1]), P[1].distanceTo(P[2]), P[2].distanceTo(P[0]));
     needle[t] = !(a2 > 1e-9) || a2 / L < 0.05 ? 1 : 0;
+    H[t] = L > 0 ? a2 / L : 0; // высота над длинной стороной
     N[t] = a2 > 1e-12 ? n.divideScalar(a2) : n;
     C[t] = P[0].clone().add(P[1]).add(P[2]).multiplyScalar(1/3);
     keys[t] = P.map(v => keyOf(v.x, v.y, v.z));
@@ -607,7 +608,14 @@ function markShallowCorners(eMap, pos){
   // буквы в 0.02 мм от ребра многоугольника) отрывалась от цилиндра, у неё не
   // было «соседа» по излому, и стык цилиндра с конусом рисовался отрезками
   const effN = new Array(nT);
-  for(let t=0;t<nT;t++){ if(!needle[t]){ effN[t] = N[t]; continue; } const b = behind(t, null); effN[t] = b >= 0 ? N[b] : null; }
+  // Веер игл от вершины стыка к краю букв: соседи иглы — тоже иглы, «грани
+  // за ней» нет. Но у иглы выше 0.002 мм нормаль надёжна (шум координат
+  // Float32 ~1e-5 мм — угол меньше 0.3°): берём её собственную
+  for(let t=0;t<nT;t++){
+    if(!needle[t]){ effN[t] = N[t]; continue; }
+    const b = behind(t, null);
+    effN[t] = b >= 0 ? N[b] : H[t] > 0.002 ? N[t] : null;
+  }
   const cand = [];
   for(const ent of eMap.values()){
     if(ent.normals.length !== 2 || ent.tris.length !== 2) continue;
@@ -14980,6 +14988,79 @@ function zcTextWrapped(C, n, p, wrap){
   return Object.assign({wrapped_radius_mm: +r0.toFixed(3), text_width_mm: +textWidth(p).toFixed(3),
     arc_deg: +(textWidth(p) / r0 * 180 / Math.PI).toFixed(2)}, r);
 }
+// Текст проекцией (Project / Decal): строка лежит на плоскости, обращённой
+// к зрителю (normal — куда смотрит текст, взгляд — против неё), и каждая
+// точка букв переносится по лучу взгляда на первую встречную грань модели;
+// высота над плоскостью становится сдвигом по нормали этой грани. С той
+// стороны, откуда смотрят, надпись ровная, как на плоскости, — на дне
+// конуса, на сфере, на любой кривой. Обёртка (wrap) на конусе расходилась бы
+// веером. Тело букв непрерывно: одна точка плана — один луч (кэш), у верха и
+// низа столбика общая нормаль
+function zcTextProjected(C, n, p, rotDeg = 0){
+  if(p.d === 0) throw new Error('project needs depth: + raised or − engraved');
+  if(!mesh) throw new Error('the model is empty');
+  // rotate: строка поворачивается в своей плоскости против часовой, если
+  // смотреть со стороны normal (−10 — на 10° по часовой)
+  const b0 = textBasis(n), ra = rotDeg * Math.PI / 180;
+  const u = b0.u.clone().multiplyScalar(Math.cos(ra)).addScaledVector(b0.v, Math.sin(ra));
+  const v = b0.v.clone().multiplyScalar(Math.cos(ra)).addScaledVector(b0.u, -Math.sin(ra));
+  const P0 = C.clone().addScaledVector(u, -textWidth(p) / 2).addScaledVector(v, -p.h / 2);
+  const above = p.d > 0 ? p.d : 1.0, below = p.d > 0 ? 0.5 : -p.d;
+  const flat = buildTextSolid(P0, u, v, n, textCellsFine(p.str), p.h / 14, above, below);
+  const pos = mesh.geometry.attributes.position.array, box = new THREE.Box3();
+  for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+  const far = box.getSize(new THREE.Vector3()).length() + box.getCenter(new THREE.Vector3()).distanceTo(C) + 10; // дальность луча
+  const look = n.clone().negate();
+  const rc = new THREE.Raycaster();
+  rc.far = far * 2;
+  mesh.updateMatrixWorld(true);
+  const cache = new Map();
+  let missed = 0;
+  const hitAt = (x, y) => {
+    const k = Math.round(x * 1e5) + ',' + Math.round(y * 1e5);
+    let r = cache.get(k);
+    if(r !== undefined) return r;
+    // луч стартует с плоскости текста (как проекция эскиза во Fusion), а не
+    // из пустоты над моделью: всё, что выше плоскости (плавники, надписи на
+    // стенке), он не задевает — плоскость ставят чуть над нужной поверхностью
+    const O = C.clone().addScaledVector(u, x).addScaledVector(v, y).addScaledVector(n, 1e-3);
+    rc.set(O, look);
+    const hit = rc.intersectObject(mesh, false)[0];
+    if(!hit || !hit.face){ r = null; missed++; }
+    else {
+      const nf = hit.face.normal.clone();
+      if(nf.dot(n) < 0) nf.negate(); // грань смотрит на зрителя
+      if(nf.dot(n) < 0.17) r = 'steep'; // грань почти вдоль взгляда (> 80°) — буква легла бы ребром
+      else r = {S: hit.point.clone(), nf};
+    }
+    cache.set(k, r);
+    return r;
+  };
+  const bad = new Set();
+  const map = X => {
+    const D = new THREE.Vector3().subVectors(X, C);
+    const x = D.dot(u), y = D.dot(v), z = D.dot(n);
+    const r = hitAt(x, y);
+    if(!r || r === 'steep'){ bad.add(r === 'steep' ? 'steep' : 'miss'); return X.clone(); }
+    return r.S.clone().addScaledVector(r.nf, z);
+  };
+  const tris = flat.map(t => t.map(map));
+  if(bad.has('miss')) throw new Error('project: part of the text falls past the model (' + missed + ' points) — move it or make it smaller');
+  if(bad.has('steep')) throw new Error('project: part of the text lands on faces almost parallel to the view — the letters would stand on edge');
+  // Луч зацепил другую поверхность раньше нужной (плавник, ребро, стенку над
+  // склоном): соседние точки буквы легли на разную глубину, и ребро тела букв
+  // вытянулось в «луч» до той поверхности — сетка рвалась. Склон сам по себе
+  // вытягивает не больше 1/cos(80°) ≈ 5.8 раз, поэтому больше 8 — перескок
+  for(let i=0;i<flat.length;i++) for(let e=0;e<3;e++){
+    const a0 = flat[i][e], b0p = flat[i][(e+1)%3], a1 = tris[i][e], b1 = tris[i][(e+1)%3];
+    const L0 = a0.distanceTo(b0p), L1 = a1.distanceTo(b1);
+    if(L0 > 1e-6 && L1 > 8 * L0 + 0.5)
+      throw new Error('project: the text runs over another surface on the way (a fin, a rib, a step) — part of the letters would jump onto it; move or rotate the text');
+  }
+  const r = zcApplySolid(tris, p.d < 0 ? 'cut' : 'join');
+  if(Math.abs(r.volume_change_mm3) < 1e-6){ undo(true); throw new Error('text could not be placed here'); }
+  return Object.assign({projected_points: cache.size, text_width_mm: +textWidth(p).toFixed(3)}, r);
+}
 // MCP pattern: матрицы копий второго тела на время одной команды (zcRun)
 let zcPatternMats = null;
 // копии второго тела по кругу заранее сливаются в одно (касающиеся —
@@ -15839,7 +15920,12 @@ const ZC_COMMANDS = {
       const str = String(a.text || '').toUpperCase();
       if(![...str].some(ch => FONT57[ch] && ch !== ' ')) throw new Error('no printable letters (A–Z, 0–9)');
       const h = Math.max(3, +a.height || 10), d = snapMM(+a.depth || 0);
+      if(a.wrap != null && a.project) throw new Error('give wrap or project, not both');
+      const rot = a.rotate == null ? 0 : +a.rotate;
+      if(!Number.isFinite(rot)) throw new Error('rotate must be a number of degrees');
+      if(rot !== 0 && !a.project) throw new Error('rotate works with project for now');
       if(a.wrap != null) return zcTextWrapped(C, n, {str, h, d}, a.wrap);
+      if(a.project) return zcTextProjected(C, n, {str, h, d}, rot);
       if(zcFaceAt(C, n) < 0) throw new Error('no face with this normal at the centre point');
       textParams = {str, h, d};
       const v0 = meshVolumeOf(mesh.geometry.attributes.position.array), u0 = undoStack.length;

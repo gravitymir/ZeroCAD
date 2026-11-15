@@ -199,7 +199,7 @@ const ZC_TOOLS = [
   },
   {
     "name": "add_text",
-    "description": "Put text on a face, centred at a point: depth > 0 embosses (raised letters), depth < 0 engraves, 0 only draws the letter outlines. Blocky 5×7 font (A–Z, 0–9, '-', '.'); on vertical faces the text reads upright, on horizontal faces along +X. wrap {axis_point, axis} bends the letters around a cylinder wall (outer or inner) so the depth stays even along the line — use it on round walls, where a flat block would sink at the ends; normal then points along the radius, the axis is parallel to the wall.",
+    "description": "Put text on a face, centred at a point: depth > 0 embosses (raised letters), depth < 0 engraves, 0 only draws the letter outlines. Blocky 5×7 font (A–Z, 0–9, '-', '.'); on vertical faces the text reads upright, on horizontal faces along +X. wrap {axis_point, axis} bends the letters around a cylinder wall (outer or inner) so the depth stays even along the line — use it on round walls, where a flat block would sink at the ends; normal then points along the radius, the axis is parallel to the wall. project: true lays the text on a plane through center facing normal and projects every letter point along -normal from that plane onto the first face it meets (like projecting a sketch): seen from the normal side the text looks flat, on any curved surface (the bottom of a cone, a dome); depth is along the local surface normal. Put the plane just above the target surface: anything above the plane (fins, ribs, other text) is not hit.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -231,6 +231,14 @@ const ZC_TOOLS = [
         "depth": {
           "type": "number",
           "description": "mm: + raised, − engraved, 0 outline"
+        },
+        "project": {
+          "type": "boolean",
+          "description": "project the text onto the surface along -normal (seen from the normal side it stays flat)"
+        },
+        "rotate": {
+          "type": "number",
+          "description": "degrees, with project: turns the line in its plane counter-clockwise as seen from the normal side (-10 = 10° clockwise)"
         },
         "wrap": {
           "type": "object",

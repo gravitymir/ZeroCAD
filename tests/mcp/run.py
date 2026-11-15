@@ -490,6 +490,45 @@ def text_wrapped_on_round_walls():
 
 
 @case
+def text_projected_onto_cone():
+    # Текст проекцией (project): строка на плоскости, обращённой вверх, по
+    # лучам вниз ложится на дно воронки 45°. Сверху — ровная, на склоне —
+    # вытянута в √2; глубина — по нормали склона: вырез ≈ площадь букв на
+    # склоне × 0.6 (тело букв — 1 мм над склоном + 0.6 вглубь)
+    call('new_shape', {'shape': 'cube', 'size': 100})
+    call('add_revolve', {'profile': [[0, 0], [5, 0], [45, 40], [45, 60], [0, 60]], 'base': [50, 50, 0], 'segments': 128, 'operation': 'intersect'})
+    call('shell_body', {'thickness': 3, 'open_faces': [{'point': [50, 50, 60]}]})
+    d = call('add_text', {'center': [50, 70, 100], 'normal': [0, 0, 1], 'text': '15.11.2026', 'height': 5, 'depth': -0.6, 'project': True})
+    unfolded(d, 'project'); exact(d, 'project')
+    near(-d['volume_change_mm3'], d['solid_volume_mm3'] / 1.6 * 0.6, d['solid_volume_mm3'] / 1.6 * 0.6 * 0.1, 'even depth on the slope')
+    d = call('add_text', {'center': [50, 32, 100], 'normal': [0, 0, 1], 'text': 'PETG', 'height': 5, 'depth': 0.5, 'project': True})
+    unfolded(d, 'project raised'); assert d['volume_change_mm3'] > 0, d
+    # Лучи стартуют с плоскости текста: брусок над склоном (как плавник
+    # колпака) с плоскости выше него перехватывает часть лучей — отказ с
+    # понятной причиной, а не «лучи» до бруска; с плоскости ниже — проходит.
+    # rotate поворачивает строку в её плоскости
+    call('new_shape', {'shape': 'cube', 'size': 100})
+    call('add_revolve', {'profile': [[0, 0], [5, 0], [45, 40], [45, 60], [0, 60]], 'base': [50, 50, 0], 'segments': 128, 'operation': 'intersect'})
+    call('shell_body', {'thickness': 3, 'open_faces': [{'point': [50, 50, 60]}]})
+    call('add_frustum', {'from': [40, 68, 50], 'to': [60, 68, 50], 'r1': 2, 'r2': 2, 'segments': 24, 'operation': 'join'})
+    try:
+        call('add_text', {'center': [50, 70, 100], 'normal': [0, 0, 1], 'text': '15.11.2026', 'height': 5, 'depth': 0.5, 'project': True})
+    except McpError as e:
+        assert 'another surface' in str(e) or 'parallel' in str(e), str(e)  # бок бруска — почти вдоль взгляда
+    else:
+        raise AssertionError('a bar above the plane of the text must stop the projection')
+    d = call('add_text', {'center': [50, 70, 45], 'normal': [0, 0, 1], 'text': '15.11.2026', 'height': 5, 'depth': 0.5, 'project': True, 'rotate': -10})
+    unfolded(d, 'project under the bar'); assert d['volume_change_mm3'] > 0, d
+    # строка шире воронки: часть лучей проходит мимо модели — отказ
+    try:
+        call('add_text', {'center': [50, 50, 100], 'normal': [0, 0, 1], 'text': 'X' * 40, 'height': 5, 'depth': -0.6, 'project': True})
+    except McpError as e:
+        assert 'falls past' in str(e), str(e)
+    else:
+        raise AssertionError('text past the model must be refused')
+
+
+@case
 def shell_hollow_parts():
     # Shell (G,H) — shell_body: коробка с открытой крышей и закрытая полость,
     # стакан из цилиндра, куб с бобышкой (вогнутое ребро), колесо-дозатор с
