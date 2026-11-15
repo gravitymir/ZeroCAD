@@ -199,7 +199,7 @@ const ZC_TOOLS = [
   },
   {
     "name": "add_text",
-    "description": "Put text on a face, centred at a point: depth > 0 embosses (raised letters), depth < 0 engraves, 0 only draws the letter outlines. Blocky 5×7 font; on vertical faces the text reads upright, on horizontal faces along +X.",
+    "description": "Put text on a face, centred at a point: depth > 0 embosses (raised letters), depth < 0 engraves, 0 only draws the letter outlines. Blocky 5×7 font (A–Z, 0–9, '-', '.'); on vertical faces the text reads upright, on horizontal faces along +X. wrap {axis_point, axis} bends the letters around a cylinder wall (outer or inner) so the depth stays even along the line — use it on round walls, where a flat block would sink at the ends; normal then points along the radius, the axis is parallel to the wall.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -231,6 +231,15 @@ const ZC_TOOLS = [
         "depth": {
           "type": "number",
           "description": "mm: + raised, − engraved, 0 outline"
+        },
+        "wrap": {
+          "type": "object",
+          "description": "cylinder to wrap around: axis_point and axis direction (default [0, 0, 1])",
+          "properties": {
+            "axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+            "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+          },
+          "required": ["axis_point"]
         }
       },
       "required": [

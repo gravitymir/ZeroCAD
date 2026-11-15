@@ -60,6 +60,14 @@ def closed(d, what=''):
     assert d['nonmanifold_edges'] == 0, f'{what}: nonmanifold_edges {d["nonmanifold_edges"]}'
 
 
+def unfolded(d, what=''):
+    # вывернутый лоскут в плоскости грани: сетка замкнута, но это дефект.
+    # Пока не во всех сценариях: выдавливание кармана и move_edge их ещё
+    # оставляют (README, «Загибы») — проверяем там, где они уже исправлены
+    closed(d, what)
+    assert d.get('folded_edges', 0) == 0, f'{what}: folded_edges {d.get("folded_edges")}'
+
+
 def near(a, b, tol, what=''):
     assert abs(a - b) <= tol, f'{what}: {a} vs {b} (±{tol})'
 
@@ -441,6 +449,44 @@ def parametric_history_edit_delete_undo():
             assert msg in str(e), str(e)
         else:
             raise AssertionError('must be refused: %s %r' % (tool, args))
+
+
+@case
+def text_wrapped_on_round_walls():
+    # Текст по цилиндру (wrap): буквы изгибаются вокруг оси, глубина ровная по
+    # всей строке — снаружи трубы и изнутри. Плоский блок на кривой стенке
+    # уходил бы краями вглубь и оставлял скрытые полости. Круг — 64-угольник,
+    # поэтому глубина у середины граней отличается на сотые: допуск 10 %
+    call('new_shape', {'shape': 'cylinder', 'size': 80, 'height': 60})
+    call('shell_body', {'thickness': 3, 'open_faces': [{'point': [40, 40, 60]}]})
+    w = {'axis_point': [40, 40, 0]}
+    for center, normal, text in [([80, 40, 30], [1, 0, 0], '15.11.2026'), ([77, 40, 30], [-1, 0, 0], 'PETG')]:
+        d = call('add_text', {'center': center, 'normal': normal, 'text': text, 'height': 6, 'depth': -0.6, 'wrap': w})
+        unfolded(d, 'wrap ' + text); exact(d, 'wrap ' + text)
+        area = d['solid_volume_mm3'] / 1.6           # тело букв: 1 мм над стенкой + 0.6 вглубь
+        near(-d['volume_change_mm3'], area * 0.6, area * 0.6 * 0.1, 'even depth ' + text)
+    # стенка Shell из длинных узких треугольников (1 × 69 мм, как у колпака):
+    # чистка щепок после выреза стягивала вершину и выворачивала соседа —
+    # плоский лоскут (folded_edges); collapseShortEdges теперь это запрещает
+    call('new_shape', {'shape': 'cube', 'size': 160})
+    call('add_revolve', {'profile': [[0, 0], [6.929, 0], [48.25, 67.7], [48.25, 137.7], [0, 137.7]],
+                         'base': [80, 80, 0], 'segments': 128, 'operation': 'intersect'})
+    call('shell_body', {'thickness': 2.5, 'open_faces': [{'point': [80, 80, 137.7]}, {'point': [80, 80, 0]}]})
+    cw = {'axis_point': [80, 80, 0]}
+    for z, text in [(98, '15.11.2026'), (88, 'PETG')]:
+        d = call('add_text', {'center': [125.75, 80, z], 'normal': [-1, 0, 0], 'text': text, 'height': 6, 'depth': -0.6, 'wrap': cw})
+        unfolded(d, 'canopy ' + text)
+    call('new_shape', {'shape': 'cylinder', 'size': 80, 'height': 60})
+    for args, msg in [({'center': [40, 40, 60], 'normal': [0, 0, 1]}, 'parallel'),
+                      ({'center': [80, 40, 30], 'normal': [1, 0, 0], 'text': 'X' * 30}, 'half the circumference')]:
+        a = {'text': 'AB', 'height': 6, 'depth': -0.6, 'wrap': w}
+        a.update(args)
+        try:
+            call('add_text', a)
+        except McpError as e:
+            assert msg in str(e), str(e)
+        else:
+            raise AssertionError('must be refused: %r' % args)
 
 
 @case

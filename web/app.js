@@ -602,14 +602,18 @@ function markShallowCorners(eMap, pos){
     }
     return best >= 0 && !needle[best] ? best : -1;
   };
+  // Поверхность не рвётся на иглах: у иглы берём нормаль грани за её длинной
+  // стороной. Раньше игла разрывала связность — грань стенки под буквой (край
+  // буквы в 0.02 мм от ребра многоугольника) отрывалась от цилиндра, у неё не
+  // было «соседа» по излому, и стык цилиндра с конусом рисовался отрезками
+  const effN = new Array(nT);
+  for(let t=0;t<nT;t++){ if(!needle[t]){ effN[t] = N[t]; continue; } const b = behind(t, null); effN[t] = b >= 0 ? N[b] : null; }
   const cand = [];
   for(const ent of eMap.values()){
     if(ent.normals.length !== 2 || ent.tris.length !== 2) continue;
     const [t0, t1] = ent.tris;
-    if(!needle[t0] && !needle[t1]){
-      const dt = N[t0].dot(N[t1]);
-      if(dt > FOLD_MIN_COS){ const r1 = root(t0), r2 = root(t1); if(r1 !== r2) par[r1] = r2; continue; }
-    }
+    const n0 = effN[t0], n1 = effN[t1];
+    if(n0 && n1 && n0.dot(n1) > FOLD_MIN_COS){ const r1 = root(t0), r2 = root(t1); if(r1 !== r2) par[r1] = r2; continue; }
     cand.push(ent);
   }
   const V = new THREE.Vector3();
@@ -7789,6 +7793,36 @@ function collapseShortEdges(pos, maxLen = 0.05, maxPasses = 6, maxDV = 0.02){
       }
       return Math.abs(dv);
     };
+    // Стягивание A → B не должно выворачивать уцелевшие треугольники при A:
+    // у длинного узкого соседа (стенка Shell 1 × 69 мм) высота меньше
+    // сдвига, и без проверки он переворачивался — плоский лоскут поверх
+    // соседа (folded_edges), сетка замкнута и объём тот же, поэтому прежние
+    // проверки tidySlivers его не видели. Сравниваем нормали до и после
+    const collapseFlips = (a, b) => {
+      const pa = P.get(a), pb = P.get(b);
+      for(const t of triAt.get(a) || []){
+        const k = [keyAt[t*3], keyAt[t*3+1], keyAt[t*3+2]];
+        if(k.includes(b)) continue;                  // выродится и выпадет
+        const i = k.indexOf(a), q = P.get(k[(i+1)%3]), r = P.get(k[(i+2)%3]);
+        const nrm = (p0) => {
+          const u = [q[0]-p0[0], q[1]-p0[1], q[2]-p0[2]], v = [r[0]-p0[0], r[1]-p0[1], r[2]-p0[2]];
+          return [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+        };
+        const n0 = nrm(pa), n1 = nrm(pb);
+        const l0 = Math.hypot(...n0), l1 = Math.hypot(...n1);
+        if(l0 < 2e-4) continue;                      // сам щепка (площадь < 1e-4 мм²) — её и убираем
+        if(l1 < 1e-12) return true;                  // станет вырожденным, но не выпадет — Т-стык
+        if((n0[0]*n1[0] + n0[1]*n1[1] + n0[2]*n1[2]) / (l0 * l1) < 0.5) return true;
+        // форма не должна меняться: сдвиг A → B обязан лежать в плоскости
+        // каждого треугольника при A (внутри плоской грани или вдоль прямого
+        // излома). Порог объёма (maxDV) этого не ловил: вершину на стыке
+        // цилиндра и конуса стягивало к соседней, излом становился ломаным,
+        // и в редакторе вылезали отрезки на две грани (4.5 мм на Ø91.5)
+        const off = ((pb[0]-pa[0])*n0[0] + (pb[1]-pa[1])*n0[1] + (pb[2]-pa[2])*n0[2]) / l0;
+        if(Math.abs(off) > 0.002) return true;
+      }
+      return false;
+    };
     // короткие рёбра по возрастанию длины; тянем ту вершину, от которой тело
     // почти не меняется (лишнюю точку на ребре — к углу, а не наоборот)
     const cand = [];
@@ -7811,6 +7845,7 @@ function collapseShortEdges(pos, maxLen = 0.05, maxPasses = 6, maxDV = 0.02){
       let common = 0;
       for(const k of na) if(nbb.has(k)) common++;
       if(common !== ts.size) continue;              // иначе рвём сетку
+      if(collapseFlips(a, b)) continue;             // иначе выворачиваем соседа
       map.set(a, b);
       touched.add(a); touched.add(b);
       for(const k of na) touched.add(k);
@@ -14907,6 +14942,44 @@ const zcV3 = (a, name) => {
 // Готовое замкнутое тело из треугольников (конус, тело вращения, труба) —
 // в модель: new заменяет её, join/cut — через BSP с лечением швов.
 // Ориентация — по знаку объёма, координаты округляются до 0.001 мм
+// Текст по цилиндру (Emboss с обёрткой во Fusion): плоское тело букв
+// (buildTextSolid) изгибается вокруг оси — координата вдоль строки становится
+// дугой той же длины, глубина — радиусом. Плоский блок на кривой стенке
+// уходил бы краями вглубь (на Ø91.5 строка 43 мм — на 5 мм) и оставлял
+// скрытые полости; изогнутый режет на одну глубину по всей строке.
+// Работает на наружной (выпуклой) и внутренней (вогнутой) стенке; строка
+// идёт вокруг оси, поэтому грань должна быть ей параллельна
+function zcTextWrapped(C, n, p, wrap){
+  if(!wrap || typeof wrap !== 'object') throw new Error('wrap must be {axis_point, axis}');
+  if(p.d === 0) throw new Error('wrap needs depth: + raised or − engraved');
+  const A0 = zcV3(wrap.axis_point, 'wrap.axis_point');
+  const ax = wrap.axis != null ? zcV3(wrap.axis, 'wrap.axis') : new THREE.Vector3(0, 0, 1);
+  if(ax.length() < 1e-9) throw new Error('wrap.axis must not be zero');
+  ax.normalize();
+  const {u, v} = textBasis(n);
+  if(Math.abs(v.dot(ax)) < 0.999) throw new Error('wrap: the face must be parallel to the axis (the line runs around it)');
+  const Ax = A0.clone().addScaledVector(ax, new THREE.Vector3().subVectors(C, A0).dot(ax));
+  const er = new THREE.Vector3().subVectors(C, Ax);
+  const r0 = er.length();
+  if(r0 < 1) throw new Error('wrap: the centre is on the axis');
+  er.normalize();
+  const sgn = n.dot(er); // +1 — наружная стенка, −1 — внутренняя
+  if(Math.abs(Math.abs(sgn) - 1) > 0.01) throw new Error('wrap: normal must point along the radius (away from or to the axis)');
+  if(textWidth(p) > Math.PI * r0) throw new Error('wrap: the text is longer than half the circumference');
+  const dir = Math.sign(u.dot(new THREE.Vector3().crossVectors(ax, er))) || 1;
+  const above = p.d > 0 ? p.d : 1.0, below = p.d > 0 ? 0.5 : -p.d;
+  const flat = buildTextSolid(txLeftFromAnchor(C, n, p), u, v, n, textCellsFine(p.str), p.h / 14, above, below);
+  const bend = X => {
+    const D = new THREE.Vector3().subVectors(X, C);
+    const x = D.dot(u), y = D.dot(v), z = D.dot(n);
+    const e = er.clone().applyAxisAngle(ax, dir * x / r0);
+    return Ax.clone().addScaledVector(e, r0 + z * sgn).addScaledVector(v, y);
+  };
+  const r = zcApplySolid(flat.map(t => t.map(bend)), p.d < 0 ? 'cut' : 'join');
+  if(Math.abs(r.volume_change_mm3) < 1e-6){ undo(true); throw new Error('text could not be placed here — the centre is off the wall'); }
+  return Object.assign({wrapped_radius_mm: +r0.toFixed(3), text_width_mm: +textWidth(p).toFixed(3),
+    arc_deg: +(textWidth(p) / r0 * 180 / Math.PI).toFixed(2)}, r);
+}
 // MCP pattern: матрицы копий второго тела на время одной команды (zcRun)
 let zcPatternMats = null;
 // копии второго тела по кругу заранее сливаются в одно (касающиеся —
@@ -15007,8 +15080,32 @@ function zcSummary(){
     // наплодила. По высоте считать нельзя: тонкие грани мелкого отверстия с
     // частыми сегментами (Ø5 из 360 хорд — 0.044 мм) законны
     slivers: sliverCount(pos),
+    // загибы: ребро, у двух треугольников которого нормали встречные, —
+    // плоский вывернутый лоскут поверх соседа (сетка замкнута, объём тот же,
+    // но в редакторе это линия, а слайсеру — неоднозначность)
+    folded_edges: foldedEdgeCount(pos),
     undo_steps: undoStack.length
   };
+}
+function foldedEdgeCount(pos){
+  const edges = new Map(), N = [];
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for(let t=0;t<pos.length/9;t++){
+    const o = t*9;
+    a.fromArray(pos, o); b.fromArray(pos, o+3); c.fromArray(pos, o+6);
+    const n = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a));
+    N.push(n.lengthSq() > 1e-18 ? n.normalize() : null);
+    for(let e=0;e<3;e++){
+      const o1 = o + e*3, o2 = o + ((e+1)%3)*3;
+      const k1 = keyOf(pos[o1], pos[o1+1], pos[o1+2]), k2 = keyOf(pos[o2], pos[o2+1], pos[o2+2]);
+      if(k1 === k2) continue;
+      const k = k1 < k2 ? k1+'|'+k2 : k2+'|'+k1;
+      const L = edges.get(k); if(L) L.push(t); else edges.set(k, [t]);
+    }
+  }
+  let n = 0;
+  for(const L of edges.values()) if(L.length === 2 && N[L[0]] && N[L[1]] && N[L[0]].dot(N[L[1]]) < -0.98) n++;
+  return n;
 }
 function sliverCount(pos){
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
@@ -15739,10 +15836,11 @@ const ZC_COMMANDS = {
       if(n.length() < 1e-9) throw new Error('normal must not be zero');
       n.normalize();
       const C = zcV3(a.center, 'center');
-      if(zcFaceAt(C, n) < 0) throw new Error('no face with this normal at the centre point');
       const str = String(a.text || '').toUpperCase();
       if(![...str].some(ch => FONT57[ch] && ch !== ' ')) throw new Error('no printable letters (A–Z, 0–9)');
       const h = Math.max(3, +a.height || 10), d = snapMM(+a.depth || 0);
+      if(a.wrap != null) return zcTextWrapped(C, n, {str, h, d}, a.wrap);
+      if(zcFaceAt(C, n) < 0) throw new Error('no face with this normal at the centre point');
       textParams = {str, h, d};
       const v0 = meshVolumeOf(mesh.geometry.attributes.position.array), u0 = undoStack.length;
       placeTextAt(txLeftFromAnchor(C, n, textParams), n);
