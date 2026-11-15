@@ -11509,7 +11509,9 @@ function loadProjectData(d, name){
   // история шагов (если сохранена): правка шага пересоберёт модель с нуля.
   // После чистки щепок — она меняет сетку, и отпечаток истории разошёлся бы
   try{ zcHistFromJSON(d.history); }catch(err){ zcHist = []; zcHistFp = null; console.warn('history not loaded', err); }
-  if(fixed) warnTip('Cleaned ' + fixed + ' sliver triangles from this file');
+  // единичные почти нулевые треугольники (свой файл после булевых) чистим
+  // молча — сообщение каждый раз пугало; заметная чистка (старые файлы) видна
+  if(fixed > 4) warnTip('Cleaned ' + fixed + ' sliver triangles from this file');
   if(name) projectName = name.replace(/\.zcad$/i, '');
   setProjectDirty(false);
 }
@@ -14991,7 +14993,7 @@ function textMapper(mode, C, n, p, opt){
     const sgn = n.dot(er); // +1 — наружная стенка, −1 — внутренняя
     if(Math.abs(Math.abs(sgn) - 1) > 0.01) throw new Error('wrap: normal must point along the radius (away from or to the axis)');
     // узор может обойти почти весь круг; текст — не длиннее полуокружности
-    if(W > (opt.fullTurn ? 2 * Math.PI * r0 * 0.999 : Math.PI * r0))
+    if(W > (opt.ring ? 2 * Math.PI * r0 * (1 + 1e-9) : opt.fullTurn ? 2 * Math.PI * r0 * 0.999 : Math.PI * r0))
       throw new Error(opt.fullTurn ? 'wrap: the band is longer than the circumference' : 'wrap: the text is longer than half the circumference');
     const dir = Math.sign(u.dot(new THREE.Vector3().crossVectors(ax, er))) || 1;
     const bend = X => {
@@ -15016,25 +15018,68 @@ function textMapper(mode, C, n, p, opt){
   const u = b0.u.clone().multiplyScalar(Math.cos(ra)).addScaledVector(b0.v, Math.sin(ra));
   const v = b0.v.clone().multiplyScalar(Math.cos(ra)).addScaledVector(b0.u, -Math.sin(ra));
   const P0 = C.clone().addScaledVector(u, -W / 2).addScaledVector(v, -Hh / 2);
-  const pos = mesh.geometry.attributes.position.array, box = new THREE.Box3();
-  for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
-  const far = box.getSize(new THREE.Vector3()).length() + box.getCenter(new THREE.Vector3()).distanceTo(C) + 10;
-  const look = n.clone().negate(), rc = new THREE.Raycaster();
-  rc.far = far * 2;
-  mesh.updateMatrixWorld(true);
+  // Лучи считаем сами по треугольникам ПОД полосой: их проекции на плоскость
+  // строки разложены по корзинам 2 × 2 мм, луч проверяет только свою корзину.
+  // Раньше каждый луч шёл THREE.Raycaster по всей сетке — меандр с обходом
+  // отверстия (5 лучей на точку) на колпаке в 90 тысяч треугольников строился
+  // почти 2 минуты
+  const pos = mesh.geometry.attributes.position.array;
+  const look = n.clone().negate(), BIN = 2, M0 = 3;
+  const xlo = -W / 2 - M0, xhi = W / 2 + M0, ylo = -Hh / 2 - M0, yhi = Hh / 2 + M0;
+  const bins = new Map(), TP = [];
+  const A = new THREE.Vector3(), Bv = new THREE.Vector3(), Cv = new THREE.Vector3();
+  for(let o=0;o<pos.length;o+=9){
+    A.fromArray(pos, o); Bv.fromArray(pos, o+3); Cv.fromArray(pos, o+6);
+    // только треугольники ниже плоскости строки и лицом к зрителю
+    const nf = new THREE.Vector3().subVectors(Bv, A).cross(new THREE.Vector3().subVectors(Cv, A));
+    // вырожденные (щепки у кромки отверстия) — нормаль у них случайная
+    if(nf.length() < 1e-4 || !(nf.dot(n) > 1e-9 * nf.length())) continue;
+    let mx = Infinity, Mx = -Infinity, my = Infinity, My = -Infinity, below = false;
+    for(const P of [A, Bv, Cv]){
+      const D = new THREE.Vector3().subVectors(P, C), x = D.dot(u), y = D.dot(v);
+      if(D.dot(n) <= 1e-3) below = true;
+      mx = Math.min(mx, x); Mx = Math.max(Mx, x); my = Math.min(my, y); My = Math.max(My, y);
+    }
+    if(!below || Mx < xlo || mx > xhi || My < ylo || my > yhi) continue;
+    const id = TP.length / 9;
+    for(let k=0;k<9;k++) TP.push(pos[o+k]);
+    for(let i=Math.floor(mx / BIN); i<=Math.floor(Mx / BIN); i++) for(let j=Math.floor(my / BIN); j<=Math.floor(My / BIN); j++){
+      const k = i + ',' + j; let l = bins.get(k); if(!l) bins.set(k, l = []); l.push(id);
+    }
+  }
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), pv = new THREE.Vector3(), tv = new THREE.Vector3(), qv = new THREE.Vector3();
+  const cast = (O) => { // Мёллер — Трумбор, ближайшее попадание вдоль look
+    const D = new THREE.Vector3().subVectors(O, C);
+    const l = bins.get(Math.floor(D.dot(u) / BIN) + ',' + Math.floor(D.dot(v) / BIN));
+    if(!l) return null;
+    let best = null, bt = Infinity;
+    for(const id of l){
+      const o = id * 9;
+      A.fromArray(TP, o); Bv.fromArray(TP, o+3); Cv.fromArray(TP, o+6);
+      e1.subVectors(Bv, A); e2.subVectors(Cv, A); pv.crossVectors(look, e2);
+      const det = e1.dot(pv);
+      if(Math.abs(det) < 1e-12) continue;
+      const inv = 1 / det; tv.subVectors(O, A);
+      const uu = tv.dot(pv) * inv; if(uu < -1e-6 || uu > 1 + 1e-6) continue; // луч по общему ребру — в оба
+      qv.crossVectors(tv, e1);
+      const vv = look.dot(qv) * inv; if(vv < -1e-6 || uu + vv > 1 + 1e-6) continue;
+      const t = e2.dot(qv) * inv;
+      if(t > 1e-6 && t < bt){ bt = t; best = {point: O.clone().addScaledVector(look, t), normal: new THREE.Vector3().crossVectors(e1, e2).normalize()}; }
+    }
+    return best;
+  };
   const cache = new Map();
   let missed = 0;
   const hitAt = (x, y) => {
     const k = Math.round(x * 1e5) + ',' + Math.round(y * 1e5);
     let r = cache.get(k);
     if(r !== undefined) return r;
-    rc.set(C.clone().addScaledVector(u, x).addScaledVector(v, y).addScaledVector(n, 1e-3), look);
-    const hit = rc.intersectObject(mesh, false)[0];
-    if(!hit || !hit.face){ r = null; missed++; }
+    const hit = cast(C.clone().addScaledVector(u, x).addScaledVector(v, y).addScaledVector(n, 1e-3));
+    if(!hit){ r = null; missed++; }
     else {
-      const nf = hit.face.normal.clone();
+      const nf = hit.normal;
       if(nf.dot(n) < 0) nf.negate(); // грань смотрит на зрителя
-      r = nf.dot(n) < 0.17 ? 'steep' : {S: hit.point.clone(), nf}; // > 80° — буква встала бы ребром
+      r = nf.dot(n) < 0.17 ? 'steep' : {S: hit.point, nf}; // > 80° — буква встала бы ребром
     }
     cache.set(k, r);
     return r;
@@ -15182,8 +15227,11 @@ function patternSegDist(px, py, s){
   return Math.hypot(px - s[0] - t * dx, py - s[1] - t * dy);
 }
 // поле узора и высота верха; segs — отрезки [x1, y1, x2, y2] в мм от левого нижнего угла
-function patternField(kind, L, H, cell, line, seed){
-  const t2 = line / 2, segs = [], square = [];
+// opt.ring — замкнутое кольцо: решётка периодична по x с периодом L (L — целое
+// число шагов), без обрезки по x; opt.fill 'cells' — выдавливаются сами
+// шестиугольники (ужатые на половину стенки), а не стенки между ними
+function patternField(kind, L, H, cell, line, seed, opt = {}){
+  const t2 = line / 2, segs = [], square = [], ring = !!opt.ring, fillCells = opt.fill === 'cells';
   let cellsHex = null;
   if(kind === 'meander'){
     // греческий ключ: период 6 модулей, высота 8 модулей + линия; рамка сверху и снизу
@@ -15199,10 +15247,22 @@ function patternField(kind, L, H, cell, line, seed){
     }
     add([6 * n, 2], [6 * n, 6]);                                  // замыкающая стойка
   } else if(kind === 'honeycomb' || kind === 'honeycomb_relief'){
-    // соты «острым углом вверх»: cell — расстояние между центрами соседних сот
+    // соты «острым углом вверх»: cell — расстояние между центрами соседних сот.
+    // Только ЦЕЛЫЕ соты, без рамки и обрезков: решётка центрируется в полосе,
+    // берутся шестиугольники, что помещаются в неё целиком (со стенкой) —
+    // сверху и снизу узор кончается углами крайних сот
     const a = cell, R = a / Math.sqrt(3), dy = 1.5 * R, centers = [];
-    for(let j=-1; j*dy <= H + R; j++) for(let i=-1; i*a <= L + a; i++)
-      centers.push([i * a + (j & 1 ? a / 2 : 0), j * dy]);
+    const nr = Math.max(0, Math.floor((H - line - 2 * R) / dy + 1e-9) + 1);
+    const n0 = ring ? Math.round(L / a) : Math.max(0, Math.floor((L - line) / a + 1e-9));
+    const y0 = (H - (2 * R + (nr - 1) * dy)) / 2 + R;
+    const x0 = ring ? a / 2 : (L - (n0 * a + (nr > 1 ? a / 2 : 0))) / 2 + a / 2;
+    for(let j=0;j<nr;j++) for(let i=-1;i<=n0;i++){
+      const cx = x0 + i * a + (j & 1 ? a / 2 : 0), cy = y0 + j * dy;
+      const inY = cy - R - t2 >= -1e-9 && cy + R + t2 <= H + 1e-9;
+      // в кольце соты за краями полосы — те же, что у другого края: поле периодично
+      if(inY && (ring || (cx - a / 2 - t2 >= -1e-9 && cx + a / 2 + t2 <= L + 1e-9))) centers.push([cx, cy]);
+    }
+    if(!centers.length) throw new Error('honeycomb: not a single whole cell fits — make the band bigger or the cell smaller');
     const seen = new Set();
     const vtx = (c, k) => { const ang = Math.PI / 2 + k * Math.PI / 3; return [c[0] + R * Math.cos(ang), c[1] + R * Math.sin(ang)]; };
     for(const c of centers) for(let k=0;k<6;k++){
@@ -15211,8 +15271,7 @@ function patternField(kind, L, H, cell, line, seed){
       if(seen.has(key)) continue; seen.add(key);
       segs.push([p[0], p[1], q[0], q[1]]);
     }
-    if(kind === 'honeycomb'){ square.push([0, t2, L, t2], [0, H - t2, L, H - t2]); }
-    else cellsHex = {centers, R, a};
+    if(kind === 'honeycomb_relief' || fillCells) cellsHex = {centers, R, a};
   } else throw new Error('pattern must be honeycomb, honeycomb_relief or meander');
   // корзины отрезков — поле считается быстро и на длинной полосе
   const B = Math.max(cell, line) * 1.5, bins = new Map();
@@ -15223,24 +15282,27 @@ function patternField(kind, L, H, cell, line, seed){
   };
   for(const s of segs) put(s, false);
   for(const s of square) put(s, true);
-  const clip = (x, y) => Math.min(x, L - x, y, H - y);
+  const clip = ring ? (x, y) => Math.min(y, H - y) : (x, y) => Math.min(x, L - x, y, H - y);
   let f;
   if(cellsHex){
     // рельеф: внутренность каждой соты, ужатая на половину линии (между сотами — канавка)
     const {R, a} = cellsHex, ap = R * Math.sqrt(3) / 2; // апофема
+    const cb = new Map(), cs = a; // корзины центров
+    for(const c of cellsHex.centers){ const k = Math.floor(c[0] / cs) + ',' + Math.floor(c[1] / cs); let l = cb.get(k); if(!l) cb.set(k, l = []); l.push(c); }
+    const near = (x, y) => { const out = [], i = Math.floor(x / cs), j = Math.floor(y / cs);
+      for(let di=-1;di<=1;di++) for(let dj=-1;dj<=1;dj++){ const l = cb.get((i+di) + ',' + (j+dj)); if(l) out.push(...l); } return out; };
+    cellsHex.near = near;
     f = (x, y) => {
-      const j = Math.round(y / (1.5 * R)), best = [];
       let m = -Infinity;
-      for(let jj=j-1;jj<=j+1;jj++){
-        const off = jj & 1 ? a / 2 : 0, i = Math.round((x - off) / a);
-        for(let ii=i-1;ii<=i+1;ii++){
-          const cx = ii * a + off, cy = jj * 1.5 * R, dx = x - cx, dy = y - cy;
+      {
+        for(const [cx, cy] of near(x, y)){
+          const dx = x - cx, dy = y - cy;
           let d = 0; // расстояние до края шестиугольника (по трём направлениям апофем)
           for(let k=0;k<3;k++){ const ang = k * Math.PI / 3; d = Math.max(d, Math.abs(dx * Math.cos(ang) + dy * Math.sin(ang))); }
           m = Math.max(m, ap - d - t2);
         }
       }
-      return Math.min(m, clip(x, y));
+      return Math.min(m === -Infinity ? -1 : m, clip(x, y));
     };
   } else {
     f = (x, y) => {
@@ -15260,16 +15322,14 @@ function patternField(kind, L, H, cell, line, seed){
   let rnd = (seed >>> 0) || 1;
   const rand = () => (rnd = (rnd * 16807) % 2147483647) / 2147483647;
   const tilt = new Map();
-  const heightAt = cellsHex ? (x, y, hmax) => {
-    const {R, a} = cellsHex;
-    let bi = 0, bj = 0, bd = Infinity;
-    const j0 = Math.round(y / (1.5 * R));
-    for(let jj=j0-1;jj<=j0+1;jj++){ const off = jj & 1 ? a / 2 : 0, i0 = Math.round((x - off) / a);
-      for(let ii=i0-1;ii<=i0+1;ii++){ const d = Math.hypot(x - ii * a - off, y - jj * 1.5 * R); if(d < bd){ bd = d; bi = ii; bj = jj; } } }
-    const key = bi + ',' + bj;
+  const heightAt = kind === 'honeycomb_relief' ? (x, y, hmax) => {
+    const {R} = cellsHex;
+    let best = null, bd = Infinity;
+    for(const c of cellsHex.near(x, y)){ const d = Math.hypot(x - c[0], y - c[1]); if(d < bd){ bd = d; best = c; } }
+    if(!best) return hmax;
+    const [cx, cy] = best, key = cx.toFixed(3) + ',' + cy.toFixed(3);
     let tl = tilt.get(key);
     if(!tl){ const k = Math.floor(rand() * 6), ang = Math.PI / 2 + k * Math.PI / 3; tl = [Math.cos(ang), Math.sin(ang)]; tilt.set(key, tl); }
-    const cx = bi * a + (bj & 1 ? a / 2 : 0), cy = bj * 1.5 * R;
     // ноль в выбранном углу, максимум — у противоположного
     const s = 1 - ((x - cx) * tl[0] + (y - cy) * tl[1] + R) / (2 * R);
     return Math.max(0.05, hmax * Math.min(1, Math.max(0, s)));
@@ -15278,21 +15338,26 @@ function patternField(kind, L, H, cell, line, seed){
 }
 // тело узора в координатах полосы [x, y, z] (z — над поверхностью):
 // marching squares по полю f, верх — heightAt, низ — −below
-function patternSolid(L, H, g, f, top, below, outsideAt){
+function patternSolid(L, H, g, f, top, below, outsideAt, periodic){
+  // periodic — замкнутое кольцо: столбец nx совпадает со столбцом 0 (общие
+  // точки и ключи), у полосы нет концов — нет и торцов, которые сходились бы
   const nx = Math.ceil(L / g), ny = Math.ceil(H / g), gx = L / nx, gy = H / ny;
   const val = new Float64Array((nx + 1) * (ny + 1));
   for(let j=0;j<=ny;j++) for(let i=0;i<=nx;i++){
-    const x = i * gx, y = j * gy;
+    const x = (periodic && i === nx ? 0 : i) * gx, y = j * gy;
     val[j * (nx + 1) + i] = outsideAt && outsideAt(x, y) ? -1 : f(x, y);
   }
-  const V = (i, j) => val[j * (nx + 1) + i];
+  const V = (i, j) => val[j * (nx + 1) + (periodic ? i % nx : i)];
+  const ni = i => periodic ? i % nx : i;
   const ept = new Map(); // точка края на ребре сетки — общая у соседних клеток
   const edgePt = (i1, j1, i2, j2) => {
-    const k = i1 < i2 || (i1 === i2 && j1 < j2) ? i1+','+j1+','+i2+','+j2 : i2+','+j2+','+i1+','+j1;
+    const a1 = ni(i1), a2 = ni(i2);
+    const k = a1 < a2 || (a1 === a2 && j1 < j2) ? a1+','+j1+','+a2+','+j2 : a2+','+j2+','+a1+','+j1;
     let p = ept.get(k);
     if(p) return p;
     const a = V(i1, j1), b = V(i2, j2), t = a / (a - b);
     let x = (i1 + (i2 - i1) * t) * gx, y = (j1 + (j2 - j1) * t) * gy;
+    if(periodic && x > L - 1e-9) x -= L; // вертикальное ребро последнего столбца — это ребро нулевого
     // край у дыры: снаружи «нет поверхности» — подтягиваем точку к последней,
     // где поверхность есть (иначе её луч пролетел бы мимо)
     if(outsideAt){
@@ -15313,7 +15378,7 @@ function patternSolid(L, H, g, f, top, below, outsideAt){
     const c = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]], poly = [], isEdge = [];
     for(let k=0;k<4;k++){
       const [ai, aj] = c[k], [bi, bj] = c[(k + 1) % 4], va = V(ai, aj), vb = V(bi, bj);
-      if(va > 0){ poly.push([ai * gx, aj * gy, 'g' + ai + ',' + aj]); isEdge.push(false); }
+      if(va > 0){ poly.push([(periodic && ai === nx ? 0 : ai) * gx, aj * gy, 'g' + ni(ai) + ',' + aj]); isEdge.push(false); }
       if((va > 0) !== (vb > 0)){ poly.push(edgePt(ai, aj, bi, bj)); isEdge.push(true); }
     }
     if(poly.length < 3) continue;
@@ -15338,20 +15403,34 @@ function zcAddPattern(a){
   if(n.length() < 1e-9) throw new Error('normal must not be zero');
   n.normalize();
   const L = +a.length, H = +a.height, cell = +a.cell, line = +a.line, d = snapMM(+a.depth || 0);
-  if(!(L >= 2 && H >= 2)) throw new Error('length and height must be at least 2 mm');
+  if(!((a.ring || L >= 2) && H >= 2)) throw new Error('length and height must be at least 2 mm'); // в кольце длина — окружность
   if(!(cell >= 1)) throw new Error('cell must be at least 1 mm');
   if(!(line >= 0.4 && line < cell)) throw new Error('line must be 0.4 mm … less than cell');
   if(kind === 'meander' && line > 2 * cell * 0.9) throw new Error('meander: line must be thinner than 1.8 × cell');
   if(d === 0) throw new Error('depth: + raised or − engraved');
   if(a.wrap != null && a.project) throw new Error('give wrap or project, not both');
   const mode = a.wrap != null ? 'wrap' : a.project ? 'project' : 'plane';
-  const pf = patternField(kind, L, H, cell, line, a.seed == null ? 1 : +a.seed);
+  const fill = a.fill == null ? 'walls' : String(a.fill);
+  if(fill !== 'walls' && fill !== 'cells') throw new Error('fill must be walls or cells');
+  if(fill === 'cells' && kind !== 'honeycomb') throw new Error('fill cells works with honeycomb');
+  // ring: замкнутое кольцо по всей окружности стенки без шва — длина ровно
+  // окружность, шаг сот подгоняется под целое число
+  let Lr = L, cellR = cell;
+  if(a.ring){
+    if(mode !== 'wrap') throw new Error('ring needs wrap (a round wall)');
+    if(kind === 'meander') throw new Error('ring works with honeycomb and honeycomb_relief');
+    const A0 = zcV3(a.wrap.axis_point, 'wrap.axis_point'), ax = a.wrap.axis != null ? zcV3(a.wrap.axis, 'wrap.axis').normalize() : new THREE.Vector3(0, 0, 1);
+    const w = new THREE.Vector3().subVectors(C, A0); w.addScaledVector(ax, -w.dot(ax));
+    Lr = 2 * Math.PI * w.length();
+    cellR = Lr / Math.max(3, Math.round(Lr / cell));
+  }
+  const pf = patternField(kind, Lr, H, cellR, line, a.seed == null ? 1 : +a.seed, {ring: !!a.ring, fill});
   const above = d > 0 ? d : 1.0, below = d > 0 ? 0.5 : -d;
-  const opt = {W: L, H, fullTurn: true, rotate: +a.rotate || 0, wrap: a.wrap};
+  const opt = {W: Lr, H, fullTurn: true, ring: !!a.ring, rotate: +a.rotate || 0, wrap: a.wrap};
   let M;
   if(mode === 'plane'){
     const {u, v} = textBasis(n);
-    M = {u, v, P0: C.clone().addScaledVector(u, -L / 2).addScaledVector(v, -H / 2), mapAll: t => t, info: {}};
+    M = {u, v, P0: C.clone().addScaledVector(u, -Lr / 2).addScaledVector(v, -H / 2), mapAll: t => t, info: {}};
   } else M = textMapper(mode, C, n, {str: '', h: H, d}, opt);
   const g = Math.min(0.5, line / 2.5);
   // дыру обходим с запасом в 3/4 линии: вплотную к кромке узор у тонкого
@@ -15362,12 +15441,12 @@ function zcAddPattern(a){
     return !M.hits(xc, yc) || !M.hits(xc + mg, yc) || !M.hits(xc - mg, yc) || !M.hits(xc, yc + mg) || !M.hits(xc, yc - mg);
   } : null;
   const top = d > 0 ? (x, y) => pf.heightAt(x, y, above) : () => above;
-  const flat = patternSolid(L, H, g, pf.f, top, below, outsideAt)
+  const flat = patternSolid(Lr, H, g, pf.f, top, below, outsideAt, !!a.ring)
     .map(t => t.map(p => M.P0.clone().addScaledVector(M.u, p[0]).addScaledVector(M.v, p[1]).addScaledVector(n, p[2])));
   if(!flat.length) throw new Error('the pattern is empty — make the band bigger or the line thicker');
   const r = zcApplySolid(M.mapAll(flat), d < 0 ? 'cut' : 'join');
   if(Math.abs(r.volume_change_mm3) < 1e-6){ undo(true); throw new Error('the pattern could not be placed here'); }
-  return Object.assign({pattern: kind, tool_triangles: flat.length}, M.info, r);
+  return Object.assign({pattern: kind, fill, tool_triangles: flat.length}, a.ring ? {ring: true, cell_used_mm: +cellR.toFixed(4), cells_around: Math.round(Lr / cellR)} : {}, M.info, r);
 }
 // Т-стыки на треугольниках нулевой площади. Булева на длинных узких гранях
 // (стенка Shell 1 × 69 мм под узором из тысяч клеток) отдаёт сетку, где
@@ -15490,7 +15569,10 @@ function zcApplySolid(tris, op, round = true){
   const finish = arr => {
     setMeshFromArray(arr); cleanupMesh();
     if(openEdgeCount() > 0) healAll();
-    tidySlivers();
+    // чистка щепок — до тех пор, пока есть что убирать: после одного прохода
+    // оставались 2 щепки, их убирал уже следующий проход при открытии файла
+    // («Cleaned 2 sliver triangles from this file» при каждой загрузке)
+    for(let k=0; k<4 && tidySlivers() > 0; k++);
     const m = mesh.geometry.attributes.position.array;
     return {arr: m, bad: (openEdgeCount() + nonManifoldEdgeCount()) * 1000 + foldedEdgeCount(m)};
   };
@@ -15499,7 +15581,11 @@ function zcApplySolid(tris, op, round = true){
     let fixedOut = out;
     try{ fixedOut = resolveDegenerate(weldTinyEdges(out)); }catch(err){ console.warn('resolveDegenerate failed', err); }
     let best = finish(fixedOut);
-    if(best.bad > 0 && fixedOut !== out){ const alt = finish(out); if(alt.bad < best.bad) best = alt; }
+    // Прежний путь — только когда у нового сетка открыта/немногообразна или
+    // модель небольшая: на большой (кольцо сот на колпаке — 80 тысяч
+    // треугольников) его лечение щелей шло минутами ради одного загиба
+    const openBad = best.bad >= 1000, small = out.length / 9 < 40000;
+    if(best.bad > 0 && fixedOut !== out && (openBad || small)){ const alt = finish(out); if(alt.bad < best.bad) best = alt; }
     if(mesh.geometry.attributes.position.array !== best.arr) setMeshFromArray(best.arr);
     markNewFoldEdges(pos);
   }

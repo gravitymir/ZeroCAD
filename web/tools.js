@@ -853,7 +853,7 @@ const ZC_TOOLS = [
   },
   {
     "name": "add_pattern",
-    "description": "Raise (+) or engrave (−) a decorative band: kind honeycomb (hexagon walls with a frame), honeycomb_relief (solid hexagon tiles, each with its own tilted top — zero at a random corner, depth at the opposite one; seed changes the randomness) or meander (Greek key with a frame). The band length × height is centred at center on a face facing normal; wrap {axis_point, axis} bends it around a cylinder (it may go almost all the way round), project: true projects it along -normal from its plane like the text (skip_missing: true lets it skip holes where there is no surface), rotate turns it in its plane (project). cell: hexagon spacing or meander module, mm; line: wall/stroke width, mm.",
+    "description": "Raise (+) or engrave (−) a decorative band: kind honeycomb (hexagon walls with a frame), honeycomb_relief (solid hexagon tiles, each with its own tilted top — zero at a random corner, depth at the opposite one; seed changes the randomness) or meander (Greek key with a frame). The band length × height is centred at center on a face facing normal; wrap {axis_point, axis} bends it around a cylinder (it may go almost all the way round; ring: true closes it seamlessly), project: true projects it along -normal from its plane like the text (skip_missing: true lets it skip holes where there is no surface), rotate turns it in its plane (project). cell: hexagon spacing or meander module, mm; line: wall/stroke width, mm.",
     "inputSchema": {"type": "object", "properties": {
       "kind": {"type": "string", "enum": ["honeycomb", "honeycomb_relief", "meander"]},
       "center": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
@@ -867,7 +867,9 @@ const ZC_TOOLS = [
       "project": {"type": "boolean"},
       "skip_missing": {"type": "boolean"},
       "rotate": {"type": "number"},
-      "seed": {"type": "integer"}
+      "seed": {"type": "integer"},
+      "fill": {"type": "string", "enum": ["walls", "cells"], "description": "honeycomb: raise/engrave the walls between cells (default) or the hexagons themselves; the inner size of a cell is cell - line"},
+      "ring": {"type": "boolean", "description": "with wrap: a closed ring all the way round the wall with no seam - length becomes the circumference and cell is adjusted to a whole number of cells (answer: cell_used_mm, cells_around)"}
     }, "required": ["kind", "center", "normal", "length", "height", "cell", "line", "depth"]}
   },
   {

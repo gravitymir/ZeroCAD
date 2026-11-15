@@ -578,6 +578,15 @@ def patterns_honeycomb_relief_meander():
     d = call('add_pattern', {'kind': 'honeycomb_relief', 'center': [40, 77, 30], 'normal': [0, -1, 0], 'length': 50, 'height': 18,
                              'cell': 8, 'line': 1.0, 'depth': 1.0, 'seed': 3, 'wrap': w})
     unfolded(d, 'relief'); assert d['volume_change_mm3'] > 100, d
+    # замкнутое кольцо без шва (ring): шаг подгоняется под целое число сот,
+    # у полосы нет концов; fill cells — выдавливаются сами соты
+    for fill in ['walls', 'cells']:
+        call('new_shape', {'shape': 'cylinder', 'size': 80, 'height': 60})
+        call('shell_body', {'thickness': 3, 'open_faces': [{'point': [40, 40, 60]}]})
+        d = call('add_pattern', {'kind': 'honeycomb', 'fill': fill, 'ring': True, 'center': [77, 40, 30], 'normal': [-1, 0, 0],
+                                 'length': 0, 'height': 18, 'cell': 8, 'line': 1.2, 'depth': 0.6, 'wrap': w})
+        unfolded(d, 'ring ' + fill)
+        near(d['cell_used_mm'] * d['cells_around'], 2 * math.pi * 37, 1e-2, 'whole cells around')
     call('new_shape', {'shape': 'cube', 'size': 100})
     call('add_revolve', {'profile': [[0, 0], [6.929, 0], [48.25, 67.7], [48.25, 100], [0, 100]], 'base': [50, 50, 0], 'segments': 128, 'operation': 'intersect'})
     call('shell_body', {'thickness': 2.5, 'open_faces': [{'point': [50, 50, 100]}, {'point': [50, 50, 0]}]})
