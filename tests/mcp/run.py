@@ -564,6 +564,39 @@ def text_sketch_on_curve_then_extrude_letters():
 
 
 @case
+def patterns_honeycomb_relief_meander():
+    # Узоры add_pattern: поле линий → полоса marching squares → тело,
+    # отображённое на поверхность тем же textMapper, что текст. Соты и рельеф
+    # сот (у каждой соты своя наклонная крышка) — по стенке трубы; меандр —
+    # проекцией на дно воронки сквозь отверстие (skip_missing обходит дыру)
+    call('new_shape', {'shape': 'cylinder', 'size': 80, 'height': 60})
+    call('shell_body', {'thickness': 3, 'open_faces': [{'point': [40, 40, 60]}]})
+    w = {'axis_point': [40, 40, 0]}
+    d = call('add_pattern', {'kind': 'honeycomb', 'center': [77, 40, 30], 'normal': [-1, 0, 0], 'length': 60, 'height': 20,
+                             'cell': 8, 'line': 1.2, 'depth': 0.6, 'wrap': w})
+    unfolded(d, 'honeycomb'); assert d['volume_change_mm3'] > 100, d
+    d = call('add_pattern', {'kind': 'honeycomb_relief', 'center': [40, 77, 30], 'normal': [0, -1, 0], 'length': 50, 'height': 18,
+                             'cell': 8, 'line': 1.0, 'depth': 1.0, 'seed': 3, 'wrap': w})
+    unfolded(d, 'relief'); assert d['volume_change_mm3'] > 100, d
+    call('new_shape', {'shape': 'cube', 'size': 100})
+    call('add_revolve', {'profile': [[0, 0], [6.929, 0], [48.25, 67.7], [48.25, 100], [0, 100]], 'base': [50, 50, 0], 'segments': 128, 'operation': 'intersect'})
+    call('shell_body', {'thickness': 2.5, 'open_faces': [{'point': [50, 50, 100]}, {'point': [50, 50, 0]}]})
+    d = call('add_pattern', {'kind': 'meander', 'center': [50, 50, 69], 'normal': [0, 0, 1], 'length': 80, 'height': 14,
+                             'cell': 1.5, 'line': 1.2, 'depth': 0.6, 'project': True, 'skip_missing': True})
+    closed(d, 'meander over the hole'); assert d['volume_change_mm3'] > 100, d
+    for args, msg in [({'kind': 'stars'}, 'pattern must be'), ({'line': 9}, 'line must be')]:
+        a = {'kind': 'honeycomb', 'center': [50, 50, 69], 'normal': [0, 0, 1], 'length': 40, 'height': 10, 'cell': 8,
+             'line': 1.2, 'depth': 0.5, 'project': True}
+        a.update(args)
+        try:
+            call('add_pattern', a)
+        except McpError as e:
+            assert msg in str(e), str(e)
+        else:
+            raise AssertionError('must be refused: %r' % args)
+
+
+@case
 def shell_hollow_parts():
     # Shell (G,H) — shell_body: коробка с открытой крышей и закрытая полость,
     # стакан из цилиндра, куб с бобышкой (вогнутое ребро), колесо-дозатор с

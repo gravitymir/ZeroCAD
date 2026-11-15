@@ -852,6 +852,25 @@ const ZC_TOOLS = [
     }
   },
   {
+    "name": "add_pattern",
+    "description": "Raise (+) or engrave (−) a decorative band: kind honeycomb (hexagon walls with a frame), honeycomb_relief (solid hexagon tiles, each with its own tilted top — zero at a random corner, depth at the opposite one; seed changes the randomness) or meander (Greek key with a frame). The band length × height is centred at center on a face facing normal; wrap {axis_point, axis} bends it around a cylinder (it may go almost all the way round), project: true projects it along -normal from its plane like the text (skip_missing: true lets it skip holes where there is no surface), rotate turns it in its plane (project). cell: hexagon spacing or meander module, mm; line: wall/stroke width, mm.",
+    "inputSchema": {"type": "object", "properties": {
+      "kind": {"type": "string", "enum": ["honeycomb", "honeycomb_relief", "meander"]},
+      "center": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+      "length": {"type": "number", "description": "band length, mm"},
+      "height": {"type": "number", "description": "band height, mm"},
+      "cell": {"type": "number", "description": "mm"},
+      "line": {"type": "number", "description": "mm"},
+      "depth": {"type": "number", "description": "mm, + raised, − engraved"},
+      "wrap": {"type": "object", "properties": {"axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}}, "required": ["axis_point"]},
+      "project": {"type": "boolean"},
+      "skip_missing": {"type": "boolean"},
+      "rotate": {"type": "number"},
+      "seed": {"type": "integer"}
+    }, "required": ["kind", "center", "normal", "length", "height", "cell", "line", "depth"]}
+  },
+  {
     "name": "extrude_text",
     "description": "Raise (+) or engrave (−) one letter of a text sketch on a curved surface — the outline drawn by add_text with depth 0 and wrap or project. point: a point on (or at the edge of) the letter on the surface; whole: true takes the whole line. The letter is built from the sketch with the same wrap/projection, so it follows its outline exactly and the depth is along the local surface normal.",
     "inputSchema": {"type": "object", "properties": {

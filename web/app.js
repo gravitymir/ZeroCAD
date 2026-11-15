@@ -14972,6 +14972,8 @@ const zcV3 = (a, name) => {
 // (extrude_text). plan() переводит точку на поверхности обратно в координаты
 // строки — по ним extrude_text находит букву под точкой
 function textMapper(mode, C, n, p, opt){
+  // W × H — габарит полосы (строки текста или узора)
+  const W = opt.W != null ? opt.W : textWidth(p), Hh = opt.H != null ? opt.H : p.h;
   if(mode === 'wrap'){
     const wrap = opt.wrap;
     if(!wrap || typeof wrap !== 'object') throw new Error('wrap must be {axis_point, axis}');
@@ -14988,7 +14990,9 @@ function textMapper(mode, C, n, p, opt){
     er.normalize();
     const sgn = n.dot(er); // +1 — наружная стенка, −1 — внутренняя
     if(Math.abs(Math.abs(sgn) - 1) > 0.01) throw new Error('wrap: normal must point along the radius (away from or to the axis)');
-    if(textWidth(p) > Math.PI * r0) throw new Error('wrap: the text is longer than half the circumference');
+    // узор может обойти почти весь круг; текст — не длиннее полуокружности
+    if(W > (opt.fullTurn ? 2 * Math.PI * r0 * 0.999 : Math.PI * r0))
+      throw new Error(opt.fullTurn ? 'wrap: the band is longer than the circumference' : 'wrap: the text is longer than half the circumference');
     const dir = Math.sign(u.dot(new THREE.Vector3().crossVectors(ax, er))) || 1;
     const bend = X => {
       const D = new THREE.Vector3().subVectors(X, C);
@@ -15002,8 +15006,8 @@ function textMapper(mode, C, n, p, opt){
       const phi = Math.atan2(ax.dot(new THREE.Vector3().crossVectors(er, w)), er.dot(w));
       return {x: dir * phi * r0, y: new THREE.Vector3().subVectors(P, C).dot(v), depth: sgn * (w.length() - r0)};
     };
-    return {u, v, P0: txLeftFromAnchor(C, n, p), mapAll: tris => tris.map(t => t.map(bend)), plan,
-      info: {wrapped_radius_mm: +r0.toFixed(3), arc_deg: +(textWidth(p) / r0 * 180 / Math.PI).toFixed(2)}};
+    return {u, v, P0: C.clone().addScaledVector(u, -W / 2).addScaledVector(v, -Hh / 2), mapAll: tris => tris.map(t => t.map(bend)), plan,
+      hits: () => true, info: {wrapped_radius_mm: +r0.toFixed(3), arc_deg: +(W / r0 * 180 / Math.PI).toFixed(2)}};
   }
   // проекция; rotate — поворот строки в её плоскости против часовой, если
   // смотреть со стороны normal (−10 — на 10° по часовой)
@@ -15011,7 +15015,7 @@ function textMapper(mode, C, n, p, opt){
   const b0 = textBasis(n), ra = (opt.rotate || 0) * Math.PI / 180;
   const u = b0.u.clone().multiplyScalar(Math.cos(ra)).addScaledVector(b0.v, Math.sin(ra));
   const v = b0.v.clone().multiplyScalar(Math.cos(ra)).addScaledVector(b0.u, -Math.sin(ra));
-  const P0 = C.clone().addScaledVector(u, -textWidth(p) / 2).addScaledVector(v, -p.h / 2);
+  const P0 = C.clone().addScaledVector(u, -W / 2).addScaledVector(v, -Hh / 2);
   const pos = mesh.geometry.attributes.position.array, box = new THREE.Box3();
   for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
   const far = box.getSize(new THREE.Vector3()).length() + box.getCenter(new THREE.Vector3()).distanceTo(C) + 10;
@@ -15058,7 +15062,9 @@ function textMapper(mode, C, n, p, opt){
   };
   const plan = P => { const D = new THREE.Vector3().subVectors(P, C); const r = hitAt(D.dot(u), D.dot(v));
     return {x: D.dot(u), y: D.dot(v), depth: r && r !== 'steep' ? new THREE.Vector3().subVectors(P, r.S).dot(r.nf) : Infinity}; };
-  return {u, v, P0, mapAll, plan, info: {}, points: () => cache.size};
+  // есть ли под точкой строки нормальная поверхность (для обхода дыр узором)
+  const hits = (x, y) => { const r = hitAt(x, y); return !!r && r !== 'steep'; };
+  return {u, v, P0, mapAll, plan, hits, info: {}, points: () => cache.size};
 }
 // тело букв (все или только cells) на поверхность и в модель
 function zcTextOnSurface(mode, C, n, p, opt, cells){
@@ -15159,6 +15165,262 @@ function zcExtrudeText(a){
   }
   throw new Error('the point is not on a letter of a text sketch');
 }
+// ---------- Узоры на плоскости и кривой (add_pattern): соты, меандр, рельеф ----------
+// Рисунок — набор отрезков-осей и толщина линии; по ним поле f(x, y): > 0 —
+// внутри линии (обрезано рамкой полосы L × H). Из поля marching squares
+// строит полосу с ровными (не ступенчатыми) краями: точка края — линейная
+// интерполяция по ребру сетки, общая у соседних клеток (сетка замкнута).
+// Высота верха — функция точки: у сот и меандра постоянная, у рельефа сот —
+// своя наклонная плоскость у каждой соты (ноль в случайном углу). Готовое
+// тело в координатах полосы отображается на поверхность тем же textMapper,
+// что и текст (обёртка по цилиндру или проекция); при проекции точки, где
+// поверхности нет (отверстие), считаются «снаружи» — узор обходит дыру
+function patternSegDist(px, py, s){
+  const dx = s[2] - s[0], dy = s[3] - s[1], L2 = dx*dx + dy*dy;
+  let t = L2 > 0 ? ((px - s[0]) * dx + (py - s[1]) * dy) / L2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - s[0] - t * dx, py - s[1] - t * dy);
+}
+// поле узора и высота верха; segs — отрезки [x1, y1, x2, y2] в мм от левого нижнего угла
+function patternField(kind, L, H, cell, line, seed){
+  const t2 = line / 2, segs = [], square = [];
+  let cellsHex = null;
+  if(kind === 'meander'){
+    // греческий ключ: период 6 модулей, высота 8 модулей + линия; рамка сверху и снизу
+    const u = cell, n = Math.max(1, Math.floor((L - line) / (6 * u)));
+    const x0 = (L - n * 6 * u) / 2, yb = (H - 8 * u) / 2;
+    const P = (x, y) => [x0 + x * u, yb + y * u];
+    const add = (a, b) => square.push([...P(...a), ...P(...b)]);
+    add([0, 0], [6 * n, 0]); add([0, 8], [6 * n, 8]);            // рамка
+    for(let k=0;k<n;k++){
+      const o = 6 * k;
+      add([o, 2], [o + 6, 2]); add([o, 2], [o, 6]); add([o, 6], [o + 4, 6]);
+      add([o + 4, 6], [o + 4, 4]); add([o + 4, 4], [o + 2, 4]);
+    }
+    add([6 * n, 2], [6 * n, 6]);                                  // замыкающая стойка
+  } else if(kind === 'honeycomb' || kind === 'honeycomb_relief'){
+    // соты «острым углом вверх»: cell — расстояние между центрами соседних сот
+    const a = cell, R = a / Math.sqrt(3), dy = 1.5 * R, centers = [];
+    for(let j=-1; j*dy <= H + R; j++) for(let i=-1; i*a <= L + a; i++)
+      centers.push([i * a + (j & 1 ? a / 2 : 0), j * dy]);
+    const seen = new Set();
+    const vtx = (c, k) => { const ang = Math.PI / 2 + k * Math.PI / 3; return [c[0] + R * Math.cos(ang), c[1] + R * Math.sin(ang)]; };
+    for(const c of centers) for(let k=0;k<6;k++){
+      const p = vtx(c, k), q = vtx(c, (k + 1) % 6);
+      const key = [p, q].map(v => Math.round(v[0] * 100) + ',' + Math.round(v[1] * 100)).sort().join('|');
+      if(seen.has(key)) continue; seen.add(key);
+      segs.push([p[0], p[1], q[0], q[1]]);
+    }
+    if(kind === 'honeycomb'){ square.push([0, t2, L, t2], [0, H - t2, L, H - t2]); }
+    else cellsHex = {centers, R, a};
+  } else throw new Error('pattern must be honeycomb, honeycomb_relief or meander');
+  // корзины отрезков — поле считается быстро и на длинной полосе
+  const B = Math.max(cell, line) * 1.5, bins = new Map();
+  const put = (s, sq) => {
+    const x1 = Math.floor((Math.min(s[0], s[2]) - t2) / B), x2 = Math.floor((Math.max(s[0], s[2]) + t2) / B);
+    const y1 = Math.floor((Math.min(s[1], s[3]) - t2) / B), y2 = Math.floor((Math.max(s[1], s[3]) + t2) / B);
+    for(let i=x1;i<=x2;i++) for(let j=y1;j<=y2;j++){ const k = i + ',' + j; let l = bins.get(k); if(!l) bins.set(k, l = []); l.push([s, sq]); }
+  };
+  for(const s of segs) put(s, false);
+  for(const s of square) put(s, true);
+  const clip = (x, y) => Math.min(x, L - x, y, H - y);
+  let f;
+  if(cellsHex){
+    // рельеф: внутренность каждой соты, ужатая на половину линии (между сотами — канавка)
+    const {R, a} = cellsHex, ap = R * Math.sqrt(3) / 2; // апофема
+    f = (x, y) => {
+      const j = Math.round(y / (1.5 * R)), best = [];
+      let m = -Infinity;
+      for(let jj=j-1;jj<=j+1;jj++){
+        const off = jj & 1 ? a / 2 : 0, i = Math.round((x - off) / a);
+        for(let ii=i-1;ii<=i+1;ii++){
+          const cx = ii * a + off, cy = jj * 1.5 * R, dx = x - cx, dy = y - cy;
+          let d = 0; // расстояние до края шестиугольника (по трём направлениям апофем)
+          for(let k=0;k<3;k++){ const ang = k * Math.PI / 3; d = Math.max(d, Math.abs(dx * Math.cos(ang) + dy * Math.sin(ang))); }
+          m = Math.max(m, ap - d - t2);
+        }
+      }
+      return Math.min(m, clip(x, y));
+    };
+  } else {
+    f = (x, y) => {
+      const l = bins.get(Math.floor(x / B) + ',' + Math.floor(y / B));
+      let m = -Infinity;
+      if(l) for(const [s, sq] of l){
+        if(sq){ // прямоугольник с квадратными концами (меандр, рамка)
+          const xo = Math.max(Math.min(s[0], s[2]) - x, x - Math.max(s[0], s[2]), 0);
+          const yo = Math.max(Math.min(s[1], s[3]) - y, y - Math.max(s[1], s[3]), 0);
+          m = Math.max(m, t2 - Math.max(xo, yo));
+        } else m = Math.max(m, t2 - patternSegDist(x, y, s));
+      }
+      return Math.min(m === -Infinity ? -t2 : m, clip(x, y));
+    };
+  }
+  // высота: постоянная или наклонная плоскость соты (ноль в одном из углов)
+  let rnd = (seed >>> 0) || 1;
+  const rand = () => (rnd = (rnd * 16807) % 2147483647) / 2147483647;
+  const tilt = new Map();
+  const heightAt = cellsHex ? (x, y, hmax) => {
+    const {R, a} = cellsHex;
+    let bi = 0, bj = 0, bd = Infinity;
+    const j0 = Math.round(y / (1.5 * R));
+    for(let jj=j0-1;jj<=j0+1;jj++){ const off = jj & 1 ? a / 2 : 0, i0 = Math.round((x - off) / a);
+      for(let ii=i0-1;ii<=i0+1;ii++){ const d = Math.hypot(x - ii * a - off, y - jj * 1.5 * R); if(d < bd){ bd = d; bi = ii; bj = jj; } } }
+    const key = bi + ',' + bj;
+    let tl = tilt.get(key);
+    if(!tl){ const k = Math.floor(rand() * 6), ang = Math.PI / 2 + k * Math.PI / 3; tl = [Math.cos(ang), Math.sin(ang)]; tilt.set(key, tl); }
+    const cx = bi * a + (bj & 1 ? a / 2 : 0), cy = bj * 1.5 * R;
+    // ноль в выбранном углу, максимум — у противоположного
+    const s = 1 - ((x - cx) * tl[0] + (y - cy) * tl[1] + R) / (2 * R);
+    return Math.max(0.05, hmax * Math.min(1, Math.max(0, s)));
+  } : (x, y, hmax) => hmax;
+  return {f, heightAt};
+}
+// тело узора в координатах полосы [x, y, z] (z — над поверхностью):
+// marching squares по полю f, верх — heightAt, низ — −below
+function patternSolid(L, H, g, f, top, below, outsideAt){
+  const nx = Math.ceil(L / g), ny = Math.ceil(H / g), gx = L / nx, gy = H / ny;
+  const val = new Float64Array((nx + 1) * (ny + 1));
+  for(let j=0;j<=ny;j++) for(let i=0;i<=nx;i++){
+    const x = i * gx, y = j * gy;
+    val[j * (nx + 1) + i] = outsideAt && outsideAt(x, y) ? -1 : f(x, y);
+  }
+  const V = (i, j) => val[j * (nx + 1) + i];
+  const ept = new Map(); // точка края на ребре сетки — общая у соседних клеток
+  const edgePt = (i1, j1, i2, j2) => {
+    const k = i1 < i2 || (i1 === i2 && j1 < j2) ? i1+','+j1+','+i2+','+j2 : i2+','+j2+','+i1+','+j1;
+    let p = ept.get(k);
+    if(p) return p;
+    const a = V(i1, j1), b = V(i2, j2), t = a / (a - b);
+    let x = (i1 + (i2 - i1) * t) * gx, y = (j1 + (j2 - j1) * t) * gy;
+    // край у дыры: снаружи «нет поверхности» — подтягиваем точку к последней,
+    // где поверхность есть (иначе её луч пролетел бы мимо)
+    if(outsideAt){
+      const [ia, ja, ib, jb] = a > 0 ? [i1, j1, i2, j2] : [i2, j2, i1, j1];
+      if(outsideAt(ib * gx, jb * gy)){
+        let lo = 0, hi = 1;
+        for(let s=0;s<10;s++){ const m = (lo + hi) / 2; if(outsideAt((ia + (ib - ia) * m) * gx, (ja + (jb - ja) * m) * gy)) hi = m; else lo = m; }
+        const tt = Math.min(lo * 0.95, a > 0 ? t : 1 - t);
+        x = (ia + (ib - ia) * tt) * gx; y = (ja + (jb - ja) * tt) * gy;
+      }
+    }
+    p = [x, y, k]; ept.set(k, p);
+    return p;
+  };
+  const tris = [], tops = [];
+  const T = p => [p[0], p[1], top(p[0], p[1])], Bt = p => [p[0], p[1], -below];
+  for(let j=0;j<ny;j++) for(let i=0;i<nx;i++){
+    const c = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]], poly = [], isEdge = [];
+    for(let k=0;k<4;k++){
+      const [ai, aj] = c[k], [bi, bj] = c[(k + 1) % 4], va = V(ai, aj), vb = V(bi, bj);
+      if(va > 0){ poly.push([ai * gx, aj * gy, 'g' + ai + ',' + aj]); isEdge.push(false); }
+      if((va > 0) !== (vb > 0)){ poly.push(edgePt(ai, aj, bi, bj)); isEdge.push(true); }
+    }
+    if(poly.length < 3) continue;
+    for(let k=1;k+1<poly.length;k++){ // веер: верх (+) и низ (−, обратный обход)
+      tris.push([T(poly[0]), T(poly[k]), T(poly[k + 1])]);
+      tris.push([Bt(poly[0]), Bt(poly[k + 1]), Bt(poly[k])]);
+    }
+    // боковая стенка: соседние точки края в обходе клетки (против часовой) — граница
+    for(let k=0;k<poly.length;k++){
+      const k2 = (k + 1) % poly.length;
+      if(isEdge[k] && isEdge[k2]){
+        const a = poly[k], b = poly[k2];
+        tris.push([Bt(a), Bt(b), T(b)], [Bt(a), T(b), T(a)]);
+      }
+    }
+  }
+  return tris;
+}
+function zcAddPattern(a){
+  const kind = String(a.kind || '');
+  const C = zcV3(a.center, 'center'), n = zcV3(a.normal, 'normal');
+  if(n.length() < 1e-9) throw new Error('normal must not be zero');
+  n.normalize();
+  const L = +a.length, H = +a.height, cell = +a.cell, line = +a.line, d = snapMM(+a.depth || 0);
+  if(!(L >= 2 && H >= 2)) throw new Error('length and height must be at least 2 mm');
+  if(!(cell >= 1)) throw new Error('cell must be at least 1 mm');
+  if(!(line >= 0.4 && line < cell)) throw new Error('line must be 0.4 mm … less than cell');
+  if(kind === 'meander' && line > 2 * cell * 0.9) throw new Error('meander: line must be thinner than 1.8 × cell');
+  if(d === 0) throw new Error('depth: + raised or − engraved');
+  if(a.wrap != null && a.project) throw new Error('give wrap or project, not both');
+  const mode = a.wrap != null ? 'wrap' : a.project ? 'project' : 'plane';
+  const pf = patternField(kind, L, H, cell, line, a.seed == null ? 1 : +a.seed);
+  const above = d > 0 ? d : 1.0, below = d > 0 ? 0.5 : -d;
+  const opt = {W: L, H, fullTurn: true, rotate: +a.rotate || 0, wrap: a.wrap};
+  let M;
+  if(mode === 'plane'){
+    const {u, v} = textBasis(n);
+    M = {u, v, P0: C.clone().addScaledVector(u, -L / 2).addScaledVector(v, -H / 2), mapAll: t => t, info: {}};
+  } else M = textMapper(mode, C, n, {str: '', h: H, d}, opt);
+  const g = Math.min(0.5, line / 2.5);
+  // дыру обходим с запасом в 3/4 линии: вплотную к кромке узор у тонкого
+  // кончика конуса вылезал низом тела (0.5 мм вглубь) наружу — бугорок 0.26 мм
+  const mg = line * 0.75;
+  const outsideAt = mode === 'project' && a.skip_missing ? (x, y) => {
+    const xc = x - L / 2, yc = y - H / 2;
+    return !M.hits(xc, yc) || !M.hits(xc + mg, yc) || !M.hits(xc - mg, yc) || !M.hits(xc, yc + mg) || !M.hits(xc, yc - mg);
+  } : null;
+  const top = d > 0 ? (x, y) => pf.heightAt(x, y, above) : () => above;
+  const flat = patternSolid(L, H, g, pf.f, top, below, outsideAt)
+    .map(t => t.map(p => M.P0.clone().addScaledVector(M.u, p[0]).addScaledVector(M.v, p[1]).addScaledVector(n, p[2])));
+  if(!flat.length) throw new Error('the pattern is empty — make the band bigger or the line thicker');
+  const r = zcApplySolid(M.mapAll(flat), d < 0 ? 'cut' : 'join');
+  if(Math.abs(r.volume_change_mm3) < 1e-6){ undo(true); throw new Error('the pattern could not be placed here'); }
+  return Object.assign({pattern: kind, tool_triangles: flat.length}, M.info, r);
+}
+// Т-стыки на треугольниках нулевой площади. Булева на длинных узких гранях
+// (стенка Shell 1 × 69 мм под узором из тысяч клеток) отдаёт сетку, где
+// точка лежит на середине чужого ребра, а к ней прилеплен вырожденный
+// треугольник (a b c), c — между a и b. Формально сетка замкнута, но чистка
+// выбрасывает вырожденные — и на их месте щели (кольцо сот: 96 открытых
+// рёбер, после лечения 6 и загиб). Ремонт: соседа за длинной стороной (b a d)
+// режем в точке c на (b c d) + (c a d) и вырожденный убираем — стык честный.
+// Перед этим вершины ближе ключа редактора сварены (weldTinyEdges): иначе
+// «средняя» точка у самого конца давала новые вырожденные без конца
+function resolveDegenerate(arr){
+  const P = new Map(), tris = [];
+  const K = o => { const k = keyOf(arr[o], arr[o+1], arr[o+2]); if(!P.has(k)) P.set(k, [arr[o], arr[o+1], arr[o+2]]); return k; };
+  for(let o=0;o<arr.length;o+=9) tris.push([K(o), K(o+3), K(o+6)]);
+  const alive = [], em = new Map();
+  const addE = i => { const t = tris[i]; for(let e=0;e<3;e++) em.set(t[e] + '>' + t[(e+1)%3], i); };
+  const delE = i => { const t = tris[i]; for(let e=0;e<3;e++){ const k = t[e] + '>' + t[(e+1)%3]; if(em.get(k) === i) em.delete(k); } };
+  const cross = t => { const a = P.get(t[0]), b = P.get(t[1]), c = P.get(t[2]);
+    const ux = b[0]-a[0], uy = b[1]-a[1], uz = b[2]-a[2], vx = c[0]-a[0], vy = c[1]-a[1], vz = c[2]-a[2];
+    return Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx); };
+  const len = (k1, k2) => { const a = P.get(k1), b = P.get(k2); return Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]); };
+  for(let i=0;i<tris.length;i++){
+    const t = tris[i];
+    alive[i] = !(t[0] === t[1] || t[1] === t[2] || t[0] === t[2]);
+    if(alive[i]) addE(i);
+  }
+  const queue = [];
+  for(let i=0;i<tris.length;i++) if(alive[i] && cross(tris[i]) < 1e-6) queue.push(i);
+  let fixed = 0, guard = queue.length * 20 + 100;
+  while(queue.length && guard-- > 0){
+    const i = queue.pop();
+    if(!alive[i]) continue;
+    const t = tris[i];
+    if(cross(t) >= 1e-6) continue;
+    let li = 0, lm = -1;
+    for(let e=0;e<3;e++){ const L = len(t[e], t[(e+1)%3]); if(L > lm){ lm = L; li = e; } }
+    const a = t[li], b = t[(li+1)%3], c = t[(li+2)%3];
+    const j = em.get(b + '>' + a);
+    if(j === undefined || !alive[j] || j === i) continue;
+    const t2 = tris[j], ib = t2.indexOf(b), d = t2[(ib+2)%3];
+    if(t2[(ib+1)%3] !== a || d === c) continue;
+    delE(i); delE(j); alive[i] = false; alive[j] = false;
+    for(const nt of [[b, c, d], [c, a, d]]){
+      const k = tris.length; tris.push(nt); alive[k] = true; addE(k);
+      if(cross(nt) < 1e-6) queue.push(k);
+    }
+    fixed++;
+  }
+  if(!fixed) return arr;
+  const out = [];
+  for(let i=0;i<tris.length;i++) if(alive[i]) for(const k of tris[i]) out.push(...P.get(k));
+  return new Float32Array(out);
+}
 // MCP pattern: матрицы копий второго тела на время одной команды (zcRun)
 let zcPatternMats = null;
 // копии второго тела по кругу заранее сливаются в одно (касающиеся —
@@ -15219,8 +15481,28 @@ function zcApplySolid(tris, op, round = true){
   if(!out.length) throw new Error('the result is empty');
   pushHistory(snap);
   if(op === 'new') restoreGuides([]);
-  setMeshFromArray(out);
-  if(op !== 'new'){ cleanupMesh(); if(openEdgeCount() > 0) healAll(); tidySlivers(); markNewFoldEdges(pos); }
+  // Т-стыки на вырожденных треугольниках — сначала сварка микрорёбер, потом
+  // честный разрез соседа (resolveDegenerate); если вдруг хуже — прежний путь
+  // Т-стыки на вырожденных треугольниках — сначала сварка микрорёбер, потом
+  // честный разрез соседа (resolveDegenerate). Если результат с дефектом —
+  // пробуем и прежний путь (выбросить вырожденные и лечить) и берём тот, где
+  // дефектов меньше: сначала открытые и немногообразные рёбра, потом загибы
+  const finish = arr => {
+    setMeshFromArray(arr); cleanupMesh();
+    if(openEdgeCount() > 0) healAll();
+    tidySlivers();
+    const m = mesh.geometry.attributes.position.array;
+    return {arr: m, bad: (openEdgeCount() + nonManifoldEdgeCount()) * 1000 + foldedEdgeCount(m)};
+  };
+  if(op === 'new') setMeshFromArray(out);
+  else {
+    let fixedOut = out;
+    try{ fixedOut = resolveDegenerate(weldTinyEdges(out)); }catch(err){ console.warn('resolveDegenerate failed', err); }
+    let best = finish(fixedOut);
+    if(best.bad > 0 && fixedOut !== out){ const alt = finish(out); if(alt.bad < best.bad) best = alt; }
+    if(mesh.geometry.attributes.position.array !== best.arr) setMeshFromArray(best.arr);
+    markNewFoldEdges(pos);
+  }
   if(!modified){ modified = true; s_mod.textContent = 'yes'; }
   clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
   extractEdges();
@@ -16562,6 +16844,10 @@ const ZC_COMMANDS = {
   extrude_text: {
     // одна буква чертёжного текста на кривой (или вся строка) — выдавить/вдавить
     run(a){ return zcExtrudeText(a); }
+  },
+  add_pattern: {
+    // узор полосой: на плоскости, по цилиндру (wrap) или проекцией (project)
+    run(a){ return zcAddPattern(a); }
   },
   edit_step: {
     // параметры шага: переданные ключи заменяются, null — убирает ключ;
