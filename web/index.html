@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ZeroCAD</title>
+<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAFPklEQVR42u2b308cVRTH+weoRQpskW0L6y6My+6y7K+uLFDZIC7YLkgrpRUtQSLRhlppDZVisxWtSiI2RtLUiDX+iJGa0jQ2Kb70pWlNTOTB1CcjSXmyL5S3Jj4c9wxzZ2dm78z+cBnuwEzyDWR3Zu79fuaec+7s3NmyxdzMLePmD7cWJdWf1FxSi0kBo1oU+oh9LSqU+URSy6QRj68JnJ4wcK4QU8I+Yd8kMLDPif9j3JvUAp6sLrAHqp0+2FnFGULYV+yzAAI9ePMxv+zbHYWa2oBhjCuFfUcPwmjw5mze5nAb1jwResgJAg6ZjWKeAmEhm4Rn6GGvFQ5CTkholbplTB4bzTyRkBiXqSVSqJ2Gyvb5VAdhFPTTAOAEQtcOxZrCvPRsUwAwRwOwiBMJPTrhcnrg8pkjANcTvPB//EyPtoXJ0iINAD+bWusOTB09ACs/jYnmifAz/G6t20eP6JUKAKeUa9XwYGcrLH3zdppxpXAf3Het+oEedQXQEPDDnfNvUM3ev3SUF+07PAaPNSwAjOmZk4dVrzQan24r56UGAYXnKGR+0AVAYiBOjXOl+ak9xbwyQcBz4TmZB9DT1gx3Lx7XjHGl+WwhoPDc2AZzADBW5z8czJjg1MznAgGFbeWbHwoOAEtXpg5nYz5XCKh8ymbBAcCnzwLMvpmX+Wj1dl75QHhwaQh+G2JgBMBk06qm4wBXT+VkvtRi5ZULhIezJ+GPkSDc6rPyYgcA0Uyy9F0bFzv8+9kuuD3WLtPVkedh8rW4TPiZcj88lpzn37kx+HsiJhpnFwDqkxaA74eyiuNs9M/nh+HXAVuaeXYBEH3WkTE/ZIrzheE6qnFjACC60E3ND2rCOP/zVETTOJMAVs6G4cZLNpjt3gE3+x1wazgoB/H1K7L8oBTG+b2P4jKD70WtcLGtBG4eqmAbAJqfbi2VZXLM8KfbnfBgIpKCgGWTkh8wzrGsEWPzvVZo4VarRK+zCKaeKWYbAF5xZSkjZa7FbZNDIGUzmR8wzqVljWiv2yoef8z7CJzwP8qPhI+bH4efD5SzBwCHvRKAv+oJ0URXwE7ND7Sr+m1nynz9LgsPQKp3Qo8ZA0AHl5rsoCa7XFkBGAimjnm5dmsaAJQhAIyGS2QAUPfGn9YEgLEfsq/uu6+mmGr+THirMXKAMgxQw1FOE8Bo8+p+zzm2Uc2jvttbxh6Av054qQBoo0CaEJUlD7+vKK9QNS+9+szNA76MWagQumstMgA/HKlPA3Blv3biI+aV8wGmANwe5FTv8yP2cmoYECMH61MAsO4rzWMZlJY/ZqfCaqPgXOM2EYK0JBIjJPGFKsuoV//9SJEx7gXujwc1f/E55CmDg6F0AJUVVmi0larG/lftpWwCmH89lAbh7jG3JgSsGEoAU9EScajThj/tXuB8RyUbP4r2RNyw9G5DGgTlvQHR0qhPtQyiUZzuSgH8GLfI9pl7cSfEvA72fhZPdNbDykRj2t2h1DyCyTQTxGSHVx2nvFde2C5+/kvvDhiKPMn2gxEX9xTM9AVkJh9+0MBfdfybzVSYptPRKuAcNcZ5NNbgqYU7x8MZfyzJZPyLfbvAz1Ub9+HoYLQuLT9kAwDjvNtvN/7TYfEBSo9Plh/UAGCcv9Vs2ziPx5X54fKrQVUA59oqCxLnzAIQ1wYFXWJ+IHHe5KrWpW0mABCNxLzQt9uua5tMAVgPaQLQY5HUektrkZRuy+TWU1rL5HRfKLke0loouemXym7uxdKbfrm8+cKE+cqM+dKU+dqc+eKk+eqsuW267T9c+OhCGk/+qQAAAABJRU5ErkJggg==">
 <style>
   :root{
     --bg:#15171c; --panel:#1e2128; --panel2:#262a33; --line:#333844;
@@ -230,6 +231,7 @@
   #txtPopup{padding:14px 16px}
   #txtPopup .prow{font-size:19px;gap:10px}
   #txtPopup input{font-size:22px;padding:6px 10px}
+  #txtPopup button.lp{padding:6px 10px;font-size:15px;flex:0 0 auto}
   #txtPopup #tx_str{width:250px;text-transform:uppercase;letter-spacing:2px}
   #txtPopup #tx_h,#txtPopup #tx_d{width:110px;font-variant-numeric:tabular-nums}
   #txtPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
@@ -541,11 +543,14 @@
     <div id="patPopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>
       <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Pattern</b><span id="pat_state" style="font-size:14px">place</span></div>
-      <div class="prow"><span class="plab">Kind</span><button id="pat_hc" class="lp on">Honeycomb</button><button id="pat_rel" class="lp">Relief</button><button id="pat_mea" class="lp">Meander</button></div>
+      <div class="prow"><span class="plab">Kind</span><button id="pat_hc" class="lp on">Honeycomb</button><button id="pat_rel" class="lp">Relief</button><button id="pat_mea" class="lp">Meander</button><button id="pat_tri" class="lp">Triskele</button><button id="pat_knu" class="lp">Knurl</button></div>
       <div class="prow" id="pat_fill_row"><span class="plab">Raise</span><button id="pat_walls" class="lp on">Walls</button><button id="pat_cells" class="lp">Cells</button></div>
       <div class="prow"><span class="plab">Place</span><button id="pat_auto" class="lp on">Auto</button><button id="pat_wrap" class="lp">Wrap</button><button id="pat_proj" class="lp">Project</button><button id="pat_flat" class="lp">Flat</button></div>
       <div class="prow"><span class="plab" id="pat_cell_lab">Cell</span><input id="pat_cell" type="number" step="0.5" min="1" value="8"> mm</div>
-      <div class="prow"><span class="plab">Wall</span><input id="pat_line" type="number" step="0.1" min="0.4" value="1.2"> mm</div>
+      <div class="prow" id="pat_style_row" style="display:none"><span class="plab">Style</span><button id="pat_kst" class="lp">Straight</button><button id="pat_kdi" class="lp on">Diamond</button><button id="pat_kcr" class="lp">Cross</button></div>
+      <div class="prow" id="pat_turns_row" style="display:none"><span class="plab">Turns</span><input id="pat_turns" type="number" step="0.1" min="0.5" max="4" value="1.75"> of each spiral</div>
+      <div class="prow" id="pat_ang_row" style="display:none"><span class="plab">Angle</span><input id="pat_ang" type="number" step="5" min="0" max="60" value="30"> ° to the axis</div>
+      <div class="prow" id="pat_line_row"><span class="plab">Wall</span><input id="pat_line" type="number" step="0.1" min="0.4" value="1.2"> mm</div>
       <div class="prow"><span class="plab">Length</span><input id="pat_len" type="number" step="1" min="2" value="60"> mm</div>
       <div class="prow"><span class="plab">Height</span><input id="pat_h" type="number" step="0.5" min="2" value="18"> mm</div>
       <div class="prow"><span class="plab">Depth</span><input id="pat_depth" type="number" step="0.1" value="0.5"> mm</div>
@@ -553,7 +558,7 @@
       <div class="prow" id="pat_rot_row" style="display:none"><span class="plab">Rotate</span><input id="pat_rot" type="number" step="5" value="0"> °</div>
       <div class="prow" id="pat_seed_row" style="display:none"><span class="plab">Seed</span><input id="pat_seed" type="number" step="1" value="1"></div>
       <div class="pinfo" id="pat_info">&nbsp;</div>
-      <div class="phint">Click a surface: on a round wall the band wraps around it, elsewhere it is projected onto the smooth surface under the point (fins, ribs and text above it are ignored). Fields update the preview live. Cell — spacing of the cells (inner size = cell − wall); Depth + raises, − engraves. Ring closes the band all the way round with a whole number of cells. Enter / OK — apply, Esc — exit</div>
+      <div class="phint">Click a surface: on a round wall the band wraps around it, elsewhere it is projected onto the smooth surface under the point (fins, ribs and text above it are ignored). Fields update the preview live. Cell — spacing of the cells (inner size = cell − wall); Triskele — three spiral arms from one centre, figures alternate up and down like honeycomb, Cell — figure spacing; Knurl — a grip like on a handle: straight ribs, diamond or cross pyramids, Pitch — groove spacing; Depth + raises, − engraves. Ring closes the band all the way round with a whole number of cells. Enter / OK — apply, Esc — exit</div>
       <div class="prow" style="gap:10px;margin-top:8px"><button id="pat_ok" disabled>OK</button><button id="pat_cancel">Cancel</button></div>
     </div>
     <div id="slicePopup" hidden>
@@ -600,10 +605,12 @@
       <div class="chgrip" title="Drag">⠿</div>
       <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">3D Text</b></div>
       <div class="prow">Text <input id="tx_str" type="text" value="ZERO"></div>
+      <div class="prow" id="tx_syms" style="font-size:14px">Symbols </div>
       <div class="prow">Height <input id="tx_h" type="number" step="1" min="3" value="10"> mm</div>
       <div class="prow">Extrude <input id="tx_d" type="number" step="0.1" value="0"> mm</div>
       <div class="prow" style="font-size:13px">click a face — anchor point (center of text)</div>
-      <div class="prow" style="font-size:13px">Extrude: + out · − engrave · 0 outline only</div>
+      <div class="prow" style="font-size:13px">Extrude: + out · − engrave · 0 outline only (letters)</div>
+      <div class="prow" style="font-size:13px">a symbol is typed as {name}, e.g. PETG {triskele} 2026</div>
       <div class="prow" style="gap:10px;margin-top:8px"><button id="tx_ok">OK</button><button id="tx_cancel">Cancel</button></div>
     </div>
     <div id="exPopup" hidden>

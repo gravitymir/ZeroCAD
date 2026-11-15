@@ -613,6 +613,91 @@ def patterns_honeycomb_relief_meander():
 
 
 @case
+def text_symbols_triskele():
+    # Векторные знаки в тексте: {triskele} — квадрат высоты строки, штрихи с
+    # толщиной; один знак, знак среди букв, по стенке трубы и проекцией
+    call('new_shape', {'shape': 'cube', 'size': 60})
+    d = call('add_text', {'text': '{triskele}', 'center': [30, 30, 60], 'normal': [0, 0, 1], 'height': 20, 'depth': 0.8})
+    unfolded(d, 'one symbol'); assert d['symbols'] == ['triskele'] and d['volume_change_mm3'] > 20, d
+    near(d['text_width_mm'], 20, 1e-3, 'a symbol is 7 columns wide: a square of the text height')
+    d = call('add_text', {'text': 'AB {Triskele} 7', 'center': [30, 0, 30], 'normal': [0, -1, 0], 'height': 8, 'depth': -0.5})
+    unfolded(d, 'symbol among letters'); assert d['volume_change_mm3'] < -5, d
+    near(d['text_width_mm'], (6 * 3 + 8 + 6 + 6 - 1) * 8 / 7, 1e-3, 'width: letters 6 columns, the symbol 8')
+    call('new_shape', {'shape': 'cylinder', 'size': 80, 'height': 40})
+    d = call('add_text', {'text': 'Z{triskele}Z', 'center': [80, 40, 20], 'normal': [1, 0, 0], 'height': 10, 'depth': 0.6,
+                          'wrap': {'axis_point': [40, 40, 0]}})
+    unfolded(d, 'wrapped symbol'); assert d['volume_change_mm3'] > 5, d
+    d = call('add_text', {'text': '{triskele}', 'center': [40, 40, 45], 'normal': [0, 0, 1], 'height': 14, 'depth': -0.5,
+                          'project': True})
+    unfolded(d, 'projected symbol'); assert d['volume_change_mm3'] < -5, d
+    for args, msg in [({'text': '{star}'}, 'unknown symbol'), ({'text': '{triskele}', 'depth': 0, 'project': True}, 'symbols need depth')]:
+        a = {'center': [40, 40, 45], 'normal': [0, 0, 1], 'height': 10, 'depth': 0.5}
+        a.update(args)
+        try:
+            call('add_text', a)
+        except McpError as e:
+            assert msg in str(e), str(e)
+        else:
+            raise AssertionError('must be refused: %r' % args)
+
+
+@case
+def triskele_rows_raised_and_engraved():
+    # Трискель: три спиральных рукава из общего центра, фигуры рядами
+    # вверх-вниз, ряд через один сдвинут на полшага. Тело узора чистое:
+    # почти касающиеся витки не дают ни защемлённых точек (немногообразных
+    # рёбер у вдавленного), ни щелей мельче клетки (загибов)
+    call('new_shape', {'shape': 'cube', 'size': 60})
+    d = call('add_pattern', {'kind': 'triskele', 'center': [30, 30, 60], 'normal': [0, 0, 1], 'length': 50, 'height': 30,
+                             'cell': 12, 'line': 0.8, 'depth': 0.6})
+    unfolded(d, 'raised triskele'); assert d['volume_change_mm3'] > 50, d
+    d = call('add_pattern', {'kind': 'triskele', 'center': [30, 0, 30], 'normal': [0, -1, 0], 'length': 50, 'height': 30,
+                             'cell': 12, 'line': 0.8, 'depth': -0.5, 'turns': 2})
+    unfolded(d, 'engraved triskele'); assert d['volume_change_mm3'] < -50, d
+    try:
+        call('add_pattern', {'kind': 'triskele', 'center': [30, 30, 60], 'normal': [0, 0, 1], 'length': 50, 'height': 30,
+                             'cell': 12, 'line': 0.8, 'depth': 0.6, 'turns': 9})
+    except McpError as e:
+        assert 'turns' in str(e), str(e)
+    else:
+        raise AssertionError('turns 9 must be refused')
+
+
+@case
+def knurl_straight_diamond_cross():
+    # Накатка (рифление, насечка): площадка, рисунок которой — в высоте верха.
+    # straight — рёбра вдоль оси цилиндра (средняя высота depth/2), diamond —
+    # ромбы-пирамидки между канавками под ±angle к оси, cross — квадратные
+    # (у пирамидок средняя высота depth/3: объём меньше, чем у рёбер)
+    w = {'axis_point': [40, 40, 0]}
+    vol = {}
+    for style, extra in [('straight', {}), ('diamond', {'angle': 30}), ('diamond', {'angle': 45}), ('cross', {})]:
+        call('new_shape', {'shape': 'cylinder', 'size': 80, 'height': 40})
+        call('shell_body', {'thickness': 3, 'open_faces': [{'point': [40, 40, 40]}]})
+        a = {'kind': 'knurl', 'style': style, 'center': [77, 40, 20], 'normal': [-1, 0, 0], 'length': 12, 'height': 8,
+             'cell': 1.5, 'depth': 0.6, 'wrap': w}
+        a.update(extra)
+        d = call('add_pattern', a)
+        unfolded(d, 'knurl ' + style)
+        assert d['style'] == style, d
+        vol[style + str(extra.get('angle', ''))] = d['volume_change_mm3']
+    flat = 12 * 8 * 0.6
+    near(vol['straight'], flat / 2, flat * 0.12, 'straight ribs: half the pad')
+    for k in ['diamond30', 'diamond45', 'cross']:
+        near(vol[k], flat / 3, flat * 0.12, k + ': pyramids, a third of the pad')
+    for args, msg in [({'depth': -0.5}, 'raised only'), ({'style': 'wavy'}, 'knurl style'), ({'angle': 80}, 'knurl angle')]:
+        a = {'kind': 'knurl', 'center': [77, 40, 20], 'normal': [-1, 0, 0], 'length': 12, 'height': 8,
+             'cell': 1.5, 'depth': 0.6, 'wrap': w}
+        a.update(args)
+        try:
+            call('add_pattern', a)
+        except McpError as e:
+            assert msg in str(e), str(e)
+        else:
+            raise AssertionError('must be refused: %r' % args)
+
+
+@case
 def shell_hollow_parts():
     # Shell (G,H) — shell_body: коробка с открытой крышей и закрытая полость,
     # стакан из цилиндра, куб с бобышкой (вогнутое ребро), колесо-дозатор с

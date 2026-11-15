@@ -5630,6 +5630,92 @@ const FONT57 = {
   '-':[0x00,0x00,0x00,0x0E,0x00,0x00,0x00],'.':[0x00,0x00,0x00,0x00,0x00,0x0C,0x0C],
   ' ':[0,0,0,0,0,0,0]
 };
+// ---------- Символы (векторные знаки для текста и узоров) ----------
+// Знак — штрихи (отрезки-оси) с толщиной, а не клетки: спираль или узел в
+// сетке 5×7 стали бы лесенкой. strokes(o) отдаёт отрезки [x1, y1, x2, y2] в
+// своих единицах вокруг (0, 0); при печати знак вписывается в квадрат высоты
+// строки, line — толщина линии в долях высоты. В тексте знак пишется {имя}
+// (регистр не важен): «PETG {triskele} 2026»
+const SYMBOLS = {
+  triskele: {
+    title: 'Triskele', line: 0.1, turns: 1.25,
+    // три спиральных рукава из общего центра O (поворотная симметрия 120°):
+    // рукав k выходит из O и закручивается вокруг C_k = (cos φk, sin φk),
+    // r убывает от 1 почти до нуля за turns оборотов; первый рукав — вверх
+    strokes(o = {}){
+      const turns = o.turns == null ? this.turns : +o.turns, rot = o.rotate || 0;
+      const TH = turns * 2 * Math.PI, nS = Math.max(24, Math.round(turns * 40)), out = [];
+      for(let k=0;k<3;k++){
+        const ph = Math.PI / 2 + rot + k * 2 * Math.PI / 3, Cx = Math.cos(ph), Cy = Math.sin(ph);
+        let prev = null;
+        for(let q=0;q<=nS;q++){
+          const t = q / nS, th = ph + Math.PI + t * TH, r = 1 - 0.9 * t;
+          const P = [Cx + r * Math.cos(th), Cy + r * Math.sin(th)];
+          if(prev) out.push([prev[0], prev[1], P[0], P[1]]);
+          prev = P;
+        }
+      }
+      return out;
+    }
+  }
+};
+// размах знака от его центра (0, 0) в его единицах
+function symbolExtent(segs){
+  let E = 0;
+  for(const sg of segs) E = Math.max(E, Math.hypot(sg[0], sg[1]), Math.hypot(sg[2], sg[3]));
+  return E;
+}
+// строка → буквы и знаки: x — колонка грубой сетки (буква 5 + просвет 1,
+// знак 7 + просвет 1 — квадрат высоты строки); adv — ширина строки в колонках
+function textLayout(str){
+  const items = [], ch = [...String(str)];
+  let x = 0;
+  for(let i=0;i<ch.length;i++){
+    if(ch[i] === '{'){
+      const j = ch.indexOf('}', i);
+      if(j > i){
+        const name = ch.slice(i + 1, j).join('').toLowerCase();
+        if(!SYMBOLS[name]) throw new Error('unknown symbol {' + name + '} — known: ' + Object.keys(SYMBOLS).map(k => '{' + k + '}').join(', '));
+        items.push({sym: name, x}); x += 8; i = j; continue;
+      }
+    }
+    items.push({ch: ch[i], x}); x += 6;
+  }
+  return {items, adv: x};
+}
+// есть ли что печатать (буква шрифта или знак)
+function textHasInk(str){
+  try{ return textLayout(str).items.some(it => it.sym || (FONT57[it.ch] && it.ch !== ' ')); }catch(_){ return false; }
+}
+function textHasSymbols(str){
+  try{ return textLayout(str).items.some(it => it.sym); }catch(_){ return false; }
+}
+// тело знака в квадрате h × h (x, y от левого нижнего угла, z — над гранью)
+function symbolSolid(name, h, above, below, o = {}){
+  const S = SYMBOLS[name], line = (o.line || S.line) * h, t2 = line / 2;
+  // вписываем по габариту (а не по кругу): знак занимает всю высоту строки
+  const raw = S.strokes(o);
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for(const sg of raw){ x0 = Math.min(x0, sg[0], sg[2]); x1 = Math.max(x1, sg[0], sg[2]); y0 = Math.min(y0, sg[1], sg[3]); y1 = Math.max(y1, sg[1], sg[3]); }
+  const k = (h - line) / Math.max(x1 - x0, y1 - y0), mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  const segs = raw.map(sg => [h/2 + (sg[0]-mx)*k, h/2 + (sg[1]-my)*k, h/2 + (sg[2]-mx)*k, h/2 + (sg[3]-my)*k]);
+  const f = (x, y) => { let m = -Infinity; for(const sg of segs) m = Math.max(m, t2 - patternSegDist(x, y, sg)); return m; };
+  return patternSolid(h, h, Math.min(0.5, line / 3), f, () => above, below, null, false);
+}
+// плоское тело строки: буквы по клеткам (buildTextSolid) + знаки штрихами.
+// cells — только эти клетки (одна буква эскиза), тогда знаков нет
+function textSolidFlat(P0, u, v, n, p, above, below, cells){
+  const s = p.h / 14;
+  const tris = buildTextSolid(P0, u, v, n, cells || textCellsFine(p.str), s, above, below);
+  if(cells) return tris;
+  for(const it of textLayout(p.str).items){
+    if(!it.sym) continue;
+    const x0 = it.x * 2 * s; // колонка грубой сетки = 2 мелких
+    for(const t of symbolSolid(it.sym, p.h, above, below))
+      tris.push(t.map(q => P0.clone().addScaledVector(u, x0 + q[0]).addScaledVector(v, q[1]).addScaledVector(n, q[2])));
+  }
+  return tris;
+}
 // Тело текста строится НАПРЯМУЮ по клеточной сетке (без булевых): крышка и
 // дно — по 2 треугольника на закрашенную клетку, стенки — только на границе
 // с пустыми клетками. Все вершины на узлах сетки — сетка водонепроницаема
@@ -5690,13 +5776,11 @@ function closeTextPopup(){ txtPopup.hidden = true; releaseToolInput(); }
 // gy вверх; шаг букв — 6 клеток (5 колонок + 1 просвет)
 function textCellsOf(str){
   const cells = new Set();
-  let ci = 0;
-  for(const chr of str){
-    const g = FONT57[chr];
-    if(g && chr !== ' ')
+  for(const it of textLayout(str).items){
+    const g = it.ch != null ? FONT57[it.ch] : null;
+    if(g && it.ch !== ' ')
       for(let r=0;r<7;r++) for(let c=0;c<5;c++)
-        if(g[r] & (1<<(4-c))) cells.add((ci*6+c)+','+(6-r));
-    ci++;
+        if(g[r] & (1<<(4-c))) cells.add((it.x+c)+','+(6-r));
   }
   return cells;
 }
@@ -5730,6 +5814,14 @@ function placeTextAt(P, n){
     : new THREE.Vector3(0,0,1).cross(n).normalize();
   const v = new THREE.Vector3().crossVectors(n, u).normalize(); // «вверх» по грани
   const cells = textCellsFine(str);
+  // со знаками: строка целиком (буквы + штрихи знаков) — одним булевым
+  if(textHasSymbols(str)){
+    if(d === 0){ warnTip('Symbols need Extrude + or − (outline only is for letters)'); return; }
+    const tris = textSolidFlat(P, u, v, n, textParams, d > 0 ? d : 1.0, d > 0 ? 0.5 : -d);
+    try{ zcApplySolid(tris, d < 0 ? 'cut' : 'join'); }
+    catch(err){ console.warn('text with symbols failed', err); warnTip(String(err.message || err)); }
+    return;
+  }
   if(!cells.size) return;
   // контур букв — граничные рёбра клеток, слитые в длинные отрезки по
   // строкам/столбцам; врезается в грань линиями-хордами (noExt: сегменты
@@ -5838,7 +5930,7 @@ function readTextParams(){
   const str = (tx_str.value || '').toUpperCase();
   const h = Math.max(3, +tx_h.value || 10);
   const d = snapMM(+tx_d.value || 0); // 0 — чертёжный контур без выдавливания
-  if(![...str].some(ch => FONT57[ch] && ch !== ' ')) return null;
+  if(!textHasInk(str)) return null;
   return {str, h, d};
 }
 // красная точка-якорь текста: ЦЕНТР текста по горизонтали и вертикали;
@@ -5857,7 +5949,7 @@ function textBasis(n){
         : new THREE.Vector3(0,0,1).cross(n).normalize();
   return {u, v: new THREE.Vector3().crossVectors(n, u).normalize()};
 }
-function textWidth(p){ return ([...p.str].length*6 - 1) * (p.h/7); }
+function textWidth(p){ return (textLayout(p.str).adv - 1) * (p.h/7); }
 // центр грани: площадь-взвешенный центроид всех треугольников плоскости
 // (по плоскости, не по faceIndex — переживает переврезку текста)
 function planeCentroid(n, P0){
@@ -5938,6 +6030,21 @@ tx_ok.addEventListener('click', ()=>{
   if(txtLive) finishText(); // OK фиксирует; пока точка не поставлена — ждём
 });
 tx_cancel.addEventListener('click', cancelText);
+// палитра знаков: кнопка вставляет {имя} в строку у курсора
+{
+  const row = document.getElementById('tx_syms');
+  for(const [name, S] of Object.entries(SYMBOLS)){
+    const b = document.createElement('button');
+    b.className = 'lp'; b.textContent = S.title; b.title = '{' + name + '}';
+    b.addEventListener('click', () => {
+      const tok = '{' + name + '}', a0 = tx_str.selectionStart ?? tx_str.value.length, b0 = tx_str.selectionEnd ?? a0;
+      tx_str.value = tx_str.value.slice(0, a0) + tok + tx_str.value.slice(b0);
+      tx_str.focus(); tx_str.setSelectionRange(a0 + tok.length, a0 + tok.length);
+      tx_str.dispatchEvent(new Event('input'));
+    });
+    row.appendChild(b);
+  }
+}
 for(const inp of [tx_str, tx_h, tx_d]) inp.addEventListener('input', ()=>{
   clearTimeout(txReTimer);
   txReTimer = setTimeout(rebuildTextLive, 250);
@@ -6000,10 +6107,10 @@ const $id = id => document.getElementById(id);
 const patPopup = $id('patPopup'), pat_state = $id('pat_state'), pat_info = $id('pat_info'), pat_ok = $id('pat_ok'),
       pat_cell = $id('pat_cell'), pat_line = $id('pat_line'), pat_len = $id('pat_len'), pat_h = $id('pat_h'),
       pat_depth = $id('pat_depth'), pat_rot = $id('pat_rot'), pat_seed = $id('pat_seed'), pat_ring = $id('pat_ring'),
-      pat_cell_lab = $id('pat_cell_lab');
+      pat_cell_lab = $id('pat_cell_lab'), pat_ang = $id('pat_ang'), pat_turns = $id('pat_turns');
 {
   const live = () => { if(activeTool === patTool) patTool.update(); };
-  for(const el of [pat_cell, pat_line, pat_len, pat_h, pat_depth, pat_rot, pat_seed]){
+  for(const el of [pat_cell, pat_line, pat_len, pat_h, pat_depth, pat_rot, pat_seed, pat_ang, pat_turns]){
     el.addEventListener('input', live);
     el.addEventListener('keydown', e => {
       if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === patTool) patTool.apply(); }
@@ -6012,9 +6119,14 @@ const patPopup = $id('patPopup'), pat_state = $id('pat_state'), pat_info = $id('
     });
   }
   pat_ring.addEventListener('change', live);
-  for(const [id, k] of [['pat_hc', 'honeycomb'], ['pat_rel', 'honeycomb_relief'], ['pat_mea', 'meander']])
+  for(const [id, k] of [['pat_hc', 'honeycomb'], ['pat_rel', 'honeycomb_relief'], ['pat_mea', 'meander'], ['pat_tri', 'triskele'], ['pat_knu', 'knurl']])
     $id(id).addEventListener('click', () => { if(activeTool !== patTool) return; patTool.kind = k;
-      if(k === 'meander'){ pat_cell.value = 1.5; pat_line.value = 1.2; pat_h.value = 13.2; } live(); patTool.ui(); });
+      if(k === 'meander'){ pat_cell.value = 1.5; pat_line.value = 1.2; pat_h.value = 13.2; }
+      if(k === 'triskele'){ pat_cell.value = 14; pat_line.value = 0.8; pat_h.value = 30; }
+      if(k === 'knurl'){ pat_cell.value = 1.5; pat_len.value = 16; pat_h.value = 12; if(!(+pat_depth.value > 0)) pat_depth.value = 0.5; }
+      live(); patTool.ui(); });
+  for(const [id, st] of [['pat_kst', 'straight'], ['pat_kdi', 'diamond'], ['pat_kcr', 'cross']])
+    $id(id).addEventListener('click', () => { if(activeTool !== patTool) return; patTool.style = st; live(); patTool.ui(); });
   for(const [id, f] of [['pat_walls', 'walls'], ['pat_cells', 'cells']])
     $id(id).addEventListener('click', () => { if(activeTool !== patTool) return; patTool.fill = f; live(); patTool.ui(); });
   for(const [id, m] of [['pat_auto', 'auto'], ['pat_wrap', 'wrap'], ['pat_proj', 'project'], ['pat_flat', 'flat']])
@@ -8047,6 +8159,81 @@ function tidySlivers(maxLen = 0.05){
   const pos = mesh.geometry.attributes.position.array;
   return pos.length === nBefore ? 0 : Math.max(1, (nBefore - pos.length) / 9);
 }
+// Загиб на Т-стыке: вершина r соседа u лежит на ребре x–y треугольника t,
+// а u и t — через общее ребро a–b — смотрят в разные стороны и накрывают
+// друг друга (u = кусок t, вывернутый наизнанку). Сетка замкнута, но
+// folded_edges > 0 — так бывало на краю полосы накатки на стенке колпака
+// (треугольнички 0.04 мм). Ремонт: t режем в точке r на два; тот, что
+// совпадает с u обратным обходом, выпадает вместе с u; соседа w через
+// ребро x–y тоже режем в r — стык честный, сетка остаётся замкнутой.
+// Только щепки (площадь u < 0.05 мм²); за проход — непересекающиеся пары
+function repairFoldPairs(pos, maxPasses = 4){
+  let cur = pos;
+  for(let pass = 0; pass < maxPasses; pass++){
+    const nT = cur.length / 9, P = new Map(), T = [];
+    for(let t = 0; t < nT; t++){
+      const k = [];
+      for(let j = 0; j < 3; j++){
+        const o = t*9 + j*3, kk = keyOf(cur[o], cur[o+1], cur[o+2]);
+        if(!P.has(kk)) P.set(kk, [cur[o], cur[o+1], cur[o+2]]);
+        k.push(kk);
+      }
+      T.push(k);
+    }
+    const half = new Map();
+    for(let t = 0; t < nT; t++) for(let e = 0; e < 3; e++) half.set(T[t][e] + '>' + T[t][(e+1)%3], t);
+    const nrm = t => {
+      const [p, q, r] = T[t].map(k => P.get(k));
+      const u = [q[0]-p[0], q[1]-p[1], q[2]-p[2]], v = [r[0]-p[0], r[1]-p[1], r[2]-p[2]];
+      return [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+    };
+    // r на отрезке x–y (не в концах), с допуском 0.002 мм
+    const onSeg = (r, x, y) => {
+      const d = [y[0]-x[0], y[1]-x[1], y[2]-x[2]], L2 = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
+      if(!(L2 > 0)) return false;
+      const s = ((r[0]-x[0])*d[0] + (r[1]-x[1])*d[1] + (r[2]-x[2])*d[2]) / L2;
+      if(s <= 1e-6 || s >= 1 - 1e-6) return false;
+      return Math.hypot(x[0] + s*d[0] - r[0], x[1] + s*d[1] - r[1], x[2] + s*d[2] - r[2]) < 0.002;
+    };
+    const drop = new Set(), add = [], used = new Set();
+    for(let t = 0; t < nT; t++){
+      if(used.has(t)) continue;
+      const nt = nrm(t), lt = Math.hypot(...nt);
+      if(lt < 1e-12) continue;
+      for(let e = 0; e < 3 && !used.has(t); e++){
+        const a = T[t][e], b = T[t][(e+1)%3], u = half.get(b + '>' + a);
+        if(u == null || used.has(u)) continue;
+        const nu = nrm(u), lu = Math.hypot(...nu);
+        if(lu < 1e-12 || lu / 2 > 0.05) continue;
+        if((nt[0]*nu[0] + nt[1]*nu[1] + nt[2]*nu[2]) / (lt * lu) > -0.98) continue;
+        const r = T[u].find(k => k !== a && k !== b);
+        // ребро t (не a–b), на котором лежит r
+        for(let f = 0; f < 3; f++){
+          if(f === e) continue;
+          const x = T[t][f], y = T[t][(f+1)%3], o = T[t][(f+2)%3];
+          if(!onSeg(P.get(r), P.get(x), P.get(y))) continue;
+          const w = half.get(y + '>' + x);
+          if(w == null || w === u || used.has(w)) break;
+          const z = T[w].find(k => k !== x && k !== y);
+          const parts = [[x, r, o], [r, y, o]];
+          const us = new Set(T[u]);
+          const keep = parts.filter(p => !(p.every(k => us.has(k))));
+          if(keep.length !== 1) break; // не тот случай — t не накрывает u
+          drop.add(t); drop.add(u); drop.add(w);
+          add.push(keep[0], [y, r, z], [r, x, z]);
+          for(const q of [t, u, w]) used.add(q);
+          break;
+        }
+      }
+    }
+    if(!drop.size) break;
+    const out = [];
+    for(let t = 0; t < nT; t++) if(!drop.has(t)) for(const k of T[t]) out.push(...P.get(k));
+    for(const tri of add) for(const k of tri) out.push(...P.get(k));
+    cur = new Float32Array(out);
+  }
+  return cur;
+}
 function cleanupMesh(){
   const pos = mesh.geometry.attributes.position.array;
   const nT = pos.length/9;
@@ -8861,6 +9048,7 @@ function meshBoolean(aTris, bTris, op){
       return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
     };
     for(const fc of faces){
+      const faceStart = out.length;
       let poly = fc.lp.slice();
       for(const h of fc.holes.sort((p, q) => Math.max(...q.map(v => X[v][0])) - Math.max(...p.map(v => X[v][0])))){
         let hi = 0; h.forEach((v, i) => { if(X[v][0] > X[h[hi]][0]) hi = i; });
@@ -8900,6 +9088,8 @@ function meshBoolean(aTris, bTris, op){
       const cw = area(idx) < 0;
       if(cw) idx.reverse();
       const emit = (a, b, c) => out.push(cw ? [G[c], G[b], G[a]] : [G[a], G[b], G[c]]);
+      const lid = new Map(); // глобальный номер → локальный (для проверки площадей)
+      G.forEach((g, i) => { if(!lid.has(g)) lid.set(g, i); });
       const outStart = out.length;
       let guard = idx.length * idx.length + 10;
       while(idx.length > 3 && guard-- > 0){
@@ -8949,6 +9139,30 @@ function meshBoolean(aTris, bTris, op){
           }
         }
         else for(let i=1;i+1<idx.length;i++) emit(idx[0], idx[i], idx[i+1]);
+      }
+      // Проверка: сумма площадей треугольников куска = площадь контура минус
+      // отверстия. Мосты к нескольким отверстиям (буквы A и B в одной грани
+      // куба) при иных положениях давали наложение — грань покрыта дважды,
+      // после булевой 59 открытых и 27 немногообразных рёбер. Тогда кусок
+      // раскладывается заново earcut'ом three с отверстиями
+      if(fc.holes.length){
+        const triA = t => { const [a, b, c] = t.map(g => X[lid.get(g)]);
+          return Math.abs((b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])) / 2; };
+        let got = 0; for(let i=faceStart;i<out.length;i++) got += triA(out[i]);
+        let want = Math.abs(fc.A); for(const h of fc.holes) want -= Math.abs(area(h));
+        if(Math.abs(got - want) > 1e-9 + 1e-6 * Math.abs(fc.A)){
+          const v2 = i => new THREE.Vector2(X[i][0], X[i][1]);
+          const tri = THREE.ShapeUtils.triangulateShape(fc.lp.map(v2), fc.holes.map(h => h.map(v2)));
+          if(tri && tri.length){
+            const all = fc.lp.concat(...fc.holes), sg = area(fc.lp) >= 0 ? 1 : -1;
+            out.length = faceStart;
+            for(const f of tri){
+              const i0 = all[f[0]], i1 = all[f[1]], i2 = all[f[2]];
+              const c2 = (X[i1][0]-X[i0][0])*(X[i2][1]-X[i0][1]) - (X[i1][1]-X[i0][1])*(X[i2][0]-X[i0][0]);
+              out.push(c2 * sg >= 0 ? [G[i0], G[i1], G[i2]] : [G[i0], G[i2], G[i1]]);
+            }
+          }
+        }
       }
     }
     return out;
@@ -15163,7 +15377,7 @@ function zcTextOnSurface(mode, C, n, p, opt, cells){
   if(p.d === 0) throw new Error(mode + ' needs depth: + raised or − engraved');
   const M = textMapper(mode, C, n, p, opt);
   const above = p.d > 0 ? p.d : 1.0, below = p.d > 0 ? 0.5 : -p.d;
-  const flat = buildTextSolid(M.P0, M.u, M.v, n, cells || textCellsFine(p.str), p.h / 14, above, below);
+  const flat = textSolidFlat(M.P0, M.u, M.v, n, p, above, below, cells);
   const r = zcApplySolid(M.mapAll(flat), p.d < 0 ? 'cut' : 'join');
   if(Math.abs(r.volume_change_mm3) < 1e-6){ undo(true); throw new Error('text could not be placed here'); }
   const extra = M.points ? {projected_points: M.points()} : {};
@@ -15195,6 +15409,7 @@ function textCellRuns(cells){
   return out;
 }
 function zcTextOutline(mode, C, n, p, opt){
+  if(textHasSymbols(p.str)) throw new Error('symbols need depth + or − (the outline sketch is for letters for now)');
   const M = textMapper(mode, C, n, p, opt);
   const s = p.h / 14, cells = textCellsFine(p.str);
   const at = (gx, gy) => M.P0.clone().addScaledVector(M.u, gx * s).addScaledVector(M.v, gy * s);
@@ -15279,8 +15494,71 @@ function patternSegDist(px, py, s){
 // шестиугольники (ужатые на половину стенки), а не стенки между ними
 function patternField(kind, L, H, cell, line, seed, opt = {}){
   const t2 = line / 2, segs = [], square = [], ring = !!opt.ring, fillCells = opt.fill === 'cells';
-  let cellsHex = null;
-  if(kind === 'meander'){
+  let cellsHex = null, knurl = null;
+  if(kind === 'knurl'){
+    // накатка (рифление, насечка), как на рукоятке или грифе штанги, три вида:
+    // straight — продольные рёбра вдоль оси полосы (её высоты; на цилиндре —
+    // вдоль оси цилиндра); diamond — две серии канавок под ±angle к оси
+    // (ромбы-пирамидки); cross — канавки вдоль оси и поперёк (квадратные
+    // пирамидки). cell — шаг канавок
+    const style = opt.style == null ? 'diamond' : String(opt.style);
+    if(!['straight', 'diamond', 'cross'].includes(style)) throw new Error('knurl style must be straight, diamond or cross');
+    const al = (opt.angle == null ? 30 : +opt.angle) * Math.PI / 180;
+    if(style === 'diamond' && !(al >= 10 * Math.PI / 180 - 1e-9 && al <= Math.PI / 3 + 1e-9)) throw new Error('knurl angle must be 10…60°');
+    // s = (x, y) · w / cell по двум сериям канавок
+    knurl = style === 'straight' ? {w1: [1, 0], w2: [1, 0]}
+          : style === 'cross' ? {w1: [1, 0], w2: [0, 1]}
+          : {w1: [Math.cos(al), -Math.sin(al)], w2: [Math.cos(al), Math.sin(al)]};
+    // косая сетка вдоль канавок: шаг — четверть шага накатки по каждой серии
+    // (узлы — на канавках, вершинах и серединах граней), вершина в центре полосы
+    const m = 4, pr = v => [-v[1], v[0]], dot = (a, b) => a[0]*b[0] + a[1]*b[1];
+    let e1, e2;
+    if(style === 'straight'){ e1 = [cell / m, 0]; e2 = [0, cell / 2]; }
+    else {
+      const q2 = pr(knurl.w2), q1 = pr(knurl.w1);
+      e1 = q2.map(v => v * (cell / m) / dot(knurl.w1, q2));
+      e2 = q1.map(v => v * (cell / m) / dot(knurl.w2, q1));
+    }
+    if(e1[0]*e2[1] - e1[1]*e2[0] < 0) e2 = e2.map(v => -v); // обход против часовой
+    const det = e1[0]*e2[1] - e1[1]*e2[0];
+    const lat = (x, y) => [(x * e2[1] - y * e2[0]) / det, (e1[0] * y - e1[1] * x) / det];
+    let i0 = Infinity, i1 = -Infinity, j0 = Infinity, j1 = -Infinity;
+    for(const [x, y] of [[0, 0], [L, 0], [L, H], [0, H]]){
+      const [a, b] = lat(x - L / 2, y - H / 2);
+      i0 = Math.min(i0, Math.floor(a) - 1); i1 = Math.max(i1, Math.ceil(a) + 1);
+      j0 = Math.min(j0, Math.floor(b) - 1); j1 = Math.max(j1, Math.ceil(b) + 1);
+    }
+    knurl.frame = {o: [L / 2 + i0 * e1[0] + j0 * e2[0], H / 2 + i0 * e1[1] + j0 * e2[1]], e1, e2, nx: i1 - i0, ny: j1 - j0};
+  } else if(kind === 'triskele'){
+    // трискель: три спиральных рукава из общего центра (поворотная симметрия
+    // 120°). Рукав k выходит из центра O и закручивается вокруг своего центра
+    // C_k = O + rho·(cos φk, sin φk): r убывает от rho почти до нуля за
+    // opt.turns оборотов. Фигуры в полосе чередуются «вверх» и «вниз»
+    // (поворот на 60°) и сцепляются, как соты; cell — расстояние между
+    // центрами соседних фигур, берутся только целые фигуры
+    const turns = opt.turns == null ? 1.75 : +opt.turns;
+    if(!(turns >= 0.5 && turns <= 4)) throw new Error('triskele turns must be 0.5…4');
+    // фигура — знак {triskele} из библиотеки символов (SYMBOLS), рукав — rho
+    const rho = cell * 0.21;
+    const motif = (cx, cy, rot) => SYMBOLS.triskele.strokes({turns, rotate: rot - Math.PI / 2})
+      .map(sg => [cx + sg[0] * rho, cy + sg[1] * rho, cx + sg[2] * rho, cy + sg[3] * rho]);
+    // размах фигуры от центра (для «только целые»)
+    const E = symbolExtent(motif(0, 0, 0)) + t2;
+    const dyRow = cell * Math.sqrt(3) / 2, wob = cell * 0.1;
+    // ряды считаются с поправкой на зигзаг (±wob): иначе у верхнего и нижнего
+    // ряда выпадала каждая вторая фигура; ряд через один сдвинут на полшага,
+    // и полоса центрируется вместе с этим сдвигом
+    const nr = Math.max(0, Math.floor((H - 2 * E - 2 * wob) / dyRow + 1e-9) + 1);
+    const n0 = Math.max(0, Math.floor((L - 2 * E) / cell + 1e-9) + 1);
+    const y0 = (H - (nr - 1) * dyRow) / 2, x0 = (L - (n0 - 1) * cell - (nr > 1 ? cell / 2 : 0)) / 2;
+    for(let j=0;j<nr;j++) for(let i=-1;i<=n0;i++){
+      const up = ((i + j) & 1) === 0;
+      const cx = x0 + i * cell + (j & 1 ? cell / 2 : 0), cy = y0 + j * dyRow + (up ? -wob : wob);
+      if(cx - E < -1e-9 || cx + E > L + 1e-9 || cy - E < -1e-9 || cy + E > H + 1e-9) continue;
+      segs.push(...motif(cx, cy, Math.PI / 2 + (up ? 0 : Math.PI / 3)));
+    }
+    if(!segs.length) throw new Error('triskele: not a single whole figure fits — make the band bigger or the cell smaller');
+  } else if(kind === 'meander'){
     // греческий ключ: период 6 модулей, высота 8 модулей + линия; рамка сверху и снизу
     const u = cell, n = Math.max(1, Math.floor((L - line) / (6 * u)));
     const x0 = (L - n * 6 * u) / 2, yb = (H - 8 * u) / 2;
@@ -15319,7 +15597,7 @@ function patternField(kind, L, H, cell, line, seed, opt = {}){
       segs.push([p[0], p[1], q[0], q[1]]);
     }
     if(kind === 'honeycomb_relief' || fillCells) cellsHex = {centers, R, a};
-  } else throw new Error('pattern must be honeycomb, honeycomb_relief or meander');
+  } else if(!knurl) throw new Error('pattern must be honeycomb, honeycomb_relief, meander, triskele or knurl');
   // корзины отрезков — поле считается быстро и на длинной полосе
   const B = Math.max(cell, line) * 1.5, bins = new Map();
   const put = (s, sq) => {
@@ -15331,7 +15609,8 @@ function patternField(kind, L, H, cell, line, seed, opt = {}){
   for(const s of square) put(s, true);
   const clip = ring ? (x, y) => Math.min(y, H - y) : (x, y) => Math.min(x, L - x, y, H - y);
   let f;
-  if(cellsHex){
+  if(knurl) f = clip; // накатка — сплошная площадка, рисунок — в высоте верха
+  else if(cellsHex){
     // рельеф: внутренность каждой соты, ужатая на половину линии (между сотами — канавка)
     const {R, a} = cellsHex, ap = R * Math.sqrt(3) / 2; // апофема
     const cb = new Map(), cs = a; // корзины центров
@@ -15369,7 +15648,14 @@ function patternField(kind, L, H, cell, line, seed, opt = {}){
   let rnd = (seed >>> 0) || 1;
   const rand = () => (rnd = (rnd * 16807) % 2147483647) / 2147483647;
   const tilt = new Map();
-  const heightAt = kind === 'honeycomb_relief' ? (x, y, hmax) => {
+  // пирамидка накатки: ноль на обеих сериях канавок, вершина посередине
+  // ячейки; узор центрирован в полосе (вершина в центре)
+  const tri = t => 1 - Math.abs(2 * (t + 0.5 - Math.floor(t + 0.5)) - 1);
+  const heightAt = knurl ? (x, y, hmax) => {
+    const xc = x - L / 2, yc = y - H / 2;
+    const s1 = (xc * knurl.w1[0] + yc * knurl.w1[1]) / cell, s2 = (xc * knurl.w2[0] + yc * knurl.w2[1]) / cell;
+    return Math.max(0.05, hmax * Math.min(tri(s1), tri(s2)));
+  } : kind === 'honeycomb_relief' ? (x, y, hmax) => {
     const {R} = cellsHex;
     let best = null, bd = Infinity;
     for(const c of cellsHex.near(x, y)){ const d = Math.hypot(x - c[0], y - c[1]); if(d < bd){ bd = d; best = c; } }
@@ -15381,18 +15667,44 @@ function patternField(kind, L, H, cell, line, seed, opt = {}){
     const s = 1 - ((x - cx) * tl[0] + (y - cy) * tl[1] + R) / (2 * R);
     return Math.max(0.05, hmax * Math.min(1, Math.max(0, s)));
   } : (x, y, hmax) => hmax;
-  return {f, heightAt};
+  return {f, heightAt, frame: knurl ? knurl.frame : null};
 }
 // тело узора в координатах полосы [x, y, z] (z — над поверхностью):
 // marching squares по полю f, верх — heightAt, низ — −below
-function patternSolid(L, H, g, f, top, below, outsideAt, periodic){
+function patternSolid(L, H, g, f, top, below, outsideAt, periodic, frame){
   // periodic — замкнутое кольцо: столбец nx совпадает со столбцом 0 (общие
-  // точки и ключи), у полосы нет концов — нет и торцов, которые сходились бы
-  const nx = Math.ceil(L / g), ny = Math.ceil(H / g), gx = L / nx, gy = H / ny;
+  // точки и ключи), у полосы нет концов — нет и торцов, которые сходились бы.
+  // frame {o, e1, e2, nx, ny} — косая сетка узла (i, j) = o + i·e1 + j·e2
+  // (накатка: сетка вдоль канавок, грани пирамидок — точные плоскости)
+  let nx, ny, gx, gy;
+  if(frame){ nx = frame.nx; ny = frame.ny; }
+  else { nx = Math.ceil(L / g); ny = Math.ceil(H / g); gx = L / nx; gy = H / ny; }
+  const XY = frame ? (i, j) => [frame.o[0] + i * frame.e1[0] + j * frame.e2[0], frame.o[1] + i * frame.e1[1] + j * frame.e2[1]]
+                   : (i, j) => [i * gx, j * gy];
   const val = new Float64Array((nx + 1) * (ny + 1));
   for(let j=0;j<=ny;j++) for(let i=0;i<=nx;i++){
-    const x = (periodic && i === nx ? 0 : i) * gx, y = j * gy;
-    val[j * (nx + 1) + i] = outsideAt && outsideAt(x, y) ? -1 : f(x, y);
+    const [x, y] = XY(periodic && i === nx ? 0 : i, j);
+    // значение у самого нуля отодвигаем на ±0.01 мм: иначе точки контура с
+    // разных рёбер сетки у этого узла сливались по ключу (0.001 мм), два куска
+    // узора касались в точке, и у вдавленных спиралей трискеля стенки двух
+    // канавок сходились на одном ребре (немногообразном). Поле — почти
+    // расстояние, так что контур сдвигается не больше чем на 0.01 мм
+    let v = outsideAt && outsideAt(x, y) ? -1 : f(x, y);
+    if(Math.abs(v) < 0.01) v = v > 0 ? 0.01 : -0.01;
+    val[j * (nx + 1) + i] = v;
+  }
+  // дырка или крупинка мельче клетки сетки: узел снаружи, а все четыре соседа
+  // внутри (или наоборот). Между почти касающимися витками спирали трискеля
+  // так выходила щель 0.03 × 0.19 мм — её стенки стоят встречно (загиб), а
+  // напечатать её нельзя. Узел перекрашивается в цвет соседей
+  {
+    const at = (i, j) => val[j * (nx + 1) + i];
+    const flip = [];
+    for(let j=1;j<ny;j++) for(let i=1;i<nx;i++){
+      const v = at(i, j), s = v > 0;
+      if((at(i-1, j) > 0) !== s && (at(i+1, j) > 0) !== s && (at(i, j-1) > 0) !== s && (at(i, j+1) > 0) !== s) flip.push(j * (nx + 1) + i);
+    }
+    for(const k of flip) val[k] = val[k] > 0 ? -0.01 : 0.01;
   }
   const V = (i, j) => val[j * (nx + 1) + (periodic ? i % nx : i)];
   const ni = i => periodic ? i % nx : i;
@@ -15403,17 +15715,17 @@ function patternSolid(L, H, g, f, top, below, outsideAt, periodic){
     let p = ept.get(k);
     if(p) return p;
     const a = V(i1, j1), b = V(i2, j2), t = a / (a - b);
-    let x = (i1 + (i2 - i1) * t) * gx, y = (j1 + (j2 - j1) * t) * gy;
+    let [x, y] = XY(i1 + (i2 - i1) * t, j1 + (j2 - j1) * t);
     if(periodic && x > L - 1e-9) x -= L; // вертикальное ребро последнего столбца — это ребро нулевого
     // край у дыры: снаружи «нет поверхности» — подтягиваем точку к последней,
     // где поверхность есть (иначе её луч пролетел бы мимо)
     if(outsideAt){
       const [ia, ja, ib, jb] = a > 0 ? [i1, j1, i2, j2] : [i2, j2, i1, j1];
-      if(outsideAt(ib * gx, jb * gy)){
+      if(outsideAt(...XY(ib, jb))){
         let lo = 0, hi = 1;
-        for(let s=0;s<10;s++){ const m = (lo + hi) / 2; if(outsideAt((ia + (ib - ia) * m) * gx, (ja + (jb - ja) * m) * gy)) hi = m; else lo = m; }
+        for(let s=0;s<10;s++){ const m = (lo + hi) / 2; if(outsideAt(...XY(ia + (ib - ia) * m, ja + (jb - ja) * m))) hi = m; else lo = m; }
         const tt = Math.min(lo * 0.95, a > 0 ? t : 1 - t);
-        x = (ia + (ib - ia) * tt) * gx; y = (ja + (jb - ja) * tt) * gy;
+        [x, y] = XY(ia + (ib - ia) * tt, ja + (jb - ja) * tt);
       }
     }
     p = [x, y, k]; ept.set(k, p);
@@ -15425,13 +15737,23 @@ function patternSolid(L, H, g, f, top, below, outsideAt, periodic){
     const c = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]], poly = [], isEdge = [];
     for(let k=0;k<4;k++){
       const [ai, aj] = c[k], [bi, bj] = c[(k + 1) % 4], va = V(ai, aj), vb = V(bi, bj);
-      if(va > 0){ poly.push([(periodic && ai === nx ? 0 : ai) * gx, aj * gy, 'g' + ni(ai) + ',' + aj]); isEdge.push(false); }
+      if(va > 0){ poly.push([...XY(periodic && ai === nx ? 0 : ai, aj), 'g' + ni(ai) + ',' + aj]); isEdge.push(false); }
       if((va > 0) !== (vb > 0)){ poly.push(edgePt(ai, aj, bi, bj)); isEdge.push(true); }
     }
     if(poly.length < 3) continue;
-    for(let k=1;k+1<poly.length;k++){ // веер: верх (+) и низ (−, обратный обход)
-      tris.push([T(poly[0]), T(poly[k]), T(poly[k + 1])]);
-      tris.push([Bt(poly[0]), Bt(poly[k + 1]), Bt(poly[k])]);
+    // целая клетка — по той диагонали, что ближе к верху в её центре: у
+    // пирамидки накатки (минимум двух «пил») излом идёт по диагонали клетки,
+    // и разрез по нему даёт точные плоские грани без «лесенки»
+    let p0 = 0;
+    if(poly.length === 4 && isEdge.every(e => !e)){
+      const h = poly.map(p => top(p[0], p[1]));
+      const cx = (poly[0][0] + poly[2][0]) / 2, cy = (poly[0][1] + poly[2][1]) / 2, hc = top(cx, cy);
+      if(Math.abs((h[1] + h[3]) / 2 - hc) < Math.abs((h[0] + h[2]) / 2 - hc) - 1e-9) p0 = 1;
+    }
+    const pp = p0 ? poly.slice(1).concat(poly.slice(0, 1)) : poly;
+    for(let k=1;k+1<pp.length;k++){ // веер: верх (+) и низ (−, обратный обход)
+      tris.push([T(pp[0]), T(pp[k]), T(pp[k + 1])]);
+      tris.push([Bt(pp[0]), Bt(pp[k + 1]), Bt(pp[k])]);
     }
     // боковая стенка: соседние точки края в обходе клетки (против часовой) — граница
     for(let k=0;k<poly.length;k++){
@@ -15450,12 +15772,15 @@ function patternBuild(a){
   const C = zcV3(a.center, 'center'), n = zcV3(a.normal, 'normal');
   if(n.length() < 1e-9) throw new Error('normal must not be zero');
   n.normalize();
-  const L = +a.length, H = +a.height, cell = +a.cell, line = +a.line, d = snapMM(+a.depth || 0);
+  const knurlK = kind === 'knurl';
+  const L = +a.length, H = +a.height, cell = +a.cell, d = snapMM(+a.depth || 0);
+  const line = knurlK && a.line == null ? cell / 4 : +a.line; // у накатки линии нет
   if(!((a.ring || L >= 2) && H >= 2)) throw new Error('length and height must be at least 2 mm'); // в кольце длина — окружность
   if(!(cell >= 1)) throw new Error('cell must be at least 1 mm');
-  if(!(line >= 0.4 && line < cell)) throw new Error('line must be 0.4 mm … less than cell');
+  if(!knurlK && !(line >= 0.4 && line < cell)) throw new Error('line must be 0.4 mm … less than cell');
   if(kind === 'meander' && line > 2 * cell * 0.9) throw new Error('meander: line must be thinner than 1.8 × cell');
   if(d === 0) throw new Error('depth: + raised or − engraved');
+  if(knurlK && d < 0) throw new Error('knurl is raised only: depth must be +');
   if(a.wrap != null && a.project) throw new Error('give wrap or project, not both');
   const mode = a.wrap != null ? 'wrap' : a.project ? 'project' : 'plane';
   const fill = a.fill == null ? 'walls' : String(a.fill);
@@ -15466,13 +15791,13 @@ function patternBuild(a){
   let Lr = L, cellR = cell;
   if(a.ring){
     if(mode !== 'wrap') throw new Error('ring needs wrap (a round wall)');
-    if(kind === 'meander') throw new Error('ring works with honeycomb and honeycomb_relief');
+    if(kind === 'meander' || kind === 'triskele' || knurlK) throw new Error('ring works with honeycomb and honeycomb_relief');
     const A0 = zcV3(a.wrap.axis_point, 'wrap.axis_point'), ax = a.wrap.axis != null ? zcV3(a.wrap.axis, 'wrap.axis').normalize() : new THREE.Vector3(0, 0, 1);
     const w = new THREE.Vector3().subVectors(C, A0); w.addScaledVector(ax, -w.dot(ax));
     Lr = 2 * Math.PI * w.length();
     cellR = Lr / Math.max(3, Math.round(Lr / cell));
   }
-  const pf = patternField(kind, Lr, H, cellR, line, a.seed == null ? 1 : +a.seed, {ring: !!a.ring, fill});
+  const pf = patternField(kind, Lr, H, cellR, line, a.seed == null ? 1 : +a.seed, {ring: !!a.ring, fill, angle: a.angle, style: a.style, turns: a.turns});
   const above = d > 0 ? d : 1.0, below = d > 0 ? 0.5 : -d;
   const opt = {W: Lr, H, fullTurn: true, ring: !!a.ring, rotate: +a.rotate || 0, wrap: a.wrap};
   let M;
@@ -15486,7 +15811,8 @@ function patternBuild(a){
     if(mode === 'project' && a.onto_point != null) opt.onlyTris = smoothRegionAt(zcV3(a.onto_point, 'onto_point'));
     M = textMapper(mode, C, n, {str: '', h: H, d}, opt);
   }
-  const g = Math.min(0.5, line / 2.5);
+  // у накатки сетка мельче: пирамидка — ~8 клеток по шагу
+  const g = knurlK ? Math.min(0.25, cell / 8) : Math.min(0.5, line / 2.5);
   // дыру обходим с запасом в 3/4 линии: вплотную к кромке узор у тонкого
   // кончика конуса вылезал низом тела (0.5 мм вглубь) наружу — бугорок 0.26 мм
   const mg = line * 0.75;
@@ -15495,10 +15821,10 @@ function patternBuild(a){
     return !M.hits(xc, yc) || !M.hits(xc + mg, yc) || !M.hits(xc - mg, yc) || !M.hits(xc, yc + mg) || !M.hits(xc, yc - mg);
   } : null;
   const top = d > 0 ? (x, y) => pf.heightAt(x, y, above) : () => above;
-  const flat = patternSolid(Lr, H, g, pf.f, top, below, outsideAt, !!a.ring)
+  const flat = patternSolid(Lr, H, g, pf.f, top, below, outsideAt, !!a.ring, pf.frame)
     .map(t => t.map(p => M.P0.clone().addScaledVector(M.u, p[0]).addScaledVector(M.v, p[1]).addScaledVector(n, p[2])));
   if(!flat.length) throw new Error('the pattern is empty — make the band bigger or the line thicker');
-  return {tris: M.mapAll(flat), d, info: Object.assign({pattern: kind, fill, tool_triangles: flat.length},
+  return {tris: M.mapAll(flat), d, info: Object.assign({pattern: kind}, knurlK ? Object.assign({style: a.style || 'diamond'}, (a.style || 'diamond') === 'diamond' ? {angle_deg: a.angle == null ? 30 : +a.angle} : {}) : {fill}, {tool_triangles: flat.length},
     a.ring ? {ring: true, cell_used_mm: +cellR.toFixed(4), cells_around: Math.round(Lr / cellR)} : {}, M.info)};
 }
 function zcAddPattern(a){
@@ -15605,7 +15931,7 @@ function resolveDegenerate(arr){
 // OK — та же команда add_pattern, что у агента: шаг попадает в историю
 const patTool = {
   hud: 'PATTERN · click a surface — the band appears there · change it in the window, it updates live · Enter / OK — apply · Esc — exit',
-  anchor: null, ghostG: null, timer: 0, kind: 'honeycomb', fill: 'walls', place: 'auto', busy: false,
+  anchor: null, ghostG: null, timer: 0, kind: 'honeycomb', fill: 'walls', style: 'diamond', place: 'auto', busy: false,
   on(){
     this.anchor = null; this.busy = false;
     patPopup.style.left = '16px'; patPopup.style.top = '48px';
@@ -15656,12 +15982,14 @@ const patTool = {
       length: this.num(pat_len, 60), height: this.num(pat_h, 18), depth: this.num(pat_depth, 0.5)};
     if(this.kind === 'honeycomb') a.fill = this.fill;
     if(this.kind === 'honeycomb_relief') a.seed = Math.round(this.num(pat_seed, 1));
+    if(this.kind === 'triskele') a.turns = this.num(pat_turns, 1.75);
+    if(this.kind === 'knurl'){ delete a.line; a.style = this.style; if(this.style === 'diamond') a.angle = this.num(pat_ang, 30); }
     const v3 = v => [+v.x.toFixed(4), +v.y.toFixed(4), +v.z.toFixed(4)];
     if(mode === 'wrap'){
       if(!A.ring) throw new Error('no round wall here — this point is not on a circle of the model');
       a.center = v3(A.P); a.normal = v3(A.Nf);
       a.wrap = {axis_point: v3(A.ring.ctr), axis: v3(A.ring.n)};
-      if(pat_ring.checked && this.kind !== 'meander') a.ring = true;
+      if(pat_ring.checked && this.kind !== 'meander' && this.kind !== 'knurl' && this.kind !== 'triskele') a.ring = true;
     } else if(mode === 'project'){
       // плоскость высоко над точкой: лучи всё равно видят только гладкую
       // поверхность под точкой (onto_point)
@@ -15676,15 +16004,20 @@ const patTool = {
   },
   ui(msg, bad){
     const k = this.kind;
-    for(const [id, v] of [['pat_hc', 'honeycomb'], ['pat_rel', 'honeycomb_relief'], ['pat_mea', 'meander']]) $id(id).classList.toggle('on', k === v);
+    for(const [id, v] of [['pat_hc', 'honeycomb'], ['pat_rel', 'honeycomb_relief'], ['pat_mea', 'meander'], ['pat_tri', 'triskele'], ['pat_knu', 'knurl']]) $id(id).classList.toggle('on', k === v);
     for(const [id, v] of [['pat_walls', 'walls'], ['pat_cells', 'cells']]) $id(id).classList.toggle('on', this.fill === v);
     for(const [id, v] of [['pat_auto', 'auto'], ['pat_wrap', 'wrap'], ['pat_proj', 'project'], ['pat_flat', 'flat']]) $id(id).classList.toggle('on', this.place === v);
     $id('pat_fill_row').style.display = k === 'honeycomb' ? '' : 'none';
     $id('pat_seed_row').style.display = k === 'honeycomb_relief' ? '' : 'none';
-    pat_cell_lab.textContent = k === 'meander' ? 'Module' : 'Cell';
+    pat_cell_lab.textContent = k === 'meander' ? 'Module' : k === 'knurl' ? 'Pitch' : 'Cell';
+    $id('pat_line_row').style.display = k === 'knurl' ? 'none' : '';
+    $id('pat_style_row').style.display = k === 'knurl' ? '' : 'none';
+    $id('pat_turns_row').style.display = k === 'triskele' ? '' : 'none';
+    $id('pat_ang_row').style.display = k === 'knurl' && this.style === 'diamond' ? '' : 'none';
+    for(const [id, v] of [['pat_kst', 'straight'], ['pat_kdi', 'diamond'], ['pat_kcr', 'cross']]) $id(id).classList.toggle('on', this.style === v);
     const mode = this.anchor ? this.placeNow() : null;
     pat_state.textContent = mode ? (mode === 'wrap' ? 'round wall' : mode === 'project' ? 'projected' : 'flat face') : 'place';
-    $id('pat_ring_row').style.display = mode === 'wrap' && k !== 'meander' ? '' : 'none';
+    $id('pat_ring_row').style.display = mode === 'wrap' && k !== 'meander' && k !== 'knurl' && k !== 'triskele' ? '' : 'none';
     $id('pat_rot_row').style.display = mode === 'project' ? '' : 'none';
     if(msg != null){ pat_info.textContent = msg; pat_info.style.color = bad ? '#ff6b6b' : ''; }
     pat_ok.disabled = !this.anchor || this.busy;
@@ -15797,6 +16130,14 @@ function zcApplySolid(tris, op, round = true){
     // оставались 2 щепки, их убирал уже следующий проход при открытии файла
     // («Cleaned 2 sliver triangles from this file» при каждой загрузке)
     for(let k=0; k<4 && tidySlivers() > 0; k++);
+    // загибы на Т-стыках щепок — ремонт; берём, только если сетка осталась
+    // замкнутой и загибов стало меньше
+    const f0 = foldedEdgeCount(mesh.geometry.attributes.position.array);
+    if(f0 > 0){
+      const keepA = mesh.geometry.attributes.position.array.slice();
+      setMeshFromArray(repairFoldPairs(keepA)); cleanupMesh();
+      if(openEdgeCount() || nonManifoldEdgeCount() || foldedEdgeCount(mesh.geometry.attributes.position.array) >= f0) setMeshFromArray(keepA);
+    }
     const m = mesh.geometry.attributes.position.array;
     return {arr: m, bad: (openEdgeCount() + nonManifoldEdgeCount()) * 1000 + foldedEdgeCount(m)};
   };
@@ -16608,7 +16949,8 @@ const ZC_COMMANDS = {
       n.normalize();
       const C = zcV3(a.center, 'center');
       const str = String(a.text || '').toUpperCase();
-      if(![...str].some(ch => FONT57[ch] && ch !== ' ')) throw new Error('no printable letters (A–Z, 0–9)');
+      textLayout(str); // неизвестный {знак} — ошибка с именами известных
+      if(!textHasInk(str)) throw new Error('no printable letters (A–Z, 0–9) or {symbols}');
       const h = Math.max(3, +a.height || 10), d = snapMM(+a.depth || 0);
       if(a.wrap != null && a.project) throw new Error('give wrap or project, not both');
       const rot = a.rotate == null ? 0 : +a.rotate;
@@ -16625,6 +16967,8 @@ const ZC_COMMANDS = {
       if(undoStack.length === u0 || (d !== 0 && Math.abs(meshVolumeOf(mesh.geometry.attributes.position.array) - v0) < 1e-6))
         throw new Error('text could not be placed here');
       const cells = textCellsFine(str).size, s = h / 14;
+      if(textHasSymbols(str)) return Object.assign({text_width_mm: +textWidth(textParams).toFixed(3), symbols: textLayout(str).items.filter(it => it.sym).map(it => it.sym),
+        volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
       return Object.assign({letter_area_mm2: +(cells * s * s).toFixed(3), text_width_mm: +textWidth(textParams).toFixed(3),
         volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
     }
