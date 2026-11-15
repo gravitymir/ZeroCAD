@@ -607,21 +607,32 @@ function markShallowCorners(eMap, pos){
   // стороной. Раньше игла разрывала связность — грань стенки под буквой (край
   // буквы в 0.02 мм от ребра многоугольника) отрывалась от цилиндра, у неё не
   // было «соседа» по излому, и стык цилиндра с конусом рисовался отрезками
-  const effN = new Array(nT);
+  const effN = new Array(nT), effH = new Float64Array(nT);
   // Веер игл от вершины стыка к краю букв: соседи иглы — тоже иглы, «грани
   // за ней» нет. Но у иглы выше 0.002 мм нормаль надёжна (шум координат
   // Float32 ~1e-5 мм — угол меньше 0.3°): берём её собственную
   for(let t=0;t<nT;t++){
-    if(!needle[t]){ effN[t] = N[t]; continue; }
+    if(!needle[t]){ effN[t] = N[t]; effH[t] = H[t]; continue; }
     const b = behind(t, null);
     effN[t] = b >= 0 ? N[b] : H[t] > 0.002 ? N[t] : null;
+    effH[t] = b >= 0 ? H[b] : H[t];
   }
+  // Допуск излома с погрешностью нормали: вершины сетки известны с точностью
+  // ~0.001 мм (импорт STL округляет до неё), и нормаль иглы высотой H «гуляет»
+  // на ~0.001/H рад. Веер игл 48 × 0.02 мм под меандром давал изломы 5–6°,
+  // клочок конуса отрывался от конуса, и стык над ним рисовался одним
+  // отрезком. Потолок 12°: настоящий пологий угол (фаска 20°) иглой не сшить
+  const foldCos = (t0, t1) => {
+    if(!needle[t0] && !needle[t1]) return FOLD_MIN_COS;
+    const noise = 1e-3 / Math.max(effH[t0], 1e-4) + 1e-3 / Math.max(effH[t1], 1e-4);
+    return Math.cos(Math.min(12 * Math.PI / 180, 4 * Math.PI / 180 + noise));
+  };
   const cand = [];
   for(const ent of eMap.values()){
     if(ent.normals.length !== 2 || ent.tris.length !== 2) continue;
     const [t0, t1] = ent.tris;
     const n0 = effN[t0], n1 = effN[t1];
-    if(n0 && n1 && n0.dot(n1) > FOLD_MIN_COS){ const r1 = root(t0), r2 = root(t1); if(r1 !== r2) par[r1] = r2; continue; }
+    if(n0 && n1 && n0.dot(n1) > foldCos(t0, t1)){ const r1 = root(t0), r2 = root(t1); if(r1 !== r2) par[r1] = r2; continue; }
     cand.push(ent);
   }
   const V = new THREE.Vector3();
@@ -2260,7 +2271,7 @@ const tapeTool = {
 // ним той же ширины (места сверху мало — под ним), иначе — у курсора.
 // Держится 2.8 с
 const WARN_ANCHORS = ['chordHint', 'exPopup', 'circPopup', 'rectPopup', 'linePopup', 'emPopup', 'offPopup', 'bevPopup', 'slicePopup', 'cylPopup', 'holePopup', 'profPopup', 'mirPopup', 'xfPopup', 'shellPopup', 'rotPopup',
-  'arrPopup', 'txtPopup', 'divPopup', 'vpanel', 'popup'];
+  'arrPopup', 'txtPopup', 'divPopup', 'patPopup', 'vpanel', 'popup'];
 function warnTip(msg){
   const box = document.getElementById('warnBox');
   box.textContent = msg;
@@ -5986,6 +5997,32 @@ const cylPopup = document.getElementById('cylPopup'), cyl_d = document.getElemen
   makeGripDrag(cylPopup);
 }
 const $id = id => document.getElementById(id);
+const patPopup = $id('patPopup'), pat_state = $id('pat_state'), pat_info = $id('pat_info'), pat_ok = $id('pat_ok'),
+      pat_cell = $id('pat_cell'), pat_line = $id('pat_line'), pat_len = $id('pat_len'), pat_h = $id('pat_h'),
+      pat_depth = $id('pat_depth'), pat_rot = $id('pat_rot'), pat_seed = $id('pat_seed'), pat_ring = $id('pat_ring'),
+      pat_cell_lab = $id('pat_cell_lab');
+{
+  const live = () => { if(activeTool === patTool) patTool.update(); };
+  for(const el of [pat_cell, pat_line, pat_len, pat_h, pat_depth, pat_rot, pat_seed]){
+    el.addEventListener('input', live);
+    el.addEventListener('keydown', e => {
+      if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === patTool) patTool.apply(); }
+      if(e.key === 'Escape') releaseToolInput();
+      e.stopPropagation();
+    });
+  }
+  pat_ring.addEventListener('change', live);
+  for(const [id, k] of [['pat_hc', 'honeycomb'], ['pat_rel', 'honeycomb_relief'], ['pat_mea', 'meander']])
+    $id(id).addEventListener('click', () => { if(activeTool !== patTool) return; patTool.kind = k;
+      if(k === 'meander'){ pat_cell.value = 1.5; pat_line.value = 1.2; pat_h.value = 13.2; } live(); patTool.ui(); });
+  for(const [id, f] of [['pat_walls', 'walls'], ['pat_cells', 'cells']])
+    $id(id).addEventListener('click', () => { if(activeTool !== patTool) return; patTool.fill = f; live(); patTool.ui(); });
+  for(const [id, m] of [['pat_auto', 'auto'], ['pat_wrap', 'wrap'], ['pat_proj', 'project'], ['pat_flat', 'flat']])
+    $id(id).addEventListener('click', () => { if(activeTool !== patTool) return; patTool.place = m; live(); patTool.ui(); });
+  pat_ok.addEventListener('click', () => { if(activeTool === patTool) patTool.apply(); });
+  $id('pat_cancel').addEventListener('click', () => { if(activeTool === patTool) setActiveTool(null); });
+  makeGripDrag(patPopup);
+}
 const mirPopup = $id('mirPopup'), mir_state = $id('mir_state'), mir_off = $id('mir_off'), mir_info = $id('mir_info'),
       mir_hint = $id('mir_hint'), mir_ok = $id('mir_ok'), mir_join = $id('mir_join'), mir_flip = $id('mir_flip');
 {
@@ -6830,6 +6867,7 @@ function showChordHint(){
     row('I', 'Mirror a body', true) +
     row('B', 'Move / copy / scale a body', true) +
     row('H', 'Shell — hollow a body', true) +
+    row('N', 'Pattern: honeycomb, relief, meander (live preview)', true) +
     row('V', 'Vertex X/Y/Z', !!sel) +
     '<div style="opacity:.55">Esc — cancel</div>';
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 400) + 'px';
@@ -12656,6 +12694,14 @@ window.addEventListener('keydown', e=>{
       return;
     }
   }
+  // G,N — узоры: соты, рельеф сот, меандр (окно с живым предпросмотром)
+  if((e.code === 'KeyN' || (e.key || '').toLowerCase() === 'n') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
+     && document.activeElement.tagName !== 'INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    if(!(mesh.geometry.attributes.position.array.length)){ warnTip('The model is empty'); return; }
+    setActiveTool(activeTool === patTool ? null : patTool);
+    return;
+  }
   // G,D — отверстие с зенковкой/цековкой (Hole во Fusion)
   if((e.code==='KeyD' || e.key.toLowerCase()==='d') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
      && document.activeElement.tagName!=='INPUT'){
@@ -15029,6 +15075,7 @@ function textMapper(mode, C, n, p, opt){
   const bins = new Map(), TP = [];
   const A = new THREE.Vector3(), Bv = new THREE.Vector3(), Cv = new THREE.Vector3();
   for(let o=0;o<pos.length;o+=9){
+    if(opt.onlyTris && !opt.onlyTris.has(o / 9)) continue;
     A.fromArray(pos, o); Bv.fromArray(pos, o+3); Cv.fromArray(pos, o+6);
     // только треугольники ниже плоскости строки и лицом к зрителю
     const nf = new THREE.Vector3().subVectors(Bv, A).cross(new THREE.Vector3().subVectors(Cv, A));
@@ -15397,7 +15444,8 @@ function patternSolid(L, H, g, f, top, below, outsideAt, periodic){
   }
   return tris;
 }
-function zcAddPattern(a){
+// Тело узора без булевой — для окна (живой предпросмотр) и для add_pattern
+function patternBuild(a){
   const kind = String(a.kind || '');
   const C = zcV3(a.center, 'center'), n = zcV3(a.normal, 'normal');
   if(n.length() < 1e-9) throw new Error('normal must not be zero');
@@ -15431,7 +15479,13 @@ function zcAddPattern(a){
   if(mode === 'plane'){
     const {u, v} = textBasis(n);
     M = {u, v, P0: C.clone().addScaledVector(u, -Lr / 2).addScaledVector(v, -H / 2), mapAll: t => t, info: {}};
-  } else M = textMapper(mode, C, n, {str: '', h: H, d}, opt);
+  } else {
+    // onto_point: проекция только на гладкую поверхность под этой точкой
+    // (конус до излома со стенкой) — плавники, надписи, стенка не мешают,
+    // плоскость можно ставить сколь угодно высоко
+    if(mode === 'project' && a.onto_point != null) opt.onlyTris = smoothRegionAt(zcV3(a.onto_point, 'onto_point'));
+    M = textMapper(mode, C, n, {str: '', h: H, d}, opt);
+  }
   const g = Math.min(0.5, line / 2.5);
   // дыру обходим с запасом в 3/4 линии: вплотную к кромке узор у тонкого
   // кончика конуса вылезал низом тела (0.5 мм вглубь) наружу — бугорок 0.26 мм
@@ -15444,9 +15498,50 @@ function zcAddPattern(a){
   const flat = patternSolid(Lr, H, g, pf.f, top, below, outsideAt, !!a.ring)
     .map(t => t.map(p => M.P0.clone().addScaledVector(M.u, p[0]).addScaledVector(M.v, p[1]).addScaledVector(n, p[2])));
   if(!flat.length) throw new Error('the pattern is empty — make the band bigger or the line thicker');
-  const r = zcApplySolid(M.mapAll(flat), d < 0 ? 'cut' : 'join');
+  return {tris: M.mapAll(flat), d, info: Object.assign({pattern: kind, fill, tool_triangles: flat.length},
+    a.ring ? {ring: true, cell_used_mm: +cellR.toFixed(4), cells_around: Math.round(Lr / cellR)} : {}, M.info)};
+}
+function zcAddPattern(a){
+  const b = patternBuild(a);
+  const r = zcApplySolid(b.tris, b.d < 0 ? 'cut' : 'join');
   if(Math.abs(r.volume_change_mm3) < 1e-6){ undo(true); throw new Error('the pattern could not be placed here'); }
-  return Object.assign({pattern: kind, fill, tool_triangles: flat.length}, a.ring ? {ring: true, cell_used_mm: +cellR.toFixed(4), cells_around: Math.round(Lr / cellR)} : {}, M.info, r);
+  return Object.assign(b.info, r);
+}
+// Гладкая поверхность под точкой: треугольники, связанные рёбрами с изломом
+// меньше 20° (конус из граней по 2.8° — целиком, стык со стенкой 31° — граница)
+function smoothRegionAt(P){
+  const t0 = zcFaceAt(P, null);
+  if(t0 < 0) throw new Error('onto_point is not on the surface of the model');
+  const pos = mesh.geometry.attributes.position.array, nT = pos.length / 9;
+  const N = new Array(nT), em = new Map();
+  for(let t=0;t<nT;t++){
+    const o = t * 9;
+    const n = new THREE.Vector3(pos[o+3]-pos[o], pos[o+4]-pos[o+1], pos[o+5]-pos[o+2])
+      .cross(new THREE.Vector3(pos[o+6]-pos[o], pos[o+7]-pos[o+1], pos[o+8]-pos[o+2]));
+    N[t] = n.length() > 1e-12 ? n.normalize() : null;
+    for(let e=0;e<3;e++){
+      const a = o + e*3, b = o + ((e+1)%3)*3;
+      const ka = keyOf(pos[a], pos[a+1], pos[a+2]), kb = keyOf(pos[b], pos[b+1], pos[b+2]);
+      if(ka === kb) continue;
+      const k = ka < kb ? ka + '|' + kb : kb + '|' + ka;
+      const l = em.get(k); if(l) l.push(t); else em.set(k, [t]);
+    }
+  }
+  const nb = new Map();
+  for(const l of em.values()) if(l.length === 2){
+    for(const [x, y] of [[l[0], l[1]], [l[1], l[0]]]){ let s = nb.get(x); if(!s) nb.set(x, s = []); s.push(y); }
+  }
+  const COS = Math.cos(20 * Math.PI / 180), seen = new Set([t0]), st = [t0];
+  while(st.length){
+    const t = st.pop();
+    for(const u of nb.get(t) || []){
+      if(seen.has(u)) continue;
+      // щепки (нормаль ненадёжна) пропускают связность, но в область не решают
+      if(N[t] && N[u] && N[t].dot(N[u]) < COS) continue;
+      seen.add(u); st.push(u);
+    }
+  }
+  return seen;
 }
 // Т-стыки на треугольниках нулевой площади. Булева на длинных узких гранях
 // (стенка Shell 1 × 69 мм под узором из тысяч клеток) отдаёт сетку, где
@@ -15500,6 +15595,135 @@ function resolveDegenerate(arr){
   for(let i=0;i<tris.length;i++) if(alive[i]) for(const k of tris[i]) out.push(...P.get(k));
   return new Float32Array(out);
 }
+// ---------- G,N — окно узоров с живым предпросмотром ----------
+// Клик по поверхности ставит полосу; поля окна меняют её сразу — призрак
+// тела узора (без булевой, только отображение) перестраивается через 150 мс.
+// Размещение: «Wrap» — по круглой стенке (ось — окружность модели, на
+// которой лежит точка), «Project» — проекцией на гладкую поверхность под
+// точкой (конус целиком, без плавников и надписей), «Flat» — на плоскую
+// грань. Auto выбирает сам: круглая стенка — Wrap, иначе Project.
+// OK — та же команда add_pattern, что у агента: шаг попадает в историю
+const patTool = {
+  hud: 'PATTERN · click a surface — the band appears there · change it in the window, it updates live · Enter / OK — apply · Esc — exit',
+  anchor: null, ghostG: null, timer: 0, kind: 'honeycomb', fill: 'walls', place: 'auto', busy: false,
+  on(){
+    this.anchor = null; this.busy = false;
+    patPopup.style.left = '16px'; patPopup.style.top = '48px';
+    patPopup.hidden = false;
+    this.ui('click a surface to place the band');
+  },
+  off(){ this.kill(); clearTimeout(this.timer); ghost.visible = false; tipHide(); patPopup.hidden = true; releaseToolInput(); },
+  kill(){ if(this.ghostG){ scene.remove(this.ghostG); this.ghostG.traverse(o => { if(o.geometry) o.geometry.dispose(); }); this.ghostG = null; } },
+  move(e, q){
+    if(!q.inside){ tipHide(); return; }
+    const h = raycastFace(q);
+    if(h) tipAt(e, this.anchor ? 'Pattern · click to move the band here' : 'Pattern · click to place');
+    else tipHide();
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside || this.busy) return;
+    const h = raycastFace(q);
+    if(!h) return;
+    const P = h.point.clone(), Nf = triNormalAt(h.faceIndex);
+    // ось круглой стенки: окружность модели, на которой лежит точка
+    let ring = null, best = Infinity;
+    for(const r of snapRings){
+      const w = new THREE.Vector3().subVectors(P, r.ctr); w.addScaledVector(r.n, -w.dot(r.n));
+      const dr = Math.abs(w.length() - r.R);
+      if(dr < 0.6 && Math.abs(Nf.dot(r.n)) < 0.3 && dr < best){ best = dr; ring = r; }
+    }
+    // взгляд для проекции — ближайшая мировая ось к направлению на камеру
+    const toCam = new THREE.Vector3().subVectors(q.cam.position, P).normalize(), ax = [[1,0,0],[0,1,0],[0,0,1]];
+    let up = new THREE.Vector3(0, 0, 1), bd = -1;
+    for(const a of ax) for(const sgn of [1, -1]){ const v = new THREE.Vector3(...a).multiplyScalar(sgn), dd = v.dot(toCam); if(dd > bd){ bd = dd; up = v; } }
+    this.anchor = {P, Nf, ring, up};
+    this.update(true);
+  },
+  key(e){
+    if(e.key === 'Enter'){ e.preventDefault(); this.apply(); return true; }
+    return false;
+  },
+  placeNow(){
+    const A = this.anchor;
+    if(this.place !== 'auto') return this.place;
+    if(A && A.ring) return 'wrap';
+    return Math.abs(A.Nf.dot(A.up)) > 0.98 ? 'flat' : 'project';
+  },
+  num(el, def){ const v = parseFloat(String(el.value).replace(',', '.')); return Number.isFinite(v) ? v : def; },
+  args(){
+    const A = this.anchor, mode = this.placeNow();
+    const a = {kind: this.kind, cell: this.num(pat_cell, 8), line: this.num(pat_line, 1.2),
+      length: this.num(pat_len, 60), height: this.num(pat_h, 18), depth: this.num(pat_depth, 0.5)};
+    if(this.kind === 'honeycomb') a.fill = this.fill;
+    if(this.kind === 'honeycomb_relief') a.seed = Math.round(this.num(pat_seed, 1));
+    const v3 = v => [+v.x.toFixed(4), +v.y.toFixed(4), +v.z.toFixed(4)];
+    if(mode === 'wrap'){
+      if(!A.ring) throw new Error('no round wall here — this point is not on a circle of the model');
+      a.center = v3(A.P); a.normal = v3(A.Nf);
+      a.wrap = {axis_point: v3(A.ring.ctr), axis: v3(A.ring.n)};
+      if(pat_ring.checked && this.kind !== 'meander') a.ring = true;
+    } else if(mode === 'project'){
+      // плоскость высоко над точкой: лучи всё равно видят только гладкую
+      // поверхность под точкой (onto_point)
+      const pos = mesh.geometry.attributes.position.array, box = new THREE.Box3();
+      for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+      const far = box.getSize(new THREE.Vector3()).length();
+      a.center = v3(A.P.clone().addScaledVector(A.up, far)); a.normal = v3(A.up);
+      a.project = true; a.onto_point = v3(A.P); a.skip_missing = true;
+      a.rotate = this.num(pat_rot, 0);
+    } else { a.center = v3(A.P); a.normal = v3(A.Nf); }
+    return a;
+  },
+  ui(msg, bad){
+    const k = this.kind;
+    for(const [id, v] of [['pat_hc', 'honeycomb'], ['pat_rel', 'honeycomb_relief'], ['pat_mea', 'meander']]) $id(id).classList.toggle('on', k === v);
+    for(const [id, v] of [['pat_walls', 'walls'], ['pat_cells', 'cells']]) $id(id).classList.toggle('on', this.fill === v);
+    for(const [id, v] of [['pat_auto', 'auto'], ['pat_wrap', 'wrap'], ['pat_proj', 'project'], ['pat_flat', 'flat']]) $id(id).classList.toggle('on', this.place === v);
+    $id('pat_fill_row').style.display = k === 'honeycomb' ? '' : 'none';
+    $id('pat_seed_row').style.display = k === 'honeycomb_relief' ? '' : 'none';
+    pat_cell_lab.textContent = k === 'meander' ? 'Module' : 'Cell';
+    const mode = this.anchor ? this.placeNow() : null;
+    pat_state.textContent = mode ? (mode === 'wrap' ? 'round wall' : mode === 'project' ? 'projected' : 'flat face') : 'place';
+    $id('pat_ring_row').style.display = mode === 'wrap' && k !== 'meander' ? '' : 'none';
+    $id('pat_rot_row').style.display = mode === 'project' ? '' : 'none';
+    if(msg != null){ pat_info.textContent = msg; pat_info.style.color = bad ? '#ff6b6b' : ''; }
+    pat_ok.disabled = !this.anchor || this.busy;
+  },
+  // живой предпросмотр: призрак тела узора (зелёный — выпуклый, красный — вдавленный)
+  update(now){
+    clearTimeout(this.timer);
+    if(!this.anchor){ this.ui(); return; }
+    const run = () => {
+      this.kill();
+      let a, b;
+      try{ a = this.args(); b = patternBuild(a); }
+      catch(err){ this.ui(String(err && err.message || err), true); return; }
+      const arr = new Float32Array(b.tris.length * 9);
+      let o = 0;
+      for(const t of b.tris) for(const p of t){ arr[o++] = p.x; arr[o++] = p.y; arr[o++] = p.z; }
+      const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(arr, 3)); geo.computeVertexNormals();
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({color: b.d < 0 ? 0xff5a5a : 0x2ecc40, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide})));
+      g.renderOrder = 5; scene.add(g); this.ghostG = g;
+      const i = b.info;
+      this.ui((i.ring ? i.cells_around + ' cells round, cell ' + i.cell_used_mm + ' mm · ' : '') + (b.d < 0 ? 'engrave ' : 'raise ') + Math.abs(b.d) + ' mm · ' + i.tool_triangles + ' triangles');
+    };
+    if(now) run(); else this.timer = setTimeout(run, 150);
+  },
+  async apply(){
+    if(!this.anchor || this.busy) return;
+    let a;
+    try{ a = this.args(); }catch(err){ warnTip(String(err.message || err)); return; }
+    this.busy = true; this.kill(); this.ui('applying… (big patterns take a few seconds)');
+    await new Promise(r => setTimeout(r, 30)); // дать окну отрисовать «applying»
+    try{
+      const r = await zcRun('add_pattern', a);
+      this.busy = false;
+      if(r.open_edges || r.nonmanifold_edges) warnTip('Applied, but the mesh has ' + (r.open_edges + r.nonmanifold_edges) + ' bad edges — Ctrl+Z to undo');
+      setActiveTool(null);
+    }catch(err){ this.busy = false; this.ui(String(err && err.message || err), true); this.update(true); }
+  }
+};
 // MCP pattern: матрицы копий второго тела на время одной команды (zcRun)
 let zcPatternMats = null;
 // копии второго тела по кругу заранее сливаются в одно (касающиеся —

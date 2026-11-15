@@ -593,6 +593,13 @@ def patterns_honeycomb_relief_meander():
     d = call('add_pattern', {'kind': 'meander', 'center': [50, 50, 69], 'normal': [0, 0, 1], 'length': 80, 'height': 14,
                              'cell': 1.5, 'line': 1.2, 'depth': 0.6, 'project': True, 'skip_missing': True})
     closed(d, 'meander over the hole'); assert d['volume_change_mm3'] > 100, d
+    # onto_point: проекция только на гладкую поверхность под точкой — брусок над
+    # склоном (как плавник) не мешает даже с плоскостью далеко вверху; так
+    # проецирует окно узоров (G,N)
+    call('add_frustum', {'from': [40, 75, 60], 'to': [60, 75, 60], 'r1': 2, 'r2': 2, 'segments': 24, 'operation': 'join'})
+    d = call('add_pattern', {'kind': 'honeycomb', 'center': [50, 72, 500], 'normal': [0, 0, 1], 'length': 30, 'height': 12,
+                             'cell': 6, 'line': 1.0, 'depth': 0.5, 'project': True, 'onto_point': [50, 72, 29.49]})
+    closed(d, 'onto the cone under the bar'); assert d['volume_change_mm3'] > 20, d
     for args, msg in [({'kind': 'stars'}, 'pattern must be'), ({'line': 9}, 'line must be')]:
         a = {'kind': 'honeycomb', 'center': [50, 50, 69], 'normal': [0, 0, 1], 'length': 40, 'height': 10, 'cell': 8,
              'line': 1.2, 'depth': 0.5, 'project': True}

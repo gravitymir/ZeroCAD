@@ -866,6 +866,7 @@ const ZC_TOOLS = [
       "wrap": {"type": "object", "properties": {"axis_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}}, "required": ["axis_point"]},
       "project": {"type": "boolean"},
       "skip_missing": {"type": "boolean"},
+      "onto_point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "with project: project only onto the smooth surface under this point (edges sharper than 20 degrees bound it) - fins, ribs and text above are ignored, so the plane may be anywhere above"},
       "rotate": {"type": "number"},
       "seed": {"type": "integer"},
       "fill": {"type": "string", "enum": ["walls", "cells"], "description": "honeycomb: raise/engrave the walls between cells (default) or the hexagons themselves; the inner size of a cell is cell - line"},
