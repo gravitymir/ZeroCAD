@@ -642,6 +642,39 @@ def text_symbols_triskele():
 
 
 @case
+def symbol_pattern_and_relief_tilt():
+    # Узор из любого знака библиотеки (kind symbol) и клин сот одного наклона
+    # (honeycomb_relief, tilt down: ноль сверху, полная высота снизу)
+    call('new_shape', {'shape': 'cube', 'size': 60})
+    d = call('add_pattern', {'kind': 'symbol', 'symbol': 'spiral', 'center': [30, 30, 60], 'normal': [0, 0, 1],
+                             'length': 40, 'height': 20, 'cell': 9, 'line': 0.8, 'depth': 0.6})
+    unfolded(d, 'spiral pattern'); assert d['volume_change_mm3'] > 20, d
+    d = call('add_text', {'text': '{SPIRAL}', 'center': [30, 0, 30], 'normal': [0, -1, 0], 'height': 14, 'depth': -0.5})
+    unfolded(d, 'spiral symbol in text'); assert d['symbols'] == ['spiral'], d
+    # знак-силуэт (рисованный вихрь из SVG): в узоре и в тексте
+    d = call('add_pattern', {'kind': 'symbol', 'symbol': 'swirl', 'spin': 'random', 'center': [30, 30, 60], 'normal': [0, 0, 1],
+                             'length': 30, 'height': 12, 'cell': 9, 'line': 0.8, 'depth': -0.4})
+    unfolded(d, 'swirl pattern'); assert d['volume_change_mm3'] < -5, d
+    d = call('add_text', {'text': 'A{swirl}', 'center': [60, 30, 30], 'normal': [1, 0, 0], 'height': 12, 'depth': 0.5})
+    unfolded(d, 'swirl in text'); assert d['symbols'] == ['swirl'], d
+    call('new_shape', {'shape': 'cube', 'size': 60})
+    d = call('add_pattern', {'kind': 'honeycomb_relief', 'tilt': 'down', 'center': [30, 0, 30], 'normal': [0, -1, 0],
+                             'length': 44, 'height': 11.5, 'cell': 8, 'line': 2, 'depth': 3})
+    unfolded(d, 'tilted wedges')
+    # клин: высота растёт от 0 до 3 — объём меньше призм высотой 3
+    assert 0 < d['volume_change_mm3'] < 5 * 6 * 7 * 3, d
+    for args, msg in [({'kind': 'symbol', 'symbol': 'dragon'}, 'symbol must be'), ({'kind': 'honeycomb', 'tilt': 'down'}, 'tilt works with')]:
+        a = {'center': [30, 30, 60], 'normal': [0, 0, 1], 'length': 40, 'height': 20, 'cell': 9, 'line': 0.8, 'depth': 0.6}
+        a.update(args)
+        try:
+            call('add_pattern', a)
+        except McpError as e:
+            assert msg in str(e), str(e)
+        else:
+            raise AssertionError('must be refused: %r' % args)
+
+
+@case
 def triskele_rows_raised_and_engraved():
     # Трискель: три спиральных рукава из общего центра, фигуры рядами
     # вверх-вниз, ряд через один сдвинут на полшага. Тело узора чистое:
@@ -671,7 +704,8 @@ def knurl_straight_diamond_cross():
     # (у пирамидок средняя высота depth/3: объём меньше, чем у рёбер)
     w = {'axis_point': [40, 40, 0]}
     vol = {}
-    for style, extra in [('straight', {}), ('diamond', {'angle': 30}), ('diamond', {'angle': 45}), ('cross', {})]:
+    for style, extra in [('straight', {}), ('straight', {'angle': 90}), ('straight', {'angle': 45}),
+                         ('diamond', {'angle': 30}), ('diamond', {'angle': 45}), ('cross', {})]:
         call('new_shape', {'shape': 'cylinder', 'size': 80, 'height': 40})
         call('shell_body', {'thickness': 3, 'open_faces': [{'point': [40, 40, 40]}]})
         a = {'kind': 'knurl', 'style': style, 'center': [77, 40, 20], 'normal': [-1, 0, 0], 'length': 12, 'height': 8,
@@ -682,7 +716,8 @@ def knurl_straight_diamond_cross():
         assert d['style'] == style, d
         vol[style + str(extra.get('angle', ''))] = d['volume_change_mm3']
     flat = 12 * 8 * 0.6
-    near(vol['straight'], flat / 2, flat * 0.12, 'straight ribs: half the pad')
+    for k in ['straight', 'straight90', 'straight45']:
+        near(vol[k], flat / 2, flat * 0.12, k + ' ribs: half the pad (any tilt)')
     for k in ['diamond30', 'diamond45', 'cross']:
         near(vol[k], flat / 3, flat * 0.12, k + ': pyramids, a third of the pad')
     for args, msg in [({'depth': -0.5}, 'raised only'), ({'style': 'wavy'}, 'knurl style'), ({'angle': 80}, 'knurl angle')]:

@@ -1,6 +1,6 @@
-"""Иконка ZeroCAD: оранжевый изометрический кубик со сквозными отверстиями —
-круг в левой грани («0» в ZeroCAD), треугольник сверху, четырёхлистник справа —
-на тёмной скруглённой плашке.
+"""Иконка ZeroCAD: оранжевый изометрический кубик на тёмной скруглённой
+плашке: в левой грани вдавлен крабик (ZeroCAD на Rust), сверху и справа —
+сквозные треугольник и четырёхлистник.
 
 Рисуется без библиотек: заливка фигур с суперсэмплингом, PNG — через zlib,
 ICO — набор PNG 16…256 px. Запуск из корня репозитория:
@@ -70,13 +70,37 @@ def scene(x, y):
         if abs(a) < d and abs(b) < d: return True
         return any((a - ox) ** 2 + (b - oy) ** 2 < rr * rr for ox, oy in ((d, 0), (-d, 0), (0, d), (0, -d)))
     if inside([C, R, down(R), down(C)]): return hole(right_uv, clover, (-C30, -0.5), RIGHT, (0x6e, 0x30, 0x0c))
-    # левая грань: a — вдоль L→C, b — вниз; круг — «0» в ZeroCAD
+    # левая грань: a — вдоль L→C, b — вниз; вдавлен крабик (ZeroCAD на Rust):
+    # тело-овал, две поднятые клешни с вырезом, глазки на стебельках, по
+    # три ножки. Не сквозной — неглубокий карман: дно темнее, сбоку стенка
     fx, fy = (L[0] + C[0]) / 2, (L[1] + C[1]) / 2 + s / 2
     def left_uv(px, py):
         a = (px - fx) / C30
         return a, (py - fy) - 0.5 * a
-    disc = lambda a, b: a * a + b * b < (0.36 * s) ** 2
-    if inside([L, C, down(C), down(L)]): return hole(left_uv, disc, (C30, -0.5), LEFT, WALL)
+    def seg(a, b, x1, y1, x2, y2, w):
+        dx, dy = x2 - x1, y2 - y1
+        t = max(0, min(1, ((a - x1) * dx + (b - y1) * dy) / (dx * dx + dy * dy)))
+        return math.hypot(a - x1 - t * dx, b - y1 - t * dy) < w / 2
+    def crab(a, b):
+        a, b = a / (1.3 * s), b / (1.3 * s)  # крабик на всю грань
+        if (a / 0.21) ** 2 + ((b - 0.07) / 0.135) ** 2 < 1: return True          # тело
+        for sg in (-1, 1):
+            if seg(a, b, sg * 0.05, -0.03, sg * 0.07, -0.12, 0.03): return True  # стебелёк
+            if math.hypot(a - sg * 0.07, b + 0.13) < 0.04: return True          # глаз
+            if seg(a, b, sg * 0.15, 0.0, sg * 0.25, -0.13, 0.055): return True   # рука
+            cxw, cyw = sg * 0.27, -0.21                                          # клешня
+            dx, dy = a - cxw, b - cyw
+            if math.hypot(dx, dy) < 0.09:
+                # вырез клешни — клин вверх и внутрь
+                ang = math.atan2(dy, dx * sg)  # по зеркалу: внутрь — к центру
+                if not (-2.3 < ang < -1.2 and math.hypot(dx, dy) > 0.02): return True
+            for j in range(3):                                                   # ножки
+                if seg(a, b, sg * 0.17, 0.06 + 0.045 * j, sg * 0.33, 0.13 + 0.07 * j, 0.035): return True
+        return False
+    if inside([L, C, down(C), down(L)]):
+        if not crab(*left_uv(x, y)): return LEFT
+        d2 = 0.08 * s
+        return (0xb3, 0x4e, 0x14) if crab(*left_uv(x - d2 * C30, y + d2 * 0.5)) else WALL
     return col
 
 

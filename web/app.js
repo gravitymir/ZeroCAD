@@ -5657,6 +5657,31 @@ const SYMBOLS = {
       }
       return out;
     }
+  },
+  spiral: {
+    title: 'Spiral', line: 0.1, turns: 2.25,
+    // одна спираль: внешний конец справа вверху (60°), против часовой и
+    // внутрь — r убывает от 1 до 0.12 за turns оборотов
+    strokes(o = {}){
+      const turns = o.turns == null ? this.turns : +o.turns, rot = o.rotate || 0;
+      const TH = turns * 2 * Math.PI, nS = Math.max(32, Math.round(turns * 48)), out = [];
+      let prev = null;
+      for(let q=0;q<=nS;q++){
+        const t = q / nS, th = Math.PI / 3 + rot + t * TH, r = 1 - 0.88 * t;
+        const P = [r * Math.cos(th), r * Math.sin(th)];
+        if(prev) out.push([prev[0], prev[1], P[0], P[1]]);
+        prev = P;
+      }
+      return out;
+    }
+  },
+  // рисованный «вихрь» — силуэт из SVG пользователя (обводка VTracer,
+  // кривые Безье → 228 точек): неровная, живая спираль, а не циркульная.
+  // Знак-силуэт задаётся контуром (outline: кольца точек вокруг (0, 0),
+  // размах 1, Y вверх), толщина — своя у рисунка, line не нужен
+  swirl: {
+    title: 'Swirl',
+    outline: [[[0.043,0.9889],[0.1227,0.9881],[0.1631,0.9815],[0.2138,0.9618],[0.2424,0.9421],[0.2647,0.9156],[0.2712,0.8842],[0.2704,0.8523],[0.2669,0.8368],[0.2612,0.8218],[0.2504,0.8063],[0.223,0.7822],[0.1729,0.7573],[0.1373,0.7543],[-0.0105,0.7531],[-0.1101,0.7436],[-0.179,0.7305],[-0.2276,0.7172],[-0.2751,0.6992],[-0.321,0.6769],[-0.3649,0.6508],[-0.4063,0.6213],[-0.4597,0.5755],[-0.5117,0.5213],[-0.5578,0.4595],[-0.5767,0.4265],[-0.6287,0.3032],[-0.6516,0.2283],[-0.6736,0.1147],[-0.6758,-0.0219],[-0.6721,-0.0782],[-0.646,-0.1902],[-0.633,-0.2283],[-0.5648,-0.3846],[-0.542,-0.4243],[-0.5153,-0.4619],[-0.4532,-0.5299],[-0.4057,-0.5712],[-0.3242,-0.6279],[-0.2363,-0.6711],[-0.1434,-0.7019],[-0.0471,-0.7209],[0.0512,-0.7291],[0.1499,-0.7272],[0.2247,-0.715],[0.3005,-0.6936],[0.3745,-0.6633],[0.4444,-0.6247],[0.5073,-0.5781],[0.5608,-0.5239],[0.5975,-0.4741],[0.6306,-0.422],[0.6785,-0.3198],[0.6986,-0.2431],[0.7014,-0.1151],[0.6971,-0.0502],[0.6875,0.0138],[0.6714,0.0758],[0.642,0.146],[0.606,0.2084],[0.5631,0.2625],[0.4995,0.3184],[0.4995,0.3286],[0.3656,0.3785],[0.302,0.3901],[0.2377,0.3925],[0.1732,0.3867],[0.1092,0.374],[0.0389,0.3524],[-0.0322,0.3171],[-0.0787,0.2879],[-0.1184,0.258],[-0.1549,0.2241],[-0.1874,0.1866],[-0.2148,0.1454],[-0.2363,0.1009],[-0.2508,0.0529],[-0.2527,-0.0139],[-0.2513,-0.038],[-0.2414,-0.0824],[-0.2051,-0.158],[-0.1635,-0.2166],[-0.0967,-0.2861],[-0.0655,-0.313],[-0.0323,-0.3362],[0.0033,-0.3547],[0.0415,-0.3672],[0.0826,-0.3727],[0.1368,-0.3682],[0.161,-0.3614],[0.2064,-0.3374],[0.2367,-0.3107],[0.2538,-0.2855],[0.2596,-0.2686],[0.2698,-0.2686],[0.2762,-0.2162],[0.2673,-0.1653],[0.2359,-0.1372],[0.2112,-0.1265],[0.1963,-0.1237],[0.102,-0.1237],[0.0609,-0.1188],[0.0231,-0.1033],[0.0044,-0.09],[-0.0135,-0.0695],[-0.016,-0.0543],[-0.0262,-0.0543],[-0.0361,-0.0147],[-0.0368,0.0249],[-0.026,0.0642],[0.0001,0.0986],[0.0338,0.1244],[0.072,0.1456],[0.1138,0.1524],[0.1985,0.1527],[0.2445,0.1455],[0.2877,0.1323],[0.3288,0.1133],[0.3686,0.0885],[0.4077,0.058],[0.4483,0.0099],[0.4637,-0.0168],[0.4755,-0.0452],[0.4834,-0.0752],[0.4869,-0.1068],[0.4822,-0.1707],[0.4675,-0.2359],[0.4442,-0.3003],[0.4136,-0.3618],[0.3772,-0.4183],[0.3362,-0.4677],[0.3059,-0.4913],[0.2728,-0.5105],[0.2376,-0.526],[0.1154,-0.5627],[0.0734,-0.5696],[0.0309,-0.5711],[-0.0451,-0.5676],[-0.0786,-0.5627],[-0.1109,-0.5543],[-0.14,-0.5417],[-0.164,-0.5239],[-0.1991,-0.5079],[-0.2247,-0.4908],[-0.2973,-0.4251],[-0.3436,-0.3655],[-0.3811,-0.2999],[-0.4101,-0.2297],[-0.4309,-0.1563],[-0.4438,-0.0813],[-0.4471,-0.0033],[-0.4415,0.074],[-0.4244,0.1499],[-0.4061,0.2008],[-0.3887,0.2379],[-0.3456,0.3064],[-0.2809,0.3809],[-0.2171,0.439],[-0.1455,0.4869],[-0.1071,0.5064],[-0.0569,0.5263],[0.0442,0.5559],[0.1494,0.5734],[0.2566,0.5784],[0.3635,0.5705],[0.4678,0.5491],[0.5672,0.5139],[0.6221,0.485],[0.6736,0.4518],[0.7213,0.4139],[0.7646,0.3713],[0.8031,0.3239],[0.8559,0.2375],[0.862,0.2061],[0.8722,0.2061],[0.891,0.1388],[0.9107,0.0456],[0.9211,-0.0376],[0.9176,-0.121],[0.9024,-0.2037],[0.8779,-0.2847],[0.8466,-0.3631],[0.7882,-0.4807],[0.7549,-0.5326],[0.6864,-0.6249],[0.6303,-0.6889],[0.5685,-0.7473],[0.4931,-0.8071],[0.4267,-0.8511],[0.3568,-0.8894],[0.2464,-0.9386],[0.148,-0.9679],[0.0737,-0.98],[-0.0206,-0.9889],[-0.0941,-0.9878],[-0.198,-0.9766],[-0.2745,-0.9616],[-0.3482,-0.9346],[-0.4193,-0.9016],[-0.4193,-0.8914],[-0.4506,-0.8829],[-0.4891,-0.8608],[-0.5907,-0.7799],[-0.6245,-0.747],[-0.6849,-0.6755],[-0.7384,-0.597],[-0.7716,-0.5421],[-0.8364,-0.3843],[-0.8563,-0.3222],[-0.8977,-0.1266],[-0.9122,-0.0399],[-0.9195,0.0478],[-0.9196,0.1623],[-0.907,0.2288],[-0.8836,0.2927],[-0.8439,0.3764],[-0.7887,0.4652],[-0.7347,0.5441],[-0.6734,0.6238],[-0.5883,0.7203],[-0.5255,0.7768],[-0.4291,0.8522],[-0.3778,0.8847],[-0.3242,0.9132],[-0.2683,0.9372],[-0.193,0.9615],[-0.1254,0.9775],[-0.0586,0.9855]]]
   }
 };
 // размах знака от его центра (0, 0) в его единицах
@@ -5664,6 +5689,30 @@ function symbolExtent(segs){
   let E = 0;
   for(const sg of segs) E = Math.max(E, Math.hypot(sg[0], sg[1]), Math.hypot(sg[2], sg[3]));
   return E;
+}
+// Знак-силуэт: расстояние со знаком до контура (внутри +, снаружи −;
+// чётно-нечётное правило — дыры в силуэте работают сами)
+function polySignedDist(rings, x, y){
+  let inside = false, d2 = Infinity;
+  for(const r of rings){
+    for(let i=0, j=r.length-1; i<r.length; j=i++){
+      const a = r[i], b = r[j];
+      if((a[1] > y) !== (b[1] > y) && x < (b[0]-a[0]) * (y-a[1]) / (b[1]-a[1]) + a[0]) inside = !inside;
+      const dx = b[0]-a[0], dy = b[1]-a[1], L2 = dx*dx + dy*dy;
+      const t = L2 > 0 ? Math.max(0, Math.min(1, ((x-a[0])*dx + (y-a[1])*dy) / L2)) : 0;
+      const ex = a[0] + t*dx - x, ey = a[1] + t*dy - y;
+      d2 = Math.min(d2, ex*ex + ey*ey);
+    }
+  }
+  const d = Math.sqrt(d2);
+  return inside ? d : -d;
+}
+// силуэт, поставленный в точку (cx, cy) с масштабом k: кольца и габарит
+function placeOutline(S, cx, cy, k){
+  const rings = S.outline.map(r => r.map(p => [cx + p[0]*k, cy + p[1]*k]));
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for(const r of rings) for(const p of r){ x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); }
+  return {rings, bb: [x0, y0, x1, y1]};
 }
 // строка → буквы и знаки: x — колонка грубой сетки (буква 5 + просвет 1,
 // знак 7 + просвет 1 — квадрат высоты строки); adv — ширина строки в колонках
@@ -5692,7 +5741,16 @@ function textHasSymbols(str){
 }
 // тело знака в квадрате h × h (x, y от левого нижнего угла, z — над гранью)
 function symbolSolid(name, h, above, below, o = {}){
-  const S = SYMBOLS[name], line = (o.line || S.line) * h, t2 = line / 2;
+  const S = SYMBOLS[name];
+  if(S.outline){
+    // силуэт вписывается по габариту в квадрат h × h
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for(const r of S.outline) for(const p of r){ x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); }
+    const k = h * 0.98 / Math.max(x1 - x0, y1 - y0);
+    const fig = placeOutline(S, h/2 - (x0 + x1) / 2 * k, h/2 - (y0 + y1) / 2 * k, k);
+    return patternSolid(h, h, Math.min(0.5, h / 40), (x, y) => polySignedDist(fig.rings, x, y), () => above, below, null, false);
+  }
+  const line = (o.line || S.line) * h, t2 = line / 2;
   // вписываем по габариту (а не по кругу): знак занимает всю высоту строки
   const raw = S.strokes(o);
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
@@ -6030,6 +6088,11 @@ tx_ok.addEventListener('click', ()=>{
   if(txtLive) finishText(); // OK фиксирует; пока точка не поставлена — ждём
 });
 tx_cancel.addEventListener('click', cancelText);
+// логотип в шапке — та же картинка, что у вкладки браузера (кубик с крабиком)
+{
+  const ic = document.querySelector('link[rel=icon]'), lg = document.getElementById('zcLogo');
+  if(ic && lg) lg.src = ic.href;
+}
 // палитра знаков: кнопка вставляет {имя} в строку у курсора
 {
   const row = document.getElementById('tx_syms');
@@ -6119,14 +6182,22 @@ const patPopup = $id('patPopup'), pat_state = $id('pat_state'), pat_info = $id('
     });
   }
   pat_ring.addEventListener('change', live);
-  for(const [id, k] of [['pat_hc', 'honeycomb'], ['pat_rel', 'honeycomb_relief'], ['pat_mea', 'meander'], ['pat_tri', 'triskele'], ['pat_knu', 'knurl']])
+  // знаки библиотеки — кнопками строки Symbol (вид узора «symbol»)
+  for(const [name, S] of Object.entries(SYMBOLS)){
+    const b = document.createElement('button');
+    b.className = 'lp'; b.textContent = S.title; b.dataset.sym = name;
+    b.addEventListener('click', () => { if(activeTool !== patTool) return; patTool.symbol = name; live(); patTool.ui(); });
+    $id('pat_sym_row').appendChild(b);
+  }
+  for(const [id, k] of [['pat_hc', 'honeycomb'], ['pat_rel', 'honeycomb_relief'], ['pat_mea', 'meander'], ['pat_tri', 'triskele'], ['pat_sym', 'symbol'], ['pat_knu', 'knurl']])
     $id(id).addEventListener('click', () => { if(activeTool !== patTool) return; patTool.kind = k;
       if(k === 'meander'){ pat_cell.value = 1.5; pat_line.value = 1.2; pat_h.value = 13.2; }
       if(k === 'triskele'){ pat_cell.value = 14; pat_line.value = 0.8; pat_h.value = 30; }
+      if(k === 'symbol'){ pat_cell.value = 10; pat_line.value = 0.8; pat_h.value = 24; }
       if(k === 'knurl'){ pat_cell.value = 1.5; pat_len.value = 16; pat_h.value = 12; if(!(+pat_depth.value > 0)) pat_depth.value = 0.5; }
       live(); patTool.ui(); });
   for(const [id, st] of [['pat_kst', 'straight'], ['pat_kdi', 'diamond'], ['pat_kcr', 'cross']])
-    $id(id).addEventListener('click', () => { if(activeTool !== patTool) return; patTool.style = st; live(); patTool.ui(); });
+    $id(id).addEventListener('click', () => { if(activeTool !== patTool) return; patTool.style = st; pat_ang.value = st === 'diamond' ? 30 : 0; live(); patTool.ui(); });
   for(const [id, f] of [['pat_walls', 'walls'], ['pat_cells', 'cells']])
     $id(id).addEventListener('click', () => { if(activeTool !== patTool) return; patTool.fill = f; live(); patTool.ui(); });
   for(const [id, m] of [['pat_auto', 'auto'], ['pat_wrap', 'wrap'], ['pat_proj', 'project'], ['pat_flat', 'flat']])
@@ -11816,22 +11887,108 @@ function loadProjectText(text, name){
 // Open… принимает и проект .zcad, и сетку .stl (как File → Open во FreeCAD):
 // STL — это экспорт для принтера, без линий, точек и истории, но открыть
 // свою же выгрузку обратно должно быть можно без поиска кнопки Import
+// Всё, что программа умеет прочитать, — одним входом: кнопки Import… (и на
+// стартовом экране), Open…, Ctrl+O и перетаскивание на сцену. Проект .zcad
+// открывается целиком (история, линии, имена), 3MF — свой с проектом внутри
+// или чужая сетка, STL / OBJ / GLB — сетка
+const OPEN_EXT = ['.zcad', '.json', '.stl', '.3mf', '.obj', '.glb'];
 async function openFileAny(file, handle){
+  const name = file.name || '';
+  if(!OPEN_EXT.some(e => name.toLowerCase().endsWith(e))){
+    warnTip('Cannot open ' + name + ': ZeroCAD reads ' + OPEN_EXT.join(', '));
+    return;
+  }
   closeStartScreen(); // файл выбран — стартовый экран больше не нужен
-  if(/\.stl$/i.test(file.name)){ importSTL(await file.arrayBuffer(), file.name); return; }
-  if(/\.3mf$/i.test(file.name)){ await open3MFFile(await file.arrayBuffer(), file.name); return; }
-  loadProjectText(await file.text(), file.name);
+  if(/\.stl$/i.test(name)){ importSTL(await file.arrayBuffer(), name); return; }
+  if(/\.3mf$/i.test(name)){ await open3MFFile(await file.arrayBuffer(), name); return; }
+  if(/\.obj$/i.test(name)){ importMeshArray(parseOBJ(await file.text()), name); return; }
+  if(/\.glb$/i.test(name)){
+    try{ importMeshArray(parseGLB(await file.arrayBuffer()), name); }
+    catch(err){ warnTip('Cannot import ' + name + ': ' + (err.message || err)); }
+    return;
+  }
+  loadProjectText(await file.text(), name);
   if(handle) projectHandle = handle;
+}
+// OBJ: вершины v и грани f (номера с 1, отрицательные — с конца; v/vt/vn —
+// берём только позицию); многоугольники — веером. Единицы — миллиметры
+function parseOBJ(text){
+  const V = [], out = [];
+  for(const raw of text.split(/\r?\n/)){
+    const ln = raw.trim();
+    if(ln.startsWith('v ')){ const p = ln.split(/\s+/); V.push([+p[1], +p[2], +p[3]]); }
+    else if(ln.startsWith('f ')){
+      const ids = ln.split(/\s+/).slice(1).map(t => { const k = parseInt(t.split('/')[0], 10); return k < 0 ? V.length + k : k - 1; });
+      for(let i=1;i+1<ids.length;i++) for(const k of [ids[0], ids[i], ids[i+1]]){
+        const p = V[k]; if(!p) throw new Error('OBJ: face refers to a missing vertex');
+        out.push(p[0], p[1], p[2]);
+      }
+    }
+  }
+  return new Float32Array(out);
+}
+// GLB (glTF 2.0, двоичный): треугольники всех сеток сцены с трансформами
+// узлов. glTF — метры и ось Y вверх; у нас миллиметры и Z вверх — обратное
+// к glbVec: (x, y, z) м → (1000x, −1000z, 1000y) мм. Сжатие Draco не читаем
+function parseGLB(buf){
+  const dv = new DataView(buf);
+  if(buf.byteLength < 20 || dv.getUint32(0, true) !== 0x46546C67) throw new Error('not a GLB file');
+  let off = 12, json = null, bin = null;
+  while(off + 8 <= buf.byteLength){
+    const len = dv.getUint32(off, true), type = dv.getUint32(off + 4, true);
+    if(type === 0x4E4F534A) json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, off + 8, len)));
+    else if(type === 0x004E4942) bin = new Uint8Array(buf, off + 8, len);
+    off += 8 + len;
+  }
+  if(!json) throw new Error('GLB without JSON');
+  if((json.extensionsRequired || []).length) throw new Error('needs ' + json.extensionsRequired.join(', '));
+  const acc = i => {
+    const a = json.accessors[i], bv = json.bufferViews[a.bufferView];
+    if(!bin || !bv) throw new Error('GLB: accessor without data');
+    const n = {SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4}[a.type] || 1;
+    const T = {5121: Uint8Array, 5123: Uint16Array, 5125: Uint32Array, 5126: Float32Array}[a.componentType];
+    if(!T) throw new Error('GLB: unsupported component type ' + a.componentType);
+    const stride = bv.byteStride || n * T.BYTES_PER_ELEMENT, base = bin.byteOffset + (bv.byteOffset || 0) + (a.byteOffset || 0);
+    const v = new DataView(bin.buffer), out = new Array(a.count * n);
+    const get = {5121: o => v.getUint8(o), 5123: o => v.getUint16(o, true), 5125: o => v.getUint32(o, true), 5126: o => v.getFloat32(o, true)}[a.componentType];
+    for(let i=0;i<a.count;i++) for(let j=0;j<n;j++) out[i*n+j] = get(base + i*stride + j*T.BYTES_PER_ELEMENT);
+    return out;
+  };
+  const out = [], P = new THREE.Vector3();
+  const walk = (ni, parent) => {
+    const nd = json.nodes[ni], M = new THREE.Matrix4();
+    if(nd.matrix) M.fromArray(nd.matrix);
+    else M.compose(new THREE.Vector3(...(nd.translation || [0, 0, 0])), new THREE.Quaternion(...(nd.rotation || [0, 0, 0, 1])), new THREE.Vector3(...(nd.scale || [1, 1, 1])));
+    const W = parent.clone().multiply(M);
+    if(nd.mesh != null) for(const pr of json.meshes[nd.mesh].primitives){
+      if(pr.mode != null && pr.mode !== 4) continue; // только треугольники
+      const pos = acc(pr.attributes.POSITION), idx = pr.indices != null ? acc(pr.indices) : null;
+      const cnt = idx ? idx.length : pos.length / 3;
+      for(let i=0;i+2<cnt;i+=3) for(let j=0;j<3;j++){
+        const k = idx ? idx[i+j] : i+j;
+        P.set(pos[k*3], pos[k*3+1], pos[k*3+2]).applyMatrix4(W);
+        out.push(P.x * 1000, -P.z * 1000, P.y * 1000);
+      }
+    }
+    for(const ch of nd.children || []) walk(ch, W);
+  };
+  const sc = json.scenes ? json.scenes[json.scene || 0] : null;
+  const roots = sc ? sc.nodes : (json.nodes || []).map((_, i) => i);
+  for(const r of roots) walk(r, new THREE.Matrix4());
+  if(!out.length) throw new Error('GLB without triangles');
+  return new Float32Array(out);
 }
 async function openProject(){
   if(window.showOpenFilePicker){
     try{
       const [h] = await window.showOpenFilePicker({
         types: [
-          {description: 'ZeroCAD project, STL or 3MF', accept: {'application/json': ['.zcad', '.json'], 'model/stl': ['.stl'], 'model/3mf': ['.3mf']}},
+          {description: 'All ZeroCAD can read (zcad, stl, 3mf, obj, glb)', accept: {'application/octet-stream': OPEN_EXT}},
           {description: 'ZeroCAD project', accept: {'application/json': ['.zcad', '.json']}},
           {description: 'STL mesh', accept: {'model/stl': ['.stl']}},
-          {description: '3MF model', accept: {'model/3mf': ['.3mf']}}
+          {description: '3MF model', accept: {'model/3mf': ['.3mf']}},
+          {description: 'OBJ mesh', accept: {'model/obj': ['.obj']}},
+          {description: 'GLB (glTF binary)', accept: {'model/gltf-binary': ['.glb']}}
         ]});
       await openFileAny(await h.getFile(), h);
       return;
@@ -11891,7 +12048,7 @@ function importMeshArray(raw, name){
   orthoFit = maxd * 0.62;
   updateOrthoFrusta(); updateOrthoPoses();
   projectHandle = null;
-  projectName = (name || 'imported').replace(/\.(stl|3mf)$/i, '');
+  projectName = (name || 'imported').replace(/\.(stl|3mf|obj|glb)$/i, '');
   setProjectDirty(true);
   const open = countBoundaryEdges();
   if(open) warnTip('Imported mesh is not closed: ' + open + ' open edges');
@@ -14373,24 +14530,15 @@ document.getElementById('x_obj').addEventListener('click', ()=>exportAs('obj'));
 document.getElementById('x_step').addEventListener('click', ()=>exportAs('step'));
 document.getElementById('f_save').addEventListener('click', e=>saveProject(e.shiftKey));
 document.getElementById('f_open').addEventListener('click', openProject);
-document.getElementById('f_import').addEventListener('click', ()=>{ f_stl.value = ''; f_stl.click(); });
-f_stl.addEventListener('change', async ()=>{
-  const file = f_stl.files && f_stl.files[0];
-  if(!file) return;
-  closeStartScreen();
-  if(/\.3mf$/i.test(file.name)) await open3MFFile(await file.arrayBuffer(), file.name);
-  else importSTL(await file.arrayBuffer(), file.name);
-});
+// Import… — тот же единый вход, что Open…: все форматы, которые программа читает
+document.getElementById('f_import').addEventListener('click', openProject);
 // перетаскивание файла на сцену: .stl — импорт, .zcad — открыть проект
 view.addEventListener('dragover', e=>{ e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
 view.addEventListener('drop', async e=>{
   e.preventDefault();
   const file = e.dataTransfer.files && e.dataTransfer.files[0];
   if(!file) return;
-  if(/\.stl$/i.test(file.name)) importSTL(await file.arrayBuffer(), file.name);
-  else if(/\.3mf$/i.test(file.name)) await open3MFFile(await file.arrayBuffer(), file.name);
-  else if(/\.zcad$/i.test(file.name)) loadProjectText(await file.text(), file.name);
-  else warnTip('Drop an .stl, .3mf or .zcad file');
+  await openFileAny(file, null);
 });
 f_file.addEventListener('change', async ()=>{
   const file = f_file.files && f_file.files[0];
@@ -15176,11 +15324,11 @@ startScreen.querySelectorAll('.st-card').forEach(b =>
   b.addEventListener('click', () => startWithShape(b.dataset.shape)));
 document.getElementById('st_continue').addEventListener('click', closeStartScreen);
 // Open… / Import… со стартового экрана: экран закрывается, только когда файл
-// выбран (openFileAny, f_stl). Раньше он закрывался до окна выбора — под ним
+// выбран (openFileAny). Раньше он закрывался до окна выбора — под ним
 // показывалась прошлая сессия, и казалось, что файл подгрузился заранее;
 // Cancel оставлял в прошлой сессии вместо карточек
 document.getElementById('st_open').addEventListener('click', () => { openProject(); });
-document.getElementById('st_import').addEventListener('click', () => { f_stl.value = ''; f_stl.click(); });
+document.getElementById('st_import').addEventListener('click', () => { openProject(); });
 // обучение через игру — сразу, без 30 секунд ожидания демо
 document.getElementById('st_learn').addEventListener('click', e => {
   e.currentTarget.blur(); // Space в игре — выстрел, а не повторное нажатие кнопки
@@ -15495,6 +15643,7 @@ function patternSegDist(px, py, s){
 function patternField(kind, L, H, cell, line, seed, opt = {}){
   const t2 = line / 2, segs = [], square = [], ring = !!opt.ring, fillCells = opt.fill === 'cells';
   let cellsHex = null, knurl = null;
+  const polyFigs = []; // знаки-силуэты узора symbol: {rings, bb}
   if(kind === 'knurl'){
     // накатка (рифление, насечка), как на рукоятке или грифе штанги, три вида:
     // straight — продольные рёбра вдоль оси полосы (её высоты; на цилиндре —
@@ -15503,17 +15652,21 @@ function patternField(kind, L, H, cell, line, seed, opt = {}){
     // пирамидки). cell — шаг канавок
     const style = opt.style == null ? 'diamond' : String(opt.style);
     if(!['straight', 'diamond', 'cross'].includes(style)) throw new Error('knurl style must be straight, diamond or cross');
-    const al = (opt.angle == null ? 30 : +opt.angle) * Math.PI / 180;
+    // angle: у ромбов — угол канавок к оси (по умолчанию 30°); у прямой —
+    // наклон рёбер от оси: 0 — вдоль оси, 90 — поперёк (стиральная доска), 45 — косые
+    const al = (opt.angle == null ? (style === 'straight' ? 0 : 30) : +opt.angle) * Math.PI / 180;
+    if(style === 'straight' && !(Math.abs(al) <= Math.PI + 1e-9)) throw new Error('knurl angle must be -180…180° for straight');
     if(style === 'diamond' && !(al >= 10 * Math.PI / 180 - 1e-9 && al <= Math.PI / 3 + 1e-9)) throw new Error('knurl angle must be 10…60°');
     // s = (x, y) · w / cell по двум сериям канавок
-    knurl = style === 'straight' ? {w1: [1, 0], w2: [1, 0]}
+    knurl = style === 'straight' ? {w1: [Math.cos(al), -Math.sin(al)], w2: [Math.cos(al), -Math.sin(al)]}
           : style === 'cross' ? {w1: [1, 0], w2: [0, 1]}
           : {w1: [Math.cos(al), -Math.sin(al)], w2: [Math.cos(al), Math.sin(al)]};
     // косая сетка вдоль канавок: шаг — четверть шага накатки по каждой серии
     // (узлы — на канавках, вершинах и серединах граней), вершина в центре полосы
     const m = 4, pr = v => [-v[1], v[0]], dot = (a, b) => a[0]*b[0] + a[1]*b[1];
     let e1, e2;
-    if(style === 'straight'){ e1 = [cell / m, 0]; e2 = [0, cell / 2]; }
+    // прямая: поперёк рёбер (w1) — четверть шага, вдоль рёбер — полшага
+    if(style === 'straight'){ e1 = knurl.w1.map(v => v * cell / m); e2 = [-knurl.w1[1] * cell / 2, knurl.w1[0] * cell / 2]; }
     else {
       const q2 = pr(knurl.w2), q1 = pr(knurl.w1);
       e1 = q2.map(v => v * (cell / m) / dot(knurl.w1, q2));
@@ -15529,6 +15682,33 @@ function patternField(kind, L, H, cell, line, seed, opt = {}){
       j0 = Math.min(j0, Math.floor(b) - 1); j1 = Math.max(j1, Math.ceil(b) + 1);
     }
     knurl.frame = {o: [L / 2 + i0 * e1[0] + j0 * e2[0], H / 2 + i0 * e1[1] + j0 * e2[1]], e1, e2, nx: i1 - i0, ny: j1 - j0};
+  } else if(kind === 'symbol'){
+    // узор из знака библиотеки (SYMBOLS): фигуры рядами, ряд через один
+    // сдвинут на полшага; cell — шаг, фигура вписана в круг 0.8·cell,
+    // line — толщина линии; только целые фигуры
+    const S = SYMBOLS[String(opt.symbol || '').toLowerCase()];
+    if(!S) throw new Error('symbol must be one of ' + Object.keys(SYMBOLS).join(', '));
+    const raw = S.outline ? null : S.strokes({});
+    if(opt.spin != null && !['none', 'random'].includes(opt.spin)) throw new Error('spin must be none or random');
+    const spin = opt.spin === 'random';
+    let sr = ((seed >>> 0) || 1) * 7919 % 2147483647 || 1;
+    const spinRand = () => (sr = (sr * 16807) % 2147483647) / 2147483647;
+    const k = 0.4 * cell / (S.outline ? Math.max(...S.outline.flat().map(p => Math.hypot(p[0], p[1]))) : symbolExtent(raw));
+    const E = 0.4 * cell + (S.outline ? 0 : t2), dyRow = cell * Math.sqrt(3) / 2;
+    const nr = Math.max(0, Math.floor((H - 2 * E) / dyRow + 1e-9) + 1);
+    const n0 = Math.max(0, Math.floor((L - 2 * E) / cell + 1e-9) + 1);
+    const y0 = (H - (nr - 1) * dyRow) / 2, x0 = (L - (n0 - 1) * cell - (nr > 1 ? cell / 2 : 0)) / 2;
+    for(let j=0;j<nr;j++) for(let i=-1;i<=n0;i++){
+      const cx = x0 + i * cell + (j & 1 ? cell / 2 : 0), cy = y0 + j * dyRow;
+      if(cx - E < -1e-9 || cx + E > L + 1e-9 || cy - E < -1e-9 || cy + E > H + 1e-9) continue;
+      // spin random: каждая фигура повёрнута на свой угол (вихрь не повторяется)
+      const ang = spin ? spinRand() * 2 * Math.PI : 0, ca = Math.cos(ang), sa = Math.sin(ang);
+      const rot = p => [p[0] * ca - p[1] * sa, p[0] * sa + p[1] * ca];
+      if(S.outline) polyFigs.push(placeOutline(spin ? {outline: S.outline.map(r => r.map(rot))} : S, cx, cy, k));
+      else for(const sg of raw){ const a = rot([sg[0], sg[1]]), b = rot([sg[2], sg[3]]);
+        segs.push([cx + a[0] * k, cy + a[1] * k, cx + b[0] * k, cy + b[1] * k]); }
+    }
+    if(!segs.length && !polyFigs.length) throw new Error('symbol: not a single whole figure fits — make the band bigger or the cell smaller');
   } else if(kind === 'triskele'){
     // трискель: три спиральных рукава из общего центра (поворотная симметрия
     // 120°). Рукав k выходит из центра O и закручивается вокруг своего центра
@@ -15597,7 +15777,7 @@ function patternField(kind, L, H, cell, line, seed, opt = {}){
       segs.push([p[0], p[1], q[0], q[1]]);
     }
     if(kind === 'honeycomb_relief' || fillCells) cellsHex = {centers, R, a};
-  } else if(!knurl) throw new Error('pattern must be honeycomb, honeycomb_relief, meander, triskele or knurl');
+  } else if(!knurl) throw new Error('pattern must be honeycomb, honeycomb_relief, meander, triskele, symbol or knurl');
   // корзины отрезков — поле считается быстро и на длинной полосе
   const B = Math.max(cell, line) * 1.5, bins = new Map();
   const put = (s, sq) => {
@@ -15644,6 +15824,19 @@ function patternField(kind, L, H, cell, line, seed, opt = {}){
       return Math.min(m === -Infinity ? -t2 : m, clip(x, y));
     };
   }
+  // знаки-силуэты: поле — расстояние со знаком до контура ближайшего знака
+  if(polyFigs.length){
+    const f0 = f;
+    f = (x, y) => {
+      let m = f0(x, y);
+      for(const fg of polyFigs){
+        const b = fg.bb;
+        if(x < b[0] - 1 || x > b[2] + 1 || y < b[1] - 1 || y > b[3] + 1) continue;
+        m = Math.max(m, Math.min(polySignedDist(fg.rings, x, y), clip(x, y)));
+      }
+      return m;
+    };
+  }
   // высота: постоянная или наклонная плоскость соты (ноль в одном из углов)
   let rnd = (seed >>> 0) || 1;
   const rand = () => (rnd = (rnd * 16807) % 2147483647) / 2147483647;
@@ -15662,10 +15855,23 @@ function patternField(kind, L, H, cell, line, seed, opt = {}){
     if(!best) return hmax;
     const [cx, cy] = best, key = cx.toFixed(3) + ',' + cy.toFixed(3);
     let tl = tilt.get(key);
-    if(!tl){ const k = Math.floor(rand() * 6), ang = Math.PI / 2 + k * Math.PI / 3; tl = [Math.cos(ang), Math.sin(ang)]; tilt.set(key, tl); }
-    // ноль в выбранном углу, максимум — у противоположного
-    const s = 1 - ((x - cx) * tl[0] + (y - cy) * tl[1] + R) / (2 * R);
-    return Math.max(0.05, hmax * Math.min(1, Math.max(0, s)));
+    // tilt: в какую сторону растёт крышка — 'random' (у каждой соты свой
+    // угол), 'down' — ноль у верхней вершины, высота у нижней (клин для
+    // проверки печати навесов), 'up', 'left', 'right'
+    if(!tl){
+      const fixed = {down: Math.PI / 2, up: -Math.PI / 2, left: 0, right: Math.PI}[opt.tilt];
+      const ang = fixed != null ? fixed : Math.PI / 2 + Math.floor(rand() * 6) * Math.PI / 3;
+      tl = [Math.cos(ang), Math.sin(ang)]; tilt.set(key, tl);
+    }
+    // ноль в выбранном углу, максимум — у противоположного. Наклон — по
+    // самой соте, а не по ячейке: сота меньше ячейки на половину зазора, и по
+    // ячейке её вершина начиналась не с нуля (у клиньев над PETG — с 0.4 мм).
+    // Размах соты в сторону наклона: к вершине — R − t2·2/√3, к грани
+    // (left / right) — апофема − t2. Нижнего предела нет: тело всё равно
+    // толстое — его основание уходит в стенку на 0.5 мм
+    const ext = opt.tilt === 'left' || opt.tilt === 'right' ? R * Math.sqrt(3) / 2 - t2 : R - t2 * 2 / Math.sqrt(3);
+    const s = 1 - ((x - cx) * tl[0] + (y - cy) * tl[1] + ext) / (2 * ext);
+    return hmax * Math.min(1, Math.max(0, s));
   } : (x, y, hmax) => hmax;
   return {f, heightAt, frame: knurl ? knurl.frame : null};
 }
@@ -15781,6 +15987,8 @@ function patternBuild(a){
   if(kind === 'meander' && line > 2 * cell * 0.9) throw new Error('meander: line must be thinner than 1.8 × cell');
   if(d === 0) throw new Error('depth: + raised or − engraved');
   if(knurlK && d < 0) throw new Error('knurl is raised only: depth must be +');
+  if(a.tilt != null && !['random', 'down', 'up', 'left', 'right'].includes(a.tilt)) throw new Error('tilt must be random, down, up, left or right');
+  if(a.tilt != null && kind !== 'honeycomb_relief') throw new Error('tilt works with honeycomb_relief');
   if(a.wrap != null && a.project) throw new Error('give wrap or project, not both');
   const mode = a.wrap != null ? 'wrap' : a.project ? 'project' : 'plane';
   const fill = a.fill == null ? 'walls' : String(a.fill);
@@ -15791,13 +15999,13 @@ function patternBuild(a){
   let Lr = L, cellR = cell;
   if(a.ring){
     if(mode !== 'wrap') throw new Error('ring needs wrap (a round wall)');
-    if(kind === 'meander' || kind === 'triskele' || knurlK) throw new Error('ring works with honeycomb and honeycomb_relief');
+    if(kind === 'meander' || kind === 'triskele' || kind === 'symbol' || knurlK) throw new Error('ring works with honeycomb and honeycomb_relief');
     const A0 = zcV3(a.wrap.axis_point, 'wrap.axis_point'), ax = a.wrap.axis != null ? zcV3(a.wrap.axis, 'wrap.axis').normalize() : new THREE.Vector3(0, 0, 1);
     const w = new THREE.Vector3().subVectors(C, A0); w.addScaledVector(ax, -w.dot(ax));
     Lr = 2 * Math.PI * w.length();
     cellR = Lr / Math.max(3, Math.round(Lr / cell));
   }
-  const pf = patternField(kind, Lr, H, cellR, line, a.seed == null ? 1 : +a.seed, {ring: !!a.ring, fill, angle: a.angle, style: a.style, turns: a.turns});
+  const pf = patternField(kind, Lr, H, cellR, line, a.seed == null ? 1 : +a.seed, {ring: !!a.ring, fill, angle: a.angle, style: a.style, turns: a.turns, tilt: a.tilt, symbol: a.symbol, spin: a.spin});
   const above = d > 0 ? d : 1.0, below = d > 0 ? 0.5 : -d;
   const opt = {W: Lr, H, fullTurn: true, ring: !!a.ring, rotate: +a.rotate || 0, wrap: a.wrap};
   let M;
@@ -15824,7 +16032,7 @@ function patternBuild(a){
   const flat = patternSolid(Lr, H, g, pf.f, top, below, outsideAt, !!a.ring, pf.frame)
     .map(t => t.map(p => M.P0.clone().addScaledVector(M.u, p[0]).addScaledVector(M.v, p[1]).addScaledVector(n, p[2])));
   if(!flat.length) throw new Error('the pattern is empty — make the band bigger or the line thicker');
-  return {tris: M.mapAll(flat), d, info: Object.assign({pattern: kind}, knurlK ? Object.assign({style: a.style || 'diamond'}, (a.style || 'diamond') === 'diamond' ? {angle_deg: a.angle == null ? 30 : +a.angle} : {}) : {fill}, {tool_triangles: flat.length},
+  return {tris: M.mapAll(flat), d, info: Object.assign({pattern: kind}, knurlK ? Object.assign({style: a.style || 'diamond'}, (a.style || 'diamond') !== 'cross' ? {angle_deg: a.angle == null ? ((a.style || 'diamond') === 'diamond' ? 30 : 0) : +a.angle} : {}) : {fill}, {tool_triangles: flat.length},
     a.ring ? {ring: true, cell_used_mm: +cellR.toFixed(4), cells_around: Math.round(Lr / cellR)} : {}, M.info)};
 }
 function zcAddPattern(a){
@@ -15931,7 +16139,7 @@ function resolveDegenerate(arr){
 // OK — та же команда add_pattern, что у агента: шаг попадает в историю
 const patTool = {
   hud: 'PATTERN · click a surface — the band appears there · change it in the window, it updates live · Enter / OK — apply · Esc — exit',
-  anchor: null, ghostG: null, timer: 0, kind: 'honeycomb', fill: 'walls', style: 'diamond', place: 'auto', busy: false,
+  anchor: null, ghostG: null, timer: 0, kind: 'honeycomb', fill: 'walls', style: 'diamond', symbol: 'spiral', place: 'auto', busy: false,
   on(){
     this.anchor = null; this.busy = false;
     patPopup.style.left = '16px'; patPopup.style.top = '48px';
@@ -15983,13 +16191,14 @@ const patTool = {
     if(this.kind === 'honeycomb') a.fill = this.fill;
     if(this.kind === 'honeycomb_relief') a.seed = Math.round(this.num(pat_seed, 1));
     if(this.kind === 'triskele') a.turns = this.num(pat_turns, 1.75);
-    if(this.kind === 'knurl'){ delete a.line; a.style = this.style; if(this.style === 'diamond') a.angle = this.num(pat_ang, 30); }
+    if(this.kind === 'symbol') a.symbol = this.symbol;
+    if(this.kind === 'knurl'){ delete a.line; a.style = this.style; if(this.style !== 'cross') a.angle = this.num(pat_ang, this.style === 'diamond' ? 30 : 0); }
     const v3 = v => [+v.x.toFixed(4), +v.y.toFixed(4), +v.z.toFixed(4)];
     if(mode === 'wrap'){
       if(!A.ring) throw new Error('no round wall here — this point is not on a circle of the model');
       a.center = v3(A.P); a.normal = v3(A.Nf);
       a.wrap = {axis_point: v3(A.ring.ctr), axis: v3(A.ring.n)};
-      if(pat_ring.checked && this.kind !== 'meander' && this.kind !== 'knurl' && this.kind !== 'triskele') a.ring = true;
+      if(pat_ring.checked && this.kind !== 'meander' && this.kind !== 'knurl' && this.kind !== 'triskele' && this.kind !== 'symbol') a.ring = true;
     } else if(mode === 'project'){
       // плоскость высоко над точкой: лучи всё равно видят только гладкую
       // поверхность под точкой (onto_point)
@@ -16004,7 +16213,9 @@ const patTool = {
   },
   ui(msg, bad){
     const k = this.kind;
-    for(const [id, v] of [['pat_hc', 'honeycomb'], ['pat_rel', 'honeycomb_relief'], ['pat_mea', 'meander'], ['pat_tri', 'triskele'], ['pat_knu', 'knurl']]) $id(id).classList.toggle('on', k === v);
+    for(const [id, v] of [['pat_hc', 'honeycomb'], ['pat_rel', 'honeycomb_relief'], ['pat_mea', 'meander'], ['pat_tri', 'triskele'], ['pat_sym', 'symbol'], ['pat_knu', 'knurl']]) $id(id).classList.toggle('on', k === v);
+    $id('pat_sym_row').style.display = k === 'symbol' ? '' : 'none';
+    for(const b of $id('pat_sym_row').querySelectorAll('button')) b.classList.toggle('on', b.dataset.sym === this.symbol);
     for(const [id, v] of [['pat_walls', 'walls'], ['pat_cells', 'cells']]) $id(id).classList.toggle('on', this.fill === v);
     for(const [id, v] of [['pat_auto', 'auto'], ['pat_wrap', 'wrap'], ['pat_proj', 'project'], ['pat_flat', 'flat']]) $id(id).classList.toggle('on', this.place === v);
     $id('pat_fill_row').style.display = k === 'honeycomb' ? '' : 'none';
@@ -16013,11 +16224,11 @@ const patTool = {
     $id('pat_line_row').style.display = k === 'knurl' ? 'none' : '';
     $id('pat_style_row').style.display = k === 'knurl' ? '' : 'none';
     $id('pat_turns_row').style.display = k === 'triskele' ? '' : 'none';
-    $id('pat_ang_row').style.display = k === 'knurl' && this.style === 'diamond' ? '' : 'none';
+    $id('pat_ang_row').style.display = k === 'knurl' && this.style !== 'cross' ? '' : 'none';
     for(const [id, v] of [['pat_kst', 'straight'], ['pat_kdi', 'diamond'], ['pat_kcr', 'cross']]) $id(id).classList.toggle('on', this.style === v);
     const mode = this.anchor ? this.placeNow() : null;
     pat_state.textContent = mode ? (mode === 'wrap' ? 'round wall' : mode === 'project' ? 'projected' : 'flat face') : 'place';
-    $id('pat_ring_row').style.display = mode === 'wrap' && k !== 'meander' && k !== 'knurl' && k !== 'triskele' ? '' : 'none';
+    $id('pat_ring_row').style.display = mode === 'wrap' && k !== 'meander' && k !== 'knurl' && k !== 'triskele' && k !== 'symbol' ? '' : 'none';
     $id('pat_rot_row').style.display = mode === 'project' ? '' : 'none';
     if(msg != null){ pat_info.textContent = msg; pat_info.style.color = bad ? '#ff6b6b' : ''; }
     pat_ok.disabled = !this.anchor || this.busy;
