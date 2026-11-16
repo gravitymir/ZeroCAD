@@ -17600,7 +17600,7 @@ const ZC_COMMANDS = {
       const tris = zcBodyAt(a.body_point), copies = Math.round(+a.copies || 0);
       if(copies < 0 || copies > 100) throw new Error('copies must be 0…100');
       const pos = mesh.geometry.attributes.position.array;
-      if(a.move != null && a.scale != null) throw new Error('give move or scale, not both');
+      if([a.move, a.scale, a.rotate].filter(x => x != null).length > 1) throw new Error('give one of move, scale or rotate');
       let mats;
       if(a.move != null){
         const d = zcV3(a.move, 'move');
@@ -17614,7 +17614,22 @@ const ZC_COMMANDS = {
         else { const b = bodyBox(pos, tris || Array.from({length: pos.length / 9}, (_, i) => i)); C = b.getCenter(new THREE.Vector3()); C.z = b.min.z; }
         if(copies > 1) throw new Error('scale makes at most one copy');
         mats = [scaleMatrix(C, s)];
-      } else throw new Error('give move [dx, dy, dz] or scale');
+      } else if(a.rotate != null){
+        // поворот тела вокруг оси через pivot (по умолчанию — центр габарита):
+        // {axis: [x, y, z], angle: градусы}; 180° вокруг горизонтальной оси —
+        // перевернуть деталь (колпак — вверх дном, как он ляжет на стол)
+        const ax = zcV3(a.rotate.axis, 'rotate.axis'), ang = +a.rotate.angle;
+        if(ax.length() < 1e-9) throw new Error('rotate.axis must not be zero');
+        if(!Number.isFinite(ang) || Math.abs(ang) < 1e-6) throw new Error('rotate.angle must be a non-zero number of degrees');
+        ax.normalize();
+        let C;
+        if(a.pivot != null) C = zcV3(a.pivot, 'pivot');
+        else C = bodyBox(pos, tris || Array.from({length: pos.length / 9}, (_, i) => i)).getCenter(new THREE.Vector3());
+        const step = k => new THREE.Matrix4().makeTranslation(C.x, C.y, C.z)
+          .multiply(new THREE.Matrix4().makeRotationAxis(ax, ang * (k + 1) * Math.PI / 180))
+          .multiply(new THREE.Matrix4().makeTranslation(-C.x, -C.y, -C.z));
+        mats = Array.from({length: Math.max(1, copies)}, (_, k) => step(k));
+      } else throw new Error('give move [dx, dy, dz], scale or rotate {axis, angle}');
       const r = applyBodyTransform(tris, mats, copies > 0);
       return Object.assign({boolean: lastBoolPath || 'none'}, r);
     }

@@ -642,6 +642,28 @@ def text_symbols_triskele():
 
 
 @case
+def rotate_body_upside_down():
+    # transform_body rotate: поворот вокруг оси через центр габарита —
+    # переворот детали для печати (колпак вверх дном). Это поворот, а не
+    # зеркало: надпись остаётся читаемой, объём и габарит те же
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    t = call('add_text', {'text': 'UP', 'center': [10, 10, 20], 'normal': [0, 0, 1], 'height': 8, 'depth': 1})
+    v0 = t['volume_mm3']
+    d = call('transform_body', {'rotate': {'axis': [1, 0, 0], 'angle': 180}})
+    closed(d, 'rotated'); near(d['volume_mm3'], v0, 1e-3, 'volume kept')
+    near(d['bbox_min'][2], 0, 1e-3, 'the letters now stick out below'); near(d['bbox_max'][2], 21, 1e-3, 'the cube went up')
+    # повернуть ещё раз — вернулось на место
+    d = call('transform_body', {'rotate': {'axis': [1, 0, 0], 'angle': 180}})
+    near(d['bbox_max'][2], 21, 1e-3, 'back'); near(d['bbox_min'][2], 0, 1e-3, 'back')
+    try:
+        call('transform_body', {'rotate': {'axis': [0, 0, 0], 'angle': 90}})
+    except McpError as e:
+        assert 'axis' in str(e), str(e)
+    else:
+        raise AssertionError('zero axis must be refused')
+
+
+@case
 def symbol_pattern_and_relief_tilt():
     # Узор из любого знака библиотеки (kind symbol) и клин сот одного наклона
     # (honeycomb_relief, tilt down: ноль сверху, полная высота снизу)
