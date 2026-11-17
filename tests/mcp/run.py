@@ -12,7 +12,7 @@
 Файлы, которые тесты экспортируют в exports/, после прогона удаляются.
 Только стандартная библиотека. Код выхода 0 — всё прошло.
 """
-import argparse, json, math, sys, time, urllib.request
+import argparse, json, math, os, sys, time, urllib.request
 
 URL = 'http://127.0.0.1:9000/mcp'
 
@@ -635,6 +635,50 @@ def text_symbols_triskele():
         a.update(args)
         try:
             call('add_text', a)
+        except McpError as e:
+            assert msg in str(e), str(e)
+        else:
+            raise AssertionError('must be refused: %r' % args)
+
+
+@case
+def texture_surface_displacement():
+    # Текстура по поверхности: дробление до resolution + сдвиг вершин по
+    # нормали. Сетка замкнута (решение о делении — по ребру, у обоих соседей
+    # одинаково), маски держат низ ровным, область под точкой — только её
+    call('new_shape', {'shape': 'cube', 'size': 30})
+    d = call('texture_surface', {'texture': 'voronoi', 'depth': 0.6, 'size': 5, 'resolution': 0.6, 'mask_bottom_deg': 30})
+    unfolded(d, 'voronoi cube'); assert d['volume_change_mm3'] > 100, d
+    near(d['bbox_min'][2], 0, 1e-6, 'masked bottom stays flat on the bed')
+    call('new_shape', {'shape': 'cylinder', 'size': 30, 'height': 20})
+    d = call('texture_surface', {'texture': 'knurl', 'depth': -0.5, 'size': 3, 'resolution': 0.6, 'projection': 'cylindrical',
+                                 'mask_bottom_deg': 30, 'mask_top_deg': 30})
+    unfolded(d, 'knurled cylinder'); assert d['volume_change_mm3'] < -50, d
+    turns = 2 * math.pi * 15 / d['tile_u_mm']  # радиус граней чуть меньше 15 — почти целое
+    near(turns, round(turns), 0.1, 'whole tiles round the cylinder (no seam)')
+    call('new_shape', {'shape': 'cube', 'size': 30})
+    d = call('texture_surface', {'texture': 'hex', 'depth': 0.5, 'size': 4, 'resolution': 0.6, 'point': [15, 15, 30]})
+    unfolded(d, 'top face only'); near(d['bbox_min'][0], 0, 1e-6, 'sides untouched'); near(d['bbox_max'][0], 30, 1e-6, 'sides untouched')
+    assert d['bbox_max'][2] > 30.3, d
+    # карта высот из картинки: полосы 8×8 px
+    import struct, zlib
+    raw = b''.join(b'\x00' + bytes([255 if (x // 2) % 2 else 0 for x in range(8)]) for _ in range(8))
+    ch = lambda t, b: struct.pack('>I', len(b)) + t + b + struct.pack('>I', zlib.crc32(t + b) & 0xffffffff)
+    png = b'\x89PNG\r\n\x1a\n' + ch(b'IHDR', struct.pack('>IIBBBBB', 8, 8, 8, 0, 0, 0, 0)) + ch(b'IDAT', zlib.compress(raw)) + ch(b'IEND', b'')
+    img = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_stripes.png')
+    open(img, 'wb').write(png)
+    try:
+        call('new_shape', {'shape': 'cube', 'size': 30})
+        d = call('texture_surface', {'texture': 'image', 'path': img, 'depth': 0.4, 'size': 6, 'resolution': 0.6, 'point': [15, 15, 30],
+                                     'projection': 'planar_xy'})
+        unfolded(d, 'image height map'); assert d['volume_change_mm3'] > 20, d
+    finally:
+        os.remove(img)
+    for args, msg in [({'texture': 'plasma'}, 'texture must be'), ({'resolution': 0.01}, 'resolution'), ({'depth': 0}, 'depth')]:
+        a = {'texture': 'noise', 'depth': 0.5}
+        a.update(args)
+        try:
+            call('texture_surface', a)
         except McpError as e:
             assert msg in str(e), str(e)
         else:

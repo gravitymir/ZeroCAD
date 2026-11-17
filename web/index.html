@@ -256,24 +256,30 @@
   #exPopup #ex_through:disabled,#exPopup #ex_taper:disabled{opacity:.4;cursor:default}
   #bevPopup .prow[hidden]{display:none}
   /* окна Slice (G,S) и Cylinder (G,U): как окно фаски */
-  #slicePopup,#cylPopup,#profPopup,#mirPopup,#xfPopup,#shellPopup,#holePopup,#patPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
+  #slicePopup,#cylPopup,#profPopup,#mirPopup,#xfPopup,#shellPopup,#holePopup,#patPopup,#texPopup{position:absolute;z-index:7;background:var(--panel);border:1px solid #2ecc40;border-radius:10px;
     padding:14px 16px;font-size:12px;width:320px;box-sizing:border-box}
   #patPopup{width:380px}
-  #slicePopup[hidden],#cylPopup[hidden],#profPopup[hidden],#pf_revolve[hidden],#ho_rows_head[hidden],#xf_rows_move[hidden],#xf_rows_scale[hidden],#mirPopup[hidden],#xfPopup[hidden],#shellPopup[hidden],#holePopup[hidden],#patPopup[hidden]{display:none}
-  #slicePopup .prow,#cylPopup .prow,#profPopup .prow,#mirPopup .prow,#xfPopup .prow,#shellPopup .prow,#holePopup .prow,#patPopup .prow{display:flex;align-items:center;gap:10px;margin:4px 0;color:var(--muted);font-size:19px}
-  #slicePopup .plab,#cylPopup .plab,#profPopup .plab,#mirPopup .plab,#xfPopup .plab,#shellPopup .plab,#holePopup .plab,#patPopup .plab{display:inline-block;min-width:70px}
-  #slicePopup input,#cylPopup input,#profPopup input,#mirPopup input,#xfPopup input,#shellPopup input,#holePopup input,#patPopup input{font-size:22px;padding:6px 10px;width:110px;background:var(--panel2);color:var(--text);
+  #texPopup{width:400px}
+  #texPopup select{font-size:17px;padding:5px 8px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px}
+  #texPopup .texsw{display:flex;gap:10px;align-items:center}
+  #texPopup canvas{border:1px solid var(--line);border-radius:6px;image-rendering:pixelated}
+  #texPopup input[type=checkbox]{width:auto;padding:0}
+  #texPopup label{font-size:17px;color:var(--muted);margin-right:14px}
+  #slicePopup[hidden],#cylPopup[hidden],#profPopup[hidden],#pf_revolve[hidden],#ho_rows_head[hidden],#xf_rows_move[hidden],#xf_rows_scale[hidden],#mirPopup[hidden],#xfPopup[hidden],#shellPopup[hidden],#holePopup[hidden],#patPopup[hidden],#texPopup[hidden]{display:none}
+  #slicePopup .prow,#cylPopup .prow,#profPopup .prow,#mirPopup .prow,#xfPopup .prow,#shellPopup .prow,#holePopup .prow,#patPopup .prow,#texPopup .prow{display:flex;align-items:center;gap:10px;margin:4px 0;color:var(--muted);font-size:19px}
+  #slicePopup .plab,#cylPopup .plab,#profPopup .plab,#mirPopup .plab,#xfPopup .plab,#shellPopup .plab,#holePopup .plab,#patPopup .plab,#texPopup .plab{display:inline-block;min-width:70px}
+  #slicePopup input,#cylPopup input,#profPopup input,#mirPopup input,#xfPopup input,#shellPopup input,#holePopup input,#patPopup input,#texPopup input{font-size:22px;padding:6px 10px;width:110px;background:var(--panel2);color:var(--text);
     border:1px solid #6b7483;border-radius:6px;transition:border-color .1s,box-shadow .1s}
-  #slicePopup input:hover,#cylPopup input:hover,#profPopup input:hover,#mirPopup input:hover,#xfPopup input:hover,#shellPopup input:hover,#holePopup input:hover,#patPopup input:hover{border-color:#aab3c2}
-  #slicePopup input:focus,#cylPopup input:focus,#profPopup input:focus,#mirPopup input:focus,#xfPopup input:focus,#shellPopup input:focus,#holePopup input:focus,#patPopup input:focus{border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
-  #slicePopup input:disabled,#slicePopup button:disabled,#cylPopup input:disabled,#cylPopup button:disabled,#profPopup input:disabled,#profPopup button:disabled,#mirPopup input:disabled,#xfPopup input:disabled,#mirPopup button:disabled,#xfPopup button:disabled,#shellPopup input:disabled,#shellPopup button:disabled,#holePopup input:disabled,#patPopup input:disabled,#holePopup button:disabled,#patPopup button:disabled{opacity:.45;cursor:default}
-  #slicePopup button,#cylPopup button,#profPopup button,#mirPopup button,#xfPopup button,#shellPopup button,#holePopup button,#patPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
+  #slicePopup input:hover,#cylPopup input:hover,#profPopup input:hover,#mirPopup input:hover,#xfPopup input:hover,#shellPopup input:hover,#holePopup input:hover,#patPopup input:hover,#texPopup input:hover{border-color:#aab3c2}
+  #slicePopup input:focus,#cylPopup input:focus,#profPopup input:focus,#mirPopup input:focus,#xfPopup input:focus,#shellPopup input:focus,#holePopup input:focus,#patPopup input:focus,#texPopup input:focus{border-color:var(--accent2);outline:none;box-shadow:0 0 0 2px rgba(77,163,255,.35)}
+  #slicePopup input:disabled,#slicePopup button:disabled,#cylPopup input:disabled,#cylPopup button:disabled,#profPopup input:disabled,#profPopup button:disabled,#mirPopup input:disabled,#xfPopup input:disabled,#mirPopup button:disabled,#xfPopup button:disabled,#shellPopup input:disabled,#shellPopup button:disabled,#holePopup input:disabled,#patPopup input:disabled,#holePopup button:disabled,#patPopup button:disabled,#texPopup input:disabled,#texPopup button:disabled{opacity:.45;cursor:default}
+  #slicePopup button,#cylPopup button,#profPopup button,#mirPopup button,#xfPopup button,#shellPopup button,#holePopup button,#patPopup button,#texPopup button{padding:8px 18px;font-size:17px;border-radius:6px;cursor:pointer;flex:1;
     border:1px solid var(--line);background:var(--panel2);color:var(--text)}
-  #slicePopup button.lp,#cylPopup button.lp,#profPopup button.lp,#mirPopup button.lp,#xfPopup button.lp,#shellPopup button.lp,#holePopup button.lp,#patPopup button.lp{padding:6px 8px;font-size:15px}
-  #slicePopup button.lp.on,#cylPopup button.lp.on,#profPopup button.lp.on,#mirPopup button.lp.on,#xfPopup button.lp.on,#shellPopup button.lp.on,#holePopup button.lp.on,#patPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
-  #slicePopup #sl_ok,#cylPopup #cyl_ok,#profPopup #pf_ok,#mirPopup #mir_ok,#xfPopup #xf_ok,#shellPopup #sh_ok,#holePopup #ho_ok,#patPopup #ho_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
-  #slicePopup .pinfo,#cylPopup .pinfo,#profPopup .pinfo,#mirPopup .pinfo,#xfPopup .pinfo,#shellPopup .pinfo,#holePopup .pinfo,#patPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
-  #slicePopup .phint,#cylPopup .phint,#profPopup .phint,#mirPopup .phint,#xfPopup .phint,#shellPopup .phint,#holePopup .phint,#patPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
+  #slicePopup button.lp,#cylPopup button.lp,#profPopup button.lp,#mirPopup button.lp,#xfPopup button.lp,#shellPopup button.lp,#holePopup button.lp,#patPopup button.lp,#texPopup button.lp{padding:6px 8px;font-size:15px}
+  #slicePopup button.lp.on,#cylPopup button.lp.on,#profPopup button.lp.on,#mirPopup button.lp.on,#xfPopup button.lp.on,#shellPopup button.lp.on,#holePopup button.lp.on,#patPopup button.lp.on,#texPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
+  #slicePopup #sl_ok,#cylPopup #cyl_ok,#profPopup #pf_ok,#mirPopup #mir_ok,#xfPopup #xf_ok,#shellPopup #sh_ok,#holePopup #ho_ok,#patPopup #ho_ok,#texPopup #ho_ok{background:var(--accent2);color:#10131a;font-weight:700;border-color:var(--accent2)}
+  #slicePopup .pinfo,#cylPopup .pinfo,#profPopup .pinfo,#mirPopup .pinfo,#xfPopup .pinfo,#shellPopup .pinfo,#holePopup .pinfo,#patPopup .pinfo,#texPopup .pinfo{font-size:14px;margin:2px 0;color:var(--text);min-height:1.3em}
+  #slicePopup .phint,#cylPopup .phint,#profPopup .phint,#mirPopup .phint,#xfPopup .phint,#shellPopup .phint,#holePopup .phint,#patPopup .phint,#texPopup .phint{font-size:13px;margin:2px 0;color:var(--muted)}
   #bevPopup .plab{display:inline-block;min-width:70px}
   #bevPopup button.lp{padding:6px 8px;font-size:15px}
   #bevPopup button.lp.on{background:#2ecc40;color:#10131a;font-weight:700;border-color:#2ecc40}
@@ -561,6 +567,28 @@
       <div class="pinfo" id="pat_info">&nbsp;</div>
       <div class="phint">Click a surface: on a round wall the band wraps around it, elsewhere it is projected onto the smooth surface under the point (fins, ribs and text above it are ignored). Fields update the preview live. Cell — spacing of the cells (inner size = cell − wall); Triskele — three spiral arms from one centre, figures alternate up and down like honeycomb, Cell — figure spacing; Knurl — a grip like on a handle: straight ribs, diamond or cross pyramids, Pitch — groove spacing; Depth + raises, − engraves. Ring closes the band all the way round with a whole number of cells. Enter / OK — apply, Esc — exit</div>
       <div class="prow" style="gap:10px;margin-top:8px"><button id="pat_ok" disabled>OK</button><button id="pat_cancel">Cancel</button></div>
+    </div>
+    <div id="texPopup" hidden>
+      <div class="chgrip" title="Drag">⠿</div>
+      <div class="prow" style="padding-right:44px"><b style="color:#2ecc40">Texture</b><span id="tex_state" style="font-size:14px">whole model</span></div>
+      <div class="prow" id="tex_kinds" style="flex-wrap:wrap"><span class="plab">Kind</span></div>
+      <div class="prow" id="tex_img_row" style="display:none"><span class="plab">Image</span><button id="tex_img_btn" class="lp">Choose…</button><span id="tex_img_name" style="font-size:14px">none</span>
+        <input type="file" id="tex_img" accept="image/png,image/jpeg,image/webp" hidden></div>
+      <div class="prow texsw"><canvas id="tex_sw" width="96" height="96"></canvas><span style="font-size:13px">a tile of the texture,<br>bright = high</span></div>
+      <div class="prow"><span class="plab">Projection</span><select id="tex_proj">
+        <option value="triplanar">Triplanar</option><option value="cubic">Cubic (box)</option><option value="cylindrical">Cylindrical</option>
+        <option value="spherical">Spherical</option><option value="planar_xy">Planar XY</option><option value="planar_xz">Planar XZ</option><option value="planar_yz">Planar YZ</option></select></div>
+      <div class="prow"><span class="plab">Region</span><button id="tex_all" class="lp on">Whole model</button><button id="tex_pick" class="lp">Clicked surface</button></div>
+      <div class="prow"><span class="plab">Size</span><input id="tex_size" type="number" step="0.5" min="0.5" value="6"> mm</div>
+      <div class="prow"><span class="plab">Depth</span><input id="tex_depth" type="number" step="0.1" value="0.6"> mm</div>
+      <div class="prow"><span class="plab">Resolution</span><input id="tex_res" type="number" step="0.1" min="0.1" value="0.6"> mm</div>
+      <div class="prow"><span class="plab">Rotation</span><input id="tex_rot" type="number" step="5" value="0"> °</div>
+      <div class="prow"><span class="plab">Mask</span>bottom <input id="tex_mb" type="number" step="5" min="0" max="90" value="30" style="width:64px"> ° top <input id="tex_mt" type="number" step="5" min="0" max="90" value="0" style="width:64px"> °</div>
+      <div class="prow"><span class="plab">Transition</span><input id="tex_tr" type="number" step="0.5" min="0" value="1"> mm</div>
+      <div class="prow"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="tex_inv"> invert</label><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="tex_sym"> both ways</label></div>
+      <div class="pinfo" id="tex_info">&nbsp;</div>
+      <div class="phint">The surface is split down to Resolution and every point moves along its normal by Depth × the texture (+ out, − in). Mask keeps faces facing down / up within the angle untouched (a flat bottom for the bed); sharp edges stay crisp. Region: the whole model or the smooth surface you click. Mind the triangle count. Enter / OK — apply (Ctrl+Z undoes), Esc — exit</div>
+      <div class="prow" style="gap:10px;margin-top:8px"><button id="tex_ok">OK</button><button id="tex_cancel">Cancel</button></div>
     </div>
     <div id="slicePopup" hidden>
       <div class="chgrip" title="Drag">⠿</div>

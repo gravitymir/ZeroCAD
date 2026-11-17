@@ -572,7 +572,7 @@ pub fn mcp(body: &[u8]) -> (&'static str, String) {
             let args = params.get("arguments").cloned().unwrap_or(Json::Obj(vec![]));
             // import_3mf, open_project: файл читает сервер (вкладке диск
             // недоступен) и отдаёт вкладке содержимое — тот же разбор, что у Open…
-            let args = if name == "import_3mf" || name == "open_project" || name == "trace_reference" {
+            let args = if name == "import_3mf" || name == "open_project" || name == "trace_reference" || name == "texture_surface" {
                 match read_file_arg(&args, &name) {
                     Ok(a) => a,
                     Err(e) => return ("200 OK", Json::obj(vec![("jsonrpc", Json::str("2.0")), ("id", id), ("result",
@@ -630,7 +630,8 @@ fn tool_result(name: &str, r: Result<Json, String>) -> Json {
 /// проект .zcad для open_project, фотография для trace_reference. Путь абсолютный или имя в `exports/`;
 /// не больше 64 МБ. Остальные поля команды остаются как есть
 fn read_file_arg(args: &Json, tool: &str) -> Result<Json, String> {
-    let photo = tool == "trace_reference";
+    // картинка: фото-подложка или карта высот текстуры (у обеих путь не обязателен)
+    let photo = tool == "trace_reference" || tool == "texture_surface";
     let raw = match args.get("path").and_then(Json::as_str) {
         Some(p) => p,
         // фото можно и не давать: команда тогда только правит уже загруженное

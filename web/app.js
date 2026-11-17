@@ -304,6 +304,7 @@ function updateOrthoFrusta(){
 const FEATURE_COS = Math.cos(35*Math.PI/180);
 // излом мельче 4° — шум пересчёта плоской грани, а не складка (см. markNewFoldEdges)
 const FOLD_MIN_COS = Math.cos(4*Math.PI/180);
+const MICRO_COS = Math.cos(60*Math.PI/180); // излом мельче — у коротких рёбер рельефа не рисуется
 const CHAIN_COS   = Math.cos(25*Math.PI/180); // поворот >25° => конец цепочки («угол»)
 // Жёсткие рёбра (hard edges SketchUp, Mark Sharp в Blender): отрезки, рёбра
 // сетки на которых рисуются и выбираются, даже если грани сходятся под
@@ -723,8 +724,13 @@ function extractEdges(){
     // не видимое; стык листа с гранью (разные плоскости) остаётся ребром
     if(ent.normals.length >= 3 && ent.normals.every(nn => nn.dot(ent.normals[0]) > 0.9999)) dt = 1;
     const coplanarMany = ent.normals.length >= 3 && dt === 1;
-    if((ent.normals.length!==2 && !coplanarMany) || dt < FEATURE_COS
-       || ent.corner
+    // микро-излом рельефа (текстура по поверхности, накатка): ребро короче
+    // 0.75 мм с изломом мельче 60° — не ребро детали, а шаг рельефа; рисовать
+    // их — тёмная сетка по всей поверхности. Настоящие рёбра (угол куба 90°,
+    // стенки букв и узоров) остаются
+    const micro = ent.normals.length === 2 && dt > MICRO_COS && ent.A.distanceTo(ent.B) < 0.75;
+    if((ent.normals.length!==2 && !coplanarMany) || (dt < FEATURE_COS && !micro)
+       || (ent.corner && !micro)
        || (hardEdges.length && dt < 0.99999 && onHardEdge(ent.A, ent.B))){ ent.feat = true; feats.push(ent); }
   }
   // Поверхности: треугольники, связанные невидимыми (гладкими) рёбрами.
@@ -1015,11 +1021,28 @@ function splitChainsByAnchors(){
       if(P) cuts.push(P);
     }
   if(!cuts.length) return;
+  // резаки — по корзинам 2 мм: цепочка проверяет только точки у своих
+  // отрезков. Перебор «каждая цепочка × каждый резак» на текстуре по
+  // поверхности (9 тысяч цепочек × 18 тысяч концов) шёл минутами
+  const CB = 2, bins = new Map(), bk = (x, y, z) => x + ',' + y + ',' + z;
+  cuts.forEach((c, i) => { const k = bk(Math.floor(c.x / CB), Math.floor(c.y / CB), Math.floor(c.z / CB)); let l = bins.get(k); if(!l) bins.set(k, l = []); l.push(i); });
+  const near = ch => {
+    const ids = new Set();
+    for(let i=1;i<ch.pts.length;i++){
+      const A = ch.pts[i-1], B = ch.pts[i], t = 0.03;
+      const x0 = Math.floor((Math.min(A.x, B.x) - t) / CB), x1 = Math.floor((Math.max(A.x, B.x) + t) / CB);
+      const y0 = Math.floor((Math.min(A.y, B.y) - t) / CB), y1 = Math.floor((Math.max(A.y, B.y) + t) / CB);
+      const z0 = Math.floor((Math.min(A.z, B.z) - t) / CB), z1 = Math.floor((Math.max(A.z, B.z) + t) / CB);
+      if((x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > 4096) return cuts; // огромный отрезок — все
+      for(let x=x0;x<=x1;x++) for(let y=y0;y<=y1;y++) for(let z=z0;z<=z1;z++){ const l = bins.get(bk(x, y, z)); if(l) for(const j of l) ids.add(j); }
+    }
+    return [...ids].map(j => cuts[j]);
+  };
   const out = [];
   for(const ch of chains){
     if(ch.closed){ out.push(ch); continue; } // замкнутые (окружности) не трогаем
     const ss = [];
-    for(const c of cuts){
+    for(const c of near(ch)){
       const s = chainParamOf(ch, c);
       if(s !== null && s > 0.05 && s < ch.total - 0.05) ss.push(s);
     }
@@ -6206,6 +6229,44 @@ const patPopup = $id('patPopup'), pat_state = $id('pat_state'), pat_info = $id('
   $id('pat_cancel').addEventListener('click', () => { if(activeTool === patTool) setActiveTool(null); });
   makeGripDrag(patPopup);
 }
+const texPopup = $id('texPopup'), tex_state = $id('tex_state'), tex_info = $id('tex_info'),
+      tex_size = $id('tex_size'), tex_depth = $id('tex_depth'), tex_res = $id('tex_res'), tex_rot = $id('tex_rot'),
+      tex_mb = $id('tex_mb'), tex_mt = $id('tex_mt'), tex_tr = $id('tex_tr');
+{
+  const live = () => { if(activeTool === texTool) texTool.ui(); };
+  for(const [k, title] of [['noise', 'Stone'], ['voronoi', 'Pebbles'], ['hex', 'Hex'], ['knurl', 'Knurl'], ['brick', 'Brick'], ['wood', 'Wood'], ['image', 'Image…']]){
+    const b = document.createElement('button');
+    b.className = 'lp'; b.textContent = title; b.dataset.kind = k;
+    b.addEventListener('click', () => { if(activeTool !== texTool) return; texTool.kind = k; live(); });
+    $id('tex_kinds').appendChild(b);
+  }
+  for(const el of [tex_size, tex_depth, tex_res, tex_rot, tex_mb, tex_mt, tex_tr]){
+    el.addEventListener('input', live);
+    el.addEventListener('keydown', e => {
+      if(e.key === 'Enter'){ e.preventDefault(); if(activeTool === texTool) texTool.apply(); }
+      if(e.key === 'Escape') releaseToolInput();
+      e.stopPropagation();
+    });
+  }
+  for(const id of ['tex_inv', 'tex_sym', 'tex_proj']) $id(id).addEventListener('change', live);
+  $id('tex_all').addEventListener('click', () => { if(activeTool !== texTool) return; texTool.region = 'all'; live(); });
+  $id('tex_pick').addEventListener('click', () => { if(activeTool !== texTool) return; texTool.region = 'pick'; live(); });
+  // своя картинка: читаем здесь же — страница сама получает файл от пользователя
+  $id('tex_img_btn').addEventListener('click', () => { $id('tex_img').value = ''; $id('tex_img').click(); });
+  $id('tex_img').addEventListener('change', async () => {
+    const f = $id('tex_img').files && $id('tex_img').files[0];
+    if(!f) return;
+    const buf = new Uint8Array(await f.arrayBuffer());
+    let bin = ''; for(let i=0;i<buf.length;i+=0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    const b64 = btoa(bin);
+    try{ texTool.img = {b64, mime: f.type || 'image/png', name: f.name, map: await texDecodeImage(b64, f.type)}; }
+    catch(err){ texTool.ui('cannot read this image: ' + (err.message || err), true); return; }
+    $id('tex_img_name').textContent = f.name; texTool.kind = 'image'; live();
+  });
+  $id('tex_ok').addEventListener('click', () => { if(activeTool === texTool) texTool.apply(); });
+  $id('tex_cancel').addEventListener('click', () => { if(activeTool === texTool) setActiveTool(null); });
+  makeGripDrag(texPopup);
+}
 const mirPopup = $id('mirPopup'), mir_state = $id('mir_state'), mir_off = $id('mir_off'), mir_info = $id('mir_info'),
       mir_hint = $id('mir_hint'), mir_ok = $id('mir_ok'), mir_join = $id('mir_join'), mir_flip = $id('mir_flip');
 {
@@ -7051,6 +7112,7 @@ function showChordHint(){
     row('B', 'Move / copy / scale a body', true) +
     row('H', 'Shell — hollow a body', true) +
     row('N', 'Pattern: honeycomb, relief, meander (live preview)', true) +
+    row('X', 'Texture the surface: stone, hex, knurl, wood, your image', true) +
     row('V', 'Vertex X/Y/Z', !!sel) +
     '<div style="opacity:.55">Esc — cancel</div>';
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 400) + 'px';
@@ -13073,6 +13135,14 @@ window.addEventListener('keydown', e=>{
     setActiveTool(activeTool === patTool ? null : patTool);
     return;
   }
+  // G,X — текстура по поверхности (окно)
+  if((e.code === 'KeyX' || (e.key || '').toLowerCase() === 'x' || (e.key || '').toLowerCase() === 'ч') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
+     && document.activeElement.tagName !== 'INPUT'){
+    e.preventDefault(); chordG = 0; hideChordHint();
+    if(!(mesh.geometry.attributes.position.array.length)){ warnTip('The model is empty'); return; }
+    setActiveTool(activeTool === texTool ? null : texTool);
+    return;
+  }
   // G,D — отверстие с зенковкой/цековкой (Hole во Fusion)
   if((e.code==='KeyD' || e.key.toLowerCase()==='d') && chordG && !e.ctrlKey && !e.altKey && !e.metaKey
      && document.activeElement.tagName!=='INPUT'){
@@ -16077,6 +16147,408 @@ function smoothRegionAt(P){
   }
   return seen;
 }
+// ---------- Текстура по поверхности (texture_surface) ----------
+// Идея — как у displacement-текстур в слайсерах и BumpMesh: поверхность
+// дробится до разрешения resolution, каждая вершина сдвигается по своей
+// нормали на высоту текстуры. Текстуры свои (процедурные) или карта высот
+// из картинки; проекции: triplanar (по трём осям с весами по нормали),
+// cubic, cylindrical, spherical, planar_xy/xz/yz. Маски: гладкая область
+// под точкой, грани вниз/вверх по углу (низ детали остаётся ровным для
+// стола), плавный переход у границы маски. Сетка остаётся замкнутой: делить
+// ли ребро, решается по самому ребру — одинаково для обоих треугольников
+// при нём, Т-стыков нет; вершины на границе маски не сдвигаются
+function texHash(i, j, s){
+  let h = (Math.imul(i, 374761393) + Math.imul(j, 668265263) + Math.imul(s, 1442695041)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function texNoise(x, y, s){
+  const i = Math.floor(x), j = Math.floor(y), fx = x - i, fy = y - j;
+  const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy);
+  const a = texHash(i, j, s), b = texHash(i + 1, j, s), c = texHash(i, j + 1, s), d = texHash(i + 1, j + 1, s);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function texFbm(x, y, s){
+  let v = 0, amp = 0.5, f = 1, n = 0;
+  for(let k=0;k<5;k++){ v += amp * texNoise(x * f, y * f, s + k * 17); n += amp; amp *= 0.5; f *= 2; }
+  return v / n;
+}
+const texSmooth = t => { t = Math.max(0, Math.min(1, t)); return t * t * (3 - 2 * t); };
+const texTri = t => 1 - Math.abs(2 * (t + 0.5 - Math.floor(t + 0.5)) - 1);
+// значение 0…1 в точке (u, v) — один «тайл» на единицу (кроме шума)
+const TEXTURES = {
+  // шум: мягкий рельеф (камень, литьё)
+  noise: (u, v, s) => texFbm(u * 1.5, v * 1.5, s),
+  // ячейки Вороного: выпуклые камешки, канавки по границам
+  voronoi: (u, v, s) => {
+    const i = Math.floor(u), j = Math.floor(v);
+    let d1 = 9, d2 = 9;
+    for(let di=-1;di<=1;di++) for(let dj=-1;dj<=1;dj++){
+      const ci = i + di, cj = j + dj;
+      const d = Math.hypot(u - ci - texHash(ci, cj, s), v - cj - texHash(ci, cj, s + 101));
+      if(d < d1){ d2 = d1; d1 = d; } else if(d < d2) d2 = d;
+    }
+    return texSmooth((d2 - d1) / 0.2);
+  },
+  // соты: шестигранные плитки (шаг 1) с канавками
+  hex: (u, v) => {
+    const hy = Math.sqrt(3) / 2, j0 = Math.round(v / hy);
+    let best = 9;
+    for(let j=j0-1;j<=j0+1;j++){
+      const off = (j & 1) ? 0.5 : 0, i0 = Math.round(u - off);
+      for(let i=i0-1;i<=i0+1;i++){
+        const x = u - (i + off), y = v - j * hy;
+        // расстояние до края по трём апофемам (шестиугольник «острым углом вверх»)
+        const d = Math.max(Math.abs(x), Math.abs(x / 2 + y * hy), Math.abs(x / 2 - y * hy));
+        best = Math.min(best, d);
+      }
+    }
+    return texSmooth((0.5 - best) / 0.08);
+  },
+  // накатка: ромбы-пирамидки
+  knurl: (u, v) => Math.min(texTri(u + v), texTri(u - v)),
+  // кирпич: ряды со сдвигом на полкирпича, швы
+  brick: (u, v) => {
+    const row = Math.floor(v * 2), uu = u + ((row & 1) ? 0.5 : 0);
+    const fx = uu - Math.floor(uu), fy = v * 2 - row;
+    const d = Math.min(Math.min(fx, 1 - fx), Math.min(fy, 1 - fy) * 0.5);
+    return texSmooth((d - 0.025) / 0.04);
+  },
+  // дерево: волокна вдоль u, кольца с шумом
+  wood: (u, v, s) => {
+    const w = v * 4 + 1.2 * texFbm(u * 0.25, v * 0.6, s);
+    return 0.55 + 0.35 * Math.cos(2 * Math.PI * w) + 0.1 * texFbm(u * 4, v * 8, s + 7);
+  }
+};
+// карта высот из картинки: яркость 0…1, билинейно, плитка по краям
+async function texDecodeImage(b64, mime){
+  const bin = atob(b64), u8 = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i);
+  const bmp = await createImageBitmap(new Blob([u8], {type: mime || 'image/png'}));
+  const cv = document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height;
+  const g = cv.getContext('2d'); g.drawImage(bmp, 0, 0);
+  const px = g.getImageData(0, 0, bmp.width, bmp.height).data, L = new Float32Array(bmp.width * bmp.height);
+  for(let i=0;i<L.length;i++) L[i] = (0.299 * px[i*4] + 0.587 * px[i*4+1] + 0.114 * px[i*4+2]) / 255;
+  return {w: bmp.width, h: bmp.height, L};
+}
+function texSampleImage(img, u, v){
+  const x = (u - Math.floor(u)) * img.w - 0.5, y = (1 - (v - Math.floor(v))) * img.h - 0.5;
+  const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+  const at = (i, j) => img.L[((j % img.h) + img.h) % img.h * img.w + ((i % img.w) + img.w) % img.w];
+  return at(x0, y0) * (1-fx) * (1-fy) + at(x0+1, y0) * fx * (1-fy) + at(x0, y0+1) * (1-fx) * fy + at(x0+1, y0+1) * fx * fy;
+}
+async function zcTextureSurface(a){
+  const kind = a.texture == null ? 'voronoi' : String(a.texture);
+  let sampleTex;
+  if(kind === 'image'){
+    if(!a.data_base64) throw new Error('texture image needs path: a png/jpg/webp height map (bright = high)');
+    const img = await texDecodeImage(a.data_base64, a.mime);
+    sampleTex = (u, v) => texSampleImage(img, u, v);
+  } else if(TEXTURES[kind]){
+    const seed = a.seed == null ? 1 : Math.round(+a.seed);
+    sampleTex = (u, v) => TEXTURES[kind](u, v, seed);
+  } else throw new Error('texture must be one of ' + Object.keys(TEXTURES).join(', ') + ', image');
+  const depth = +a.depth;
+  if(!Number.isFinite(depth) || depth === 0 || Math.abs(depth) > 20) throw new Error('depth: mm, + out of the surface, − into it (|depth| ≤ 20)');
+  const res = a.resolution == null ? 0.6 : +a.resolution;
+  if(!(res >= 0.1 && res <= 10)) throw new Error('resolution must be 0.1…10 mm');
+  const sizeU = a.size_u != null ? +a.size_u : a.size != null ? +a.size : 6, sizeV = a.size_v != null ? +a.size_v : sizeU;
+  if(!(sizeU > 0.2 && sizeV > 0.2)) throw new Error('size must be more than 0.2 mm');
+  const proj = a.projection == null ? 'triplanar' : String(a.projection);
+  const PROJ = ['triplanar', 'cubic', 'cylindrical', 'spherical', 'planar_xy', 'planar_xz', 'planar_yz'];
+  if(!PROJ.includes(proj)) throw new Error('projection must be one of ' + PROJ.join(', '));
+  const rot = (+a.rotation || 0) * Math.PI / 180, cr = Math.cos(rot), sr = Math.sin(rot);
+  const offU = +a.offset_u || 0, offV = +a.offset_v || 0, invert = !!a.invert, symmetric = !!a.symmetric;
+  const trans = a.transition == null ? 1 : Math.max(0, +a.transition);
+  const maskBottom = +a.mask_bottom_deg || 0, maskTop = +a.mask_top_deg || 0;
+  const maxTris = Math.round(+a.max_triangles || 3e6);
+
+  // индексированная сетка
+  const pos = mesh.geometry.attributes.position.array, nT0 = pos.length / 9;
+  const V = [], key2v = new Map(), T = [];
+  for(let t=0;t<nT0;t++){
+    const tri = [];
+    for(let j=0;j<3;j++){
+      const o = t*9 + j*3, k = keyOf(pos[o], pos[o+1], pos[o+2]);
+      let id = key2v.get(k);
+      if(id === undefined){ id = V.length / 3; V.push(pos[o], pos[o+1], pos[o+2]); key2v.set(k, id); }
+      tri.push(id);
+    }
+    if(tri[0] !== tri[1] && tri[1] !== tri[2] && tri[0] !== tri[2]) T.push(tri);
+  }
+  // область: гладкая поверхность под точкой или вся модель, минус маски по углу
+  let region = new Uint8Array(T.length).fill(1);
+  if(a.point != null){
+    const sel = smoothRegionAt(zcV3(a.point, 'point'));
+    // smoothRegionAt нумерует треугольники исходного массива — до выброса вырожденных
+    region.fill(0);
+    let ti = 0;
+    for(let t=0;t<nT0;t++){
+      const o = t*9, ks = [0, 1, 2].map(j => key2v.get(keyOf(pos[o+j*3], pos[o+j*3+1], pos[o+j*3+2])));
+      if(ks[0] === ks[1] || ks[1] === ks[2] || ks[0] === ks[2]) continue;
+      if(sel.has(t)) region[ti] = 1;
+      ti++;
+    }
+  }
+  const faceN = tri => {
+    const [p, q, r] = tri.map(i => new THREE.Vector3(V[i*3], V[i*3+1], V[i*3+2]));
+    return new THREE.Vector3().subVectors(q, p).cross(new THREE.Vector3().subVectors(r, p));
+  };
+  if(maskBottom > 0 || maskTop > 0){
+    const cb = Math.cos(maskBottom * Math.PI / 180), ct = Math.cos(maskTop * Math.PI / 180);
+    T.forEach((tri, i) => {
+      const n = faceN(tri).normalize();
+      if((maskBottom > 0 && -n.z >= cb) || (maskTop > 0 && n.z >= ct)) region[i] = 0;
+    });
+  }
+  if(!region.some(x => x)) throw new Error('nothing to texture: the mask leaves no faces');
+  // дробление: за проход делится пополам САМОЕ ДЛИННОЕ ребро каждого
+  // треугольника области, если оно длиннее res (у обоих соседей — решение по
+  // ребру, Т-стыков нет). Деление всех рёбер сразу сохраняло форму: боковина
+  // цилиндра 2.6 × 40 мм дробилась в подобные иглы 0.31 × 0.02 мм (295 тысяч
+  // щепок); деление по длинному ребру выравнивает треугольники
+  const EK = (p, q) => p < q ? p * 4194304 + q : q * 4194304 + p;
+  const len = (p, q) => Math.hypot(V[p*3]-V[q*3], V[p*3+1]-V[q*3+1], V[p*3+2]-V[q*3+2]);
+  let tris = T, reg = Array.from(region);
+  // Перевороты Делоне в плоских парах области — после КАЖДОГО прохода
+  // дробления: деление по длинному ребру не улучшает углы (минимальный угол
+  // потомков — не больше, чем у исходного), а боковина цилиндра — треугольник
+  // 2.6 × 40 мм с углом 3.7°: иглы 0.31 × 0.04 мм тянулись от него.
+  // Ребро между двумя треугольниками одной плоскости переворачивается, если
+  // сумма углов напротив него больше 180°; форма поверхности не меняется
+  const delaunay = maxPasses => {
+    const P3 = i => [V[i*3], V[i*3+1], V[i*3+2]];
+    const sub3 = (p, q) => [p[0]-q[0], p[1]-q[1], p[2]-q[2]];
+    const cross3 = (p, q) => [p[1]*q[2]-p[2]*q[1], p[2]*q[0]-p[0]*q[2], p[0]*q[1]-p[1]*q[0]];
+    const dot3 = (p, q) => p[0]*q[0] + p[1]*q[1] + p[2]*q[2];
+    const nrm = tri => { const [p, q, r] = tri.map(P3); return cross3(sub3(q, p), sub3(r, p)); };
+    const angAt = (c, a, b) => { const u = sub3(P3(a), P3(c)), w = sub3(P3(b), P3(c)); return Math.atan2(Math.hypot(...cross3(u, w)), dot3(u, w)); };
+    for(let pass=0; pass<maxPasses; pass++){
+      const half = new Map();
+      tris.forEach((tri, i) => { if(reg[i]) for(let e=0;e<3;e++) half.set(tri[e] * 4194304 + tri[(e+1)%3], i); });
+      const used = new Uint8Array(tris.length);
+      let flips = 0;
+      for(let t=0;t<tris.length;t++){
+        if(!reg[t] || used[t]) continue;
+        for(let e=0;e<3;e++){
+          const tri = tris[t], a0 = tri[e], b0 = tri[(e+1)%3], c0 = tri[(e+2)%3];
+          const u = half.get(b0 * 4194304 + a0);
+          if(u == null || used[u]) continue;
+          const tu = tris[u], d0 = tu.find(x => x !== a0 && x !== b0);
+          const n1 = nrm(tri), n2 = nrm(tu), l1 = Math.hypot(...n1), l2 = Math.hypot(...n2);
+          if(!(l1 > 1e-12 && l2 > 1e-12) || dot3(n1, n2) / (l1 * l2) < 0.99999) continue; // не одна плоскость
+          if(angAt(c0, a0, b0) + angAt(d0, b0, a0) <= Math.PI + 1e-9) continue;
+          if(half.has(c0 * 4194304 + d0) || half.has(d0 * 4194304 + c0)) continue; // ребро c–d уже есть
+          const t1 = [c0, a0, d0], t2 = [d0, b0, c0], m1 = nrm(t1), m2 = nrm(t2);
+          if(dot3(m1, n1) <= 0 || dot3(m2, n1) <= 0) continue; // четырёхугольник невыпуклый
+          tris[t] = t1; tris[u] = t2; used[t] = used[u] = 1; flips++;
+          // карта рёбер — сразу: иначе два переворота в одном проходе могли
+          // создать одно и то же ребро c–d (немногообразное)
+          half.delete(a0 * 4194304 + b0); half.delete(b0 * 4194304 + a0);
+          for(const [q, tr] of [[t, t1], [u, t2]]) for(let k=0;k<3;k++) half.set(tr[k] * 4194304 + tr[(k+1)%3], q);
+          break;
+        }
+      }
+      if(!flips) break;
+    }
+  };
+  for(let pass=0; pass<200; pass++){
+    const split = new Map();
+    tris.forEach((tri, i) => {
+      if(!reg[i]) return;
+      let be = -1, bl = res;
+      for(let e=0;e<3;e++){ const l = len(tri[e], tri[(e+1)%3]); if(l > bl){ bl = l; be = e; } }
+      if(be >= 0) split.set(EK(tri[be], tri[(be+1)%3]), -1);
+    });
+    if(!split.size) break;
+    // Замыкание (Риваро): у треугольника с хоть одним делимым ребром делится
+    // и самое длинное — иначе сосед делил своё короткое ребро, рождались
+    // иглы, и это шло волной (цилиндр: 37 тысяч игл 0.31 × 0.04 мм)
+    const longest = tri => { let be = 0, bl = -1; for(let e=0;e<3;e++){ const l = len(tri[e], tri[(e+1)%3]); if(l > bl){ bl = l; be = e; } } return be; };
+    {
+      const byEdge = new Map();
+      tris.forEach((tri, i) => { for(let e=0;e<3;e++){ const k = EK(tri[e], tri[(e+1)%3]); const l = byEdge.get(k); if(l) l.push(i); else byEdge.set(k, [i]); } });
+      const queue = [];
+      for(const k of split.keys()) for(const t of byEdge.get(k) || []) queue.push(t);
+      while(queue.length){
+        const t = queue.pop(), tri = tris[t], be = longest(tri), k = EK(tri[be], tri[(be+1)%3]);
+        if(split.has(k)) continue;
+        split.set(k, -1);
+        for(const u of byEdge.get(k)) queue.push(u);
+      }
+    }
+    const mid = (p, q) => {
+      const k = EK(p, q); let m = split.get(k);
+      if(m === undefined) return -1;
+      if(m < 0){ m = V.length / 3; V.push((V[p*3]+V[q*3])/2, (V[p*3+1]+V[q*3+1])/2, (V[p*3+2]+V[q*3+2])/2); split.set(k, m); }
+      return m;
+    };
+    const nt = [], nr = [];
+    const add = (r, ...ts) => { for(const t of ts){ nt.push(t); nr.push(r); } };
+    tris.forEach((tri, i) => {
+      const r = reg[i];
+      if(!tri.some((v, e) => split.has(EK(v, tri[(e+1)%3])))){ add(r, tri); return; }
+      // сначала самое длинное ребро a–b (оно делится всегда — замыкание выше):
+      // (a, mL, c) + (mL, b, c); затем в половинах — их делимые рёбра из mL
+      const be = longest(tri), a = tri[be], b = tri[(be+1)%3], c = tri[(be+2)%3], mL = mid(a, b);
+      const mBC = mid(b, c), mCA = mid(c, a);
+      if(mCA >= 0) add(r, [a, mL, mCA], [mCA, mL, c]); else add(r, [a, mL, c]);
+      if(mBC >= 0) add(r, [mL, b, mBC], [mL, mBC, c]); else add(r, [mL, b, c]);
+    });
+    tris = nt; reg = nr;
+    delaunay(3);
+    if(tris.length > maxTris) throw new Error('too many triangles (' + tris.length + ') — raise resolution (now ' + res + ' mm) or mask more');
+  }
+  delaunay(30);
+  // Вершины в одной точке — одна вершина. Деление по длинному ребру иногда
+  // ставит середины двух разных рёбер в одно место (середина диагонали
+  // прямоугольника — она же середина другой диагонали): пока они на месте,
+  // сетка цела, но при сдвиге у них разные нормали, и они расходятся
+  // (вдавленная накатка на цилиндре — 18 немногообразных рёбер)
+  {
+    const byKey = new Map(), remap = new Int32Array(V.length / 3);
+    for(let v=0; v<V.length/3; v++){
+      const k = keyOf(V[v*3], V[v*3+1], V[v*3+2]);
+      const w = byKey.get(k);
+      if(w === undefined){ byKey.set(k, v); remap[v] = v; } else remap[v] = w;
+    }
+    const nt = [], nr = [];
+    tris.forEach((tri, i) => {
+      const t = tri.map(v => remap[v]);
+      if(t[0] !== t[1] && t[1] !== t[2] && t[0] !== t[2]){ nt.push(t); nr.push(reg[i]); }
+    });
+    tris = nt; reg = nr;
+  }
+  const nV = V.length / 3;
+  // нормали вершин (по площади) и вес маски: 0 на границе области, плавно внутрь
+  const N = new Float64Array(nV * 3), inReg = new Uint8Array(nV), outReg = new Uint8Array(nV);
+  tris.forEach((tri, i) => {
+    const n = faceN(tri);
+    for(const v of tri){ N[v*3] += n.x; N[v*3+1] += n.y; N[v*3+2] += n.z; if(reg[i]) inReg[v] = 1; else outReg[v] = 1; }
+  });
+  // Сглаженные нормали: на многограннике (цилиндр из граней через 7.5°)
+  // нормаль «по грани» у ребра между гранями смотрит в разные стороны — при
+  // вдавливании вершины по обе стороны ребра съезжались и сливались (две
+  // вершины в 0.07 мм сошлись в одну, немногообразные рёбра). Нормаль
+  // усредняется с соседями несколько раз (≈ 8 × resolution вокруг), но только
+  // через пологие изломы (< 30°) — острые рёбра (угол куба) не размываются
+  for(let v=0;v<nV;v++){ const l = Math.hypot(N[v*3], N[v*3+1], N[v*3+2]) || 1; N[v*3] /= l; N[v*3+1] /= l; N[v*3+2] /= l; }
+  {
+    const nb = Array.from({length: nV}, () => []);
+    for(const tri of tris) for(let e=0;e<3;e++){ const p = tri[e], q = tri[(e+1)%3]; nb[p].push(q); nb[q].push(p); }
+    const C30 = Math.cos(30 * Math.PI / 180), N0 = N.slice();
+    for(let it=0; it<8; it++){
+      const M = N.slice();
+      for(let v=0;v<nV;v++){
+        if(!inReg[v] || !nb[v].length) continue;
+        let x = M[v*3], y = M[v*3+1], z = M[v*3+2];
+        for(const u of nb[v]){
+          // сосед по ту сторону острого излома (по исходным нормалям) — не в счёт
+          if(N0[v*3]*N0[u*3] + N0[v*3+1]*N0[u*3+1] + N0[v*3+2]*N0[u*3+2] < C30) continue;
+          x += M[u*3]; y += M[u*3+1]; z += M[u*3+2];
+        }
+        const l = Math.hypot(x, y, z) || 1;
+        N[v*3] = x / l; N[v*3+1] = y / l; N[v*3+2] = z / l;
+      }
+    }
+  }
+  const W = new Float64Array(nV);
+  for(let v=0;v<nV;v++) W[v] = inReg[v] && !outReg[v] ? 1 : 0;
+  // Острые рёбра детали (излом > 30°) — как край маски: рельеф сходит на нет.
+  // Иначе у выпуклого угла вершина ребра шла под 45°, соседи на гранях — прямо
+  // внутрь, и при вдавливании они перехлёстывались (куб: загибы и
+  // немногообразное ребро). Ребро детали остаётся чётким
+  const sharp = new Uint8Array(nV);
+  {
+    const fn = tris.map(tri => faceN(tri).normalize()), he = new Map(), C30 = Math.cos(30 * Math.PI / 180);
+    tris.forEach((tri, i) => { for(let e=0;e<3;e++) he.set(tri[e] * 4194304 + tri[(e+1)%3], i); });
+    tris.forEach((tri, i) => { for(let e=0;e<3;e++){
+      const p = tri[e], q = tri[(e+1)%3], j = he.get(q * 4194304 + p);
+      if(j != null && fn[i].dot(fn[j]) < C30){ sharp[p] = 1; sharp[q] = 1; }
+    } });
+    for(let v=0;v<nV;v++) if(sharp[v]) W[v] = 0;
+  }
+  if(trans > 0){
+    // расстояние по рёбрам от границы (Дейкстра на корзинах) — вес плавно до 1
+    const adj = Array.from({length: nV}, () => []);
+    for(const tri of tris) for(let e=0;e<3;e++){ const p = tri[e], q = tri[(e+1)%3]; adj[p].push(q); adj[q].push(p); }
+    const D = new Float64Array(nV).fill(Infinity), queue = [];
+    for(let v=0;v<nV;v++) if(inReg[v] && (outReg[v] || sharp[v])){ D[v] = 0; queue.push(v); }
+    // простая волна: несколько проходов релаксации по очереди (рёбра короткие, ~res)
+    for(let head=0; head<queue.length; head++){
+      const p = queue[head];
+      for(const q of adj[p]){
+        if(!inReg[q]) continue;
+        const d = D[p] + len(p, q);
+        if(d < D[q] && d < trans){ D[q] = d; queue.push(q); }
+      }
+    }
+    for(let v=0;v<nV;v++) if(W[v] && D[v] < trans) W[v] = texSmooth(D[v] / trans);
+    for(let v=0;v<nV;v++) if(sharp[v]) W[v] = 0;
+  }
+  // проекция: точка и нормаль → (u, v) в мм; центр — габарит области
+  const box = new THREE.Box3();
+  for(let v=0;v<nV;v++) if(inReg[v]) box.expandByPoint(new THREE.Vector3(V[v*3], V[v*3+1], V[v*3+2]));
+  const Cn = a.center != null ? zcV3(a.center, 'center') : box.getCenter(new THREE.Vector3());
+  const axis = a.axis != null ? zcV3(a.axis, 'axis').normalize() : new THREE.Vector3(0, 0, 1);
+  // базис вокруг оси для цилиндра и сферы
+  const e1 = Math.abs(axis.z) < 0.9 ? new THREE.Vector3(0, 0, 1).cross(axis).normalize() : new THREE.Vector3(1, 0, 0).cross(axis).normalize();
+  const e2 = new THREE.Vector3().crossVectors(axis, e1);
+  let rRef = 0, nr0 = 0;
+  for(let v=0;v<nV;v++) if(inReg[v]){
+    const dx = V[v*3]-Cn.x, dy = V[v*3+1]-Cn.y, dz = V[v*3+2]-Cn.z, h = dx*axis.x + dy*axis.y + dz*axis.z;
+    rRef += proj === 'spherical' ? Math.hypot(dx, dy, dz) : Math.hypot(dx - h*axis.x, dy - h*axis.y, dz - h*axis.z); nr0++;
+  }
+  rRef = Math.max(1, rRef / Math.max(1, nr0));
+  // по окружности — целое число плиток (шва нет), как у кольца сот
+  const turnU = 2 * Math.PI * rRef, su = (proj === 'cylindrical' || proj === 'spherical') ? turnU / Math.max(1, Math.round(turnU / sizeU)) : sizeU;
+  const tex = (x, y) => {
+    const u = x * cr + y * sr, w = -x * sr + y * cr;
+    let h = sampleTex(u / su + offU, w / sizeV + offV);
+    if(invert) h = 1 - h;
+    return symmetric ? 2 * h - 1 : h;
+  };
+  const texAt = (px, py, pz, nx, ny, nz) => {
+    const dx = px - Cn.x, dy = py - Cn.y, dz = pz - Cn.z;
+    if(proj === 'planar_xy') return tex(dx, dy);
+    if(proj === 'planar_xz') return tex(dx, dz);
+    if(proj === 'planar_yz') return tex(dy, dz);
+    if(proj === 'cylindrical'){
+      const h = dx*axis.x + dy*axis.y + dz*axis.z, x1 = dx*e1.x + dy*e1.y + dz*e1.z, x2 = dx*e2.x + dy*e2.y + dz*e2.z;
+      return tex(Math.atan2(x2, x1) * rRef, h);
+    }
+    if(proj === 'spherical'){
+      const h = dx*axis.x + dy*axis.y + dz*axis.z, x1 = dx*e1.x + dy*e1.y + dz*e1.z, x2 = dx*e2.x + dy*e2.y + dz*e2.z;
+      return tex(Math.atan2(x2, x1) * rRef, Math.atan2(h, Math.hypot(x1, x2)) * rRef);
+    }
+    const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+    if(proj === 'cubic') return az >= ax && az >= ay ? tex(dx, dy) : ax >= ay ? tex(dy, dz) : tex(dx, dz);
+    // triplanar: три плоские проекции, веса — |n|^4 (переход мягкий, но узкий)
+    const wx = ax ** 4, wy = ay ** 4, wz = az ** 4, s = wx + wy + wz || 1;
+    return (wx * tex(dy, dz) + wy * tex(dx, dz) + wz * tex(dx, dy)) / s;
+  };
+  const out = new Float32Array(V.length);
+  let moved = 0;
+  for(let v=0;v<nV;v++){
+    let px = V[v*3], py = V[v*3+1], pz = V[v*3+2];
+    if(W[v] > 0){
+      const l = Math.hypot(N[v*3], N[v*3+1], N[v*3+2]) || 1, nx = N[v*3] / l, ny = N[v*3+1] / l, nz = N[v*3+2] / l;
+      const d = depth * W[v] * texAt(px, py, pz, nx, ny, nz);
+      px += nx * d; py += ny * d; pz += nz * d; moved++;
+    }
+    out[v*3] = px; out[v*3+1] = py; out[v*3+2] = pz;
+  }
+  const arr = new Float32Array(tris.length * 9);
+  tris.forEach((tri, i) => { for(let j=0;j<3;j++){ const v = tri[j]; arr[i*9+j*3] = out[v*3]; arr[i*9+j*3+1] = out[v*3+1]; arr[i*9+j*3+2] = out[v*3+2]; } });
+  const v0 = meshVolumeOf(pos), snap = takeSnapshot();
+  pushHistory(snap);
+  setMeshFromArray(arr);
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
+  extractEdges();
+  return Object.assign({texture: kind, projection: proj, resolution_mm: res, tile_u_mm: +su.toFixed(4), tile_v_mm: sizeV,
+    displaced_vertices: moved, volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
+}
 // Т-стыки на треугольниках нулевой площади. Булева на длинных узких гранях
 // (стенка Shell 1 × 69 мм под узором из тысяч клеток) отдаёт сетку, где
 // точка лежит на середине чужого ребра, а к ней прилеплен вырожденный
@@ -16266,6 +16738,118 @@ const patTool = {
       if(r.open_edges || r.nonmanifold_edges) warnTip('Applied, but the mesh has ' + (r.open_edges + r.nonmanifold_edges) + ' bad edges — Ctrl+Z to undo');
       setActiveTool(null);
     }catch(err){ this.busy = false; this.ui(String(err && err.message || err), true); this.update(true); }
+  }
+};
+// ---------- G,X — окно текстуры по поверхности ----------
+// Поля окна → команда texture_surface (та же, что у агента). До применения:
+// образец плитки текстуры и оценка числа треугольников (площадь области /
+// площадь треугольника при этом разрешении); применение — по OK, Ctrl+Z
+// откатывает. Своя картинка читается здесь же (FileReader), без сервера
+const texTool = {
+  hud: 'TEXTURE · set it up in the window · Region "Clicked surface" — click the surface · Enter / OK — apply · Esc — exit',
+  kind: 'voronoi', region: 'all', point: null, img: null, busy: false, timer: 0,
+  on(){
+    this.busy = false; this.point = null;
+    texPopup.style.left = '16px'; texPopup.style.top = '48px';
+    texPopup.hidden = false;
+    this.ui();
+  },
+  off(){ clearTimeout(this.timer); tipHide(); texPopup.hidden = true; releaseToolInput(); },
+  move(e, q){
+    if(!q.inside || this.region !== 'pick'){ tipHide(); return; }
+    if(raycastFace(q)) tipAt(e, 'Texture · click — this smooth surface'); else tipHide();
+  },
+  down(e, q){
+    if(e.button !== 0 || !q.inside || this.busy || this.region !== 'pick') return;
+    const h = raycastFace(q);
+    if(!h) return;
+    this.point = h.point.clone();
+    this.ui();
+  },
+  key(e){
+    if(e.key === 'Enter'){ e.preventDefault(); this.apply(); return true; }
+    return false;
+  },
+  num(el, def){ const v = parseFloat(String(el.value).replace(',', '.')); return Number.isFinite(v) ? v : def; },
+  args(){
+    const a = {texture: this.kind, projection: $id('tex_proj').value, size: this.num(tex_size, 6), depth: this.num(tex_depth, 0.6),
+      resolution: this.num(tex_res, 0.6), rotation: this.num(tex_rot, 0), mask_bottom_deg: this.num(tex_mb, 0),
+      mask_top_deg: this.num(tex_mt, 0), transition: this.num(tex_tr, 1)};
+    if($id('tex_inv').checked) a.invert = true;
+    if($id('tex_sym').checked) a.symmetric = true;
+    if(this.region === 'pick'){
+      if(!this.point) throw new Error('click the surface to texture');
+      a.point = [+this.point.x.toFixed(4), +this.point.y.toFixed(4), +this.point.z.toFixed(4)];
+    }
+    if(this.kind === 'image'){
+      if(!this.img) throw new Error('choose an image (a height map: bright = high)');
+      a.data_base64 = this.img.b64; a.mime = this.img.mime;
+    }
+    return a;
+  },
+  // площадь области (вся модель или гладкая поверхность под точкой)
+  area(){
+    const pos = mesh.geometry.attributes.position.array, sel = this.region === 'pick' && this.point ? smoothRegionAt(this.point) : null;
+    const mb = this.num(tex_mb, 0), mt = this.num(tex_mt, 0), cb = Math.cos(mb * Math.PI / 180), ct = Math.cos(mt * Math.PI / 180);
+    let A = 0;
+    for(let t=0;t<pos.length/9;t++){
+      if(sel && !sel.has(t)) continue;
+      const o = t * 9, n = new THREE.Vector3(pos[o+3]-pos[o], pos[o+4]-pos[o+1], pos[o+5]-pos[o+2])
+        .cross(new THREE.Vector3(pos[o+6]-pos[o], pos[o+7]-pos[o+1], pos[o+8]-pos[o+2]));
+      const a2 = n.length(); if(a2 < 1e-12) continue;
+      n.divideScalar(a2);
+      if((mb > 0 && -n.z >= cb) || (mt > 0 && n.z >= ct)) continue;
+      A += a2 / 2;
+    }
+    return A;
+  },
+  swatch(){
+    const cv = $id('tex_sw'), g = cv.getContext('2d'), W = cv.width, im = g.createImageData(W, W);
+    let f = null;
+    if(this.kind === 'image'){ if(this.img && this.img.map) f = (u, v) => texSampleImage(this.img.map, u, v); }
+    else f = (u, v) => TEXTURES[this.kind](u, v, 1);
+    const inv = $id('tex_inv').checked;
+    for(let y=0;y<W;y++) for(let x=0;x<W;x++){
+      let h = f ? f(x / W * 2, (W - y) / W * 2) : 0.5; // две плитки по каждой оси
+      if(inv) h = 1 - h;
+      const v = Math.round(255 * Math.max(0, Math.min(1, h))), o = (y * W + x) * 4;
+      im.data[o] = im.data[o+1] = im.data[o+2] = v; im.data[o+3] = 255;
+    }
+    g.putImageData(im, 0, 0);
+  },
+  ui(msg, bad){
+    for(const b of $id('tex_kinds').querySelectorAll('button')) b.classList.toggle('on', b.dataset.kind === this.kind);
+    $id('tex_img_row').style.display = this.kind === 'image' ? '' : 'none';
+    $id('tex_all').classList.toggle('on', this.region === 'all');
+    $id('tex_pick').classList.toggle('on', this.region === 'pick');
+    tex_state.textContent = this.region === 'all' ? 'whole model' : this.point ? 'clicked surface' : 'click a surface';
+    this.swatch();
+    if(msg != null){ tex_info.textContent = msg; tex_info.style.color = bad ? '#ff6b6b' : ''; return; }
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      if(this.region === 'pick' && !this.point){ tex_info.textContent = 'click the surface to texture'; tex_info.style.color = ''; return; }
+      const res = this.num(tex_res, 0.6), A = this.area();
+      // треугольник при делении по длинному ребру — примерно 0.3 · res²
+      const est = Math.round(A / (0.3 * res * res));
+      // это нижняя граница: на длинных узких гранях CAD (боковина цилиндра
+      // 2.6 × 40 мм) дробление мельчит сильнее — там выходит в 2…5 раз больше
+      tex_info.textContent = 'area ' + Math.round(A) + ' mm² · from ≈ ' + (est > 1e6 ? (est / 1e6).toFixed(1) + ' M' : Math.round(est / 1000) + ' k') + ' triangles (more on thin CAD faces)'
+        + (est > 1.5e6 ? ' — heavy: raise Resolution' : '');
+      tex_info.style.color = est > 3e6 ? '#ff6b6b' : '';
+    }, 120);
+  },
+  async apply(){
+    if(this.busy) return;
+    let a;
+    try{ a = this.args(); }catch(err){ this.ui(String(err.message || err), true); return; }
+    this.busy = true; this.ui('applying… (big surfaces take several seconds)');
+    await new Promise(r => setTimeout(r, 30));
+    try{
+      const r = await zcRun('texture_surface', a);
+      this.busy = false;
+      if(r.open_edges || r.nonmanifold_edges) warnTip('Applied, but the mesh has ' + (r.open_edges + r.nonmanifold_edges) + ' bad edges — Ctrl+Z to undo');
+      setActiveTool(null);
+    }catch(err){ this.busy = false; this.ui(String(err && err.message || err), true); }
   }
 };
 // MCP pattern: матрицы копий второго тела на время одной команды (zcRun)
@@ -17728,6 +18312,10 @@ const ZC_COMMANDS = {
   add_pattern: {
     // узор полосой: на плоскости, по цилиндру (wrap) или проекцией (project)
     run(a){ return zcAddPattern(a); }
+  },
+  texture_surface: {
+    // текстура по всей поверхности (или области): дробление + сдвиг по нормали
+    async run(a){ return await zcTextureSurface(a); }
   },
   edit_step: {
     // параметры шага: переданные ключи заменяются, null — убирает ключ;

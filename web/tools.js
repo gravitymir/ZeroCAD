@@ -884,6 +884,29 @@ const ZC_TOOLS = [
     }, "required": ["kind", "center", "normal", "length", "height", "cell", "depth"]}
   },
   {
+    "name": "texture_surface",
+    "description": "Texture the surface (displacement, like texture tools in slicers): the faces are split down to resolution and every vertex moves along its normal by the texture height times depth. texture: noise (soft relief), voronoi (pebbles with grooves), hex (hexagon tiles), knurl (diamond pyramids), brick, wood, or image (path: a png/jpg/webp height map, bright = high; it tiles). projection: triplanar (default; three planar projections blended by the normal), cubic, cylindrical / spherical (around axis through center; a whole number of tiles fits round, no seam), planar_xy / planar_xz / planar_yz. size (or size_u, size_v) — tile size in mm; rotation (degrees), offset_u / offset_v (tiles). Region: the whole model, or point — the smooth surface under that point; mask_bottom_deg / mask_top_deg leave faces facing down / up within that angle untouched (a flat bottom for the bed); transition (mm, default 1) fades the depth in from the mask edge. depth + raises, − sinks; symmetric goes both ways; invert flips the texture. The mesh stays closed; mind the triangle count (area / resolution² × 2, capped by max_triangles, default 3 M).",
+    "inputSchema": {"type": "object", "properties": {
+      "texture": {"type": "string", "enum": ["noise", "voronoi", "hex", "knurl", "brick", "wood", "image"]},
+      "path": {"type": "string", "description": "texture image: a height map file (absolute or in exports/)"},
+      "depth": {"type": "number", "description": "mm"},
+      "resolution": {"type": "number", "description": "mm, edge length after splitting, default 0.6"},
+      "projection": {"type": "string", "enum": ["triplanar", "cubic", "cylindrical", "spherical", "planar_xy", "planar_xz", "planar_yz"]},
+      "size": {"type": "number", "description": "tile size, mm (default 6)"},
+      "size_u": {"type": "number"}, "size_v": {"type": "number"},
+      "rotation": {"type": "number", "description": "degrees"},
+      "offset_u": {"type": "number"}, "offset_v": {"type": "number"},
+      "center": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "projection centre (default: the centre of the region)"},
+      "axis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "cylindrical / spherical axis (default Z)"},
+      "point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "texture only the smooth surface under this point"},
+      "mask_bottom_deg": {"type": "number"}, "mask_top_deg": {"type": "number"},
+      "transition": {"type": "number", "description": "mm, fade-in from the mask edge (default 1)"},
+      "symmetric": {"type": "boolean"}, "invert": {"type": "boolean"},
+      "seed": {"type": "integer"},
+      "max_triangles": {"type": "integer"}
+    }, "required": ["depth"]}
+  },
+  {
     "name": "extrude_text",
     "description": "Raise (+) or engrave (−) one letter of a text sketch on a curved surface — the outline drawn by add_text with depth 0 and wrap or project. point: a point on (or at the edge of) the letter on the surface; whole: true takes the whole line. The letter is built from the sketch with the same wrap/projection, so it follows its outline exactly and the depth is along the local surface normal.",
     "inputSchema": {"type": "object", "properties": {
