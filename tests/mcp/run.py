@@ -834,6 +834,33 @@ def paint_faces_for_multicolour():
 
 
 @case
+def paint_a_whole_fillet():
+    # клик по одной полосе скругления красит всё скругление: выкружки дна,
+    # стойки и шары в углах стакана — но не стенки и не дно (они касаются
+    # скругления только по линии)
+    import zipfile, re
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    b = lambda z: [[5, 5, z], [15, 5, z], [15, 15, z], [5, 15, z]]
+    call('loft_profiles', {'profile_a': b(10), 'profile_b': b(21), 'operation': 'cut'})
+    call('bevel_edges', {'vertices': [[5, 5, 10], [15, 5, 10], [15, 15, 10], [5, 15, 10]], 'size': 3, 'segments': 8})
+    # точка на середине дуги выкружки дна у стенки y=5 (центр дуги: y=8, z=13)
+    a = math.pi / 4
+    d = call('paint_face', {'point': [10, 8 - 3 * math.cos(a), 13 - 3 * math.sin(a)], 'filament': 2})
+    n = d['faces'][0]['triangles']
+    path = call('export_3mf', {'name': 'zc_paint_fillet'})['path']
+    with zipfile.ZipFile(path) as z:
+        xml = z.read('3D/3dmodel.model').decode()
+    V = [tuple(float(x) for x in m) for m in re.findall(r'<vertex x="([^"]+)" y="([^"]+)" z="([^"]+)"', xml)]
+    painted = [tuple(int(i) for i in m) for m in re.findall(r'<triangle v1="(\d+)" v2="(\d+)" v3="(\d+)" paint_color', xml)]
+    assert len(painted) == n and n > 100, (n, len(painted))
+    flat = [t for t in painted for ax, val in ((0, 5), (0, 15), (1, 5), (1, 15), (2, 10))
+            if all(abs(V[i][ax] - val) < 1e-3 for i in t)]
+    assert not flat, ('walls and the floor must stay unpainted', flat[:3])
+    zs = [V[i][2] for t in painted for i in t]
+    assert max(zs) > 19.9, 'the vertical coves go up to the top'
+
+
+@case
 def lay_flat_on_a_face():
     # K по грани (Lay on Face): модель ложится этой гранью на стол. Плита
     # 20 x 20 x 10 гранью y=0 вниз: высота становится 20, глубина 10, низ на z=0

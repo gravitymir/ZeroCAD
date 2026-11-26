@@ -702,6 +702,102 @@ function markShallowCorners(eMap, pos){
 const FILAMENTS = ['#f2f2ee', '#e53935', '#1e88e5', '#43a047', '#fdd835', '#3a3a3a', '#fb8c00', '#8e24aa'];
 let paints = [];      // [{p:[x,y,z], n:[x,y,z], f: 2…8}]
 let paintObj = null;
+// Гладкие поверхности скруглений: Ctrl+B знает их точно — цилиндр у ребра
+// (ось, радиус, отрезок вдоль оси) и шар в углу (центр, радиус). Сетка их
+// режет на плоские полосы, и покраска брала одну полосу. Теперь клик по
+// любой полосе красит всю связную часть сетки, лежащую на этих поверхностях:
+// скругление целиком, шары в углах и сходящиеся к ним выкружки. Плоская
+// стенка рядом (касается скругления по линии) не входит — её вершины не на
+// поверхности. Хранится в проекте; у старых моделей — покраска по области
+let curvedSurfs = []; // [{k:'cyl', c, e, r, t0, t1, sag} | {k:'sph', c, r, sag}]
+function surfHas(S, x, y, z){
+  const tol = 0.01;
+  if(S.k === 'sph'){
+    const d = Math.hypot(x - S.c[0], y - S.c[1], z - S.c[2]);
+    return d < S.r + tol && d > S.r - S.sag - tol;
+  }
+  const wx = x - S.c[0], wy = y - S.c[1], wz = z - S.c[2];
+  const t = wx*S.e[0] + wy*S.e[1] + wz*S.e[2];
+  if(t < S.t0 - tol || t > S.t1 + tol) return false;
+  const d = Math.hypot(wx - t*S.e[0], wy - t*S.e[1], wz - t*S.e[2]);
+  return d < S.r + tol && d > S.r - S.sag - tol;
+}
+// треугольники на скруглениях: связная область вокруг t (null — t не на них)
+function curvedRegionAt(t){
+  if(!curvedSurfs.length || !mesh) return null;
+  const pos = mesh.geometry.attributes.position.array, nT = pos.length / 9;
+  const on = new Uint8Array(nT);
+  // вершины на поверхности, а центр — строго внутри (грань скругления — хорда).
+  // Плоская стенка касается цилиндра: её узкие треугольники у линии касания
+  // проходили по допуску вершин, но их центр снаружи или ровно на поверхности
+  const inside = (S, x, y, z) => {
+    let d;
+    if(S.k === 'sph') d = Math.hypot(x - S.c[0], y - S.c[1], z - S.c[2]);
+    else {
+      const wx = x - S.c[0], wy = y - S.c[1], wz = z - S.c[2], t = wx*S.e[0] + wy*S.e[1] + wz*S.e[2];
+      d = Math.hypot(wx - t*S.e[0], wy - t*S.e[1], wz - t*S.e[2]);
+    }
+    return d < S.r - 0.15 * S.sag;
+  };
+  const triOn = u => {
+    const o = u*9;
+    const cx = (pos[o]+pos[o+3]+pos[o+6])/3, cy = (pos[o+1]+pos[o+4]+pos[o+7])/3, cz = (pos[o+2]+pos[o+5]+pos[o+8])/3;
+    for(const S of curvedSurfs)
+      if(surfHas(S, pos[o], pos[o+1], pos[o+2]) && surfHas(S, pos[o+3], pos[o+4], pos[o+5]) && surfHas(S, pos[o+6], pos[o+7], pos[o+8])
+         && inside(S, cx, cy, cz)) return true;
+    return false;
+  };
+  if(!triOn(t)) return null;
+  const em = new Map();
+  for(let u=0;u<nT;u++){
+    on[u] = triOn(u) ? 1 : 0;
+    if(!on[u]) continue;
+    for(let e=0;e<3;e++){
+      const o1 = u*9+e*3, o2 = u*9+((e+1)%3)*3;
+      const k1 = keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2 = keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+      if(k1 === k2) continue;
+      const ek = k1 < k2 ? k1+'|'+k2 : k2+'|'+k1;
+      let l = em.get(ek); if(!l) em.set(ek, l = []); l.push(u);
+    }
+  }
+  const seen = new Uint8Array(nT), out = [t], stack = [t];
+  seen[t] = 1;
+  while(stack.length){
+    const u = stack.pop();
+    for(let e=0;e<3;e++){
+      const o1 = u*9+e*3, o2 = u*9+((e+1)%3)*3;
+      const k1 = keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2 = keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+      if(k1 === k2) continue;
+      for(const v of (em.get(k1 < k2 ? k1+'|'+k2 : k2+'|'+k1) || []))
+        if(!seen[v]){ seen[v] = 1; out.push(v); stack.push(v); }
+    }
+  }
+  return out;
+}
+// область покраски: всё скругление целиком или плоская область грани
+function paintRegionAt(t){
+  return curvedRegionAt(t) || facePatchAt(t).tris;
+}
+// Ctrl+B записывает поверхности скругления (сегментов ≥ 2)
+function rememberBevelSurfs(edges, size, segs){
+  if(segs < 2) return;
+  const near = (a, b) => Math.abs(a[0]-b[0]) + Math.abs(a[1]-b[1]) + Math.abs(a[2]-b[2]) < 1e-4;
+  const push = S => { // повтор истории пересобирает те же скругления — без дублей
+    if(!curvedSurfs.some(o => o.k === S.k && Math.abs(o.r - S.r) < 1e-6 && near(o.c, S.c) && (!S.e || near(o.e, S.e))))
+      curvedSurfs.push(S);
+  };
+  for(const ed of edges){
+    const r = size * Math.tan(ed.alpha / 2);
+    const C = ed.A.clone().addScaledVector(ed.t1, size).addScaledVector(ed.n1, ed.concave ? r : -r);
+    const phi = Math.PI - ed.alpha; // угол дуги
+    push({k: 'cyl', c: [C.x, C.y, C.z], e: [ed.e.x, ed.e.y, ed.e.z], r,
+      t0: -size - 0.05, t1: ed.L + size + 0.05, sag: r * (1 - Math.cos(phi / segs / 2))});
+  }
+  for(const c of bevelCorners(edges)){
+    const C = c.V.clone().addScaledVector(c.d[0], size).addScaledVector(c.d[1], size).addScaledVector(c.d[2], size);
+    push({k: 'sph', c: [C.x, C.y, C.z], r: size, sag: size * (1 - Math.cos(Math.PI / 4 / segs)) * 1.5});
+  }
+}
 function paintFaceAt(pt){
   const P = new THREE.Vector3(pt.p[0], pt.p[1], pt.p[2]), n = new THREE.Vector3(pt.n[0], pt.n[1], pt.n[2]).normalize();
   const t = zcFaceAt(P, n);
@@ -721,7 +817,7 @@ function paintResolve(){
   for(const pt of paints){
     const t = paintFaceAt(pt);
     pt.lost = t < 0;
-    if(t >= 0) for(const u of facePatchAt(t).tris) out[u] = pt.f;
+    if(t >= 0) for(const u of paintRegionAt(t)) out[u] = pt.f;
   }
   return out;
 }
@@ -758,7 +854,7 @@ function paintFaces(faces, f){
     const t = zcFaceAt(new THREE.Vector3(fc.point[0], fc.point[1], fc.point[2]),
                        new THREE.Vector3(fc.normal[0], fc.normal[1], fc.normal[2]).normalize());
     if(t < 0){ res.push({lost: true}); continue; }
-    const set = new Set(facePatchAt(t).tris);
+    const set = new Set(paintRegionAt(t));
     paints = paints.filter(pt => { const u = paintFaceAt(pt); return !(u >= 0 && set.has(u)); });
     if(f > 1) paints.push({p: fc.point.slice(), n: fc.normal.slice(), f});
     res.push({filament: f, triangles: set.size});
@@ -3226,6 +3322,10 @@ function layFlatOnFace(n){
   const TA = arr => { const q = T(new THREE.Vector3(arr[0], arr[1], arr[2])); return [q.x, q.y, q.z]; };
   for(const m of measures){ m.a = TA(m.a); m.b = TA(m.b); }
   measuresRender();
+  for(const S of curvedSurfs){
+    S.c = TA(S.c);
+    if(S.e){ const d = new THREE.Vector3(S.e[0], S.e[1], S.e[2]).transformDirection(M); S.e = [d.x, d.y, d.z]; }
+  }
   for(const pt of paints){
     pt.p = TA(pt.p);
     const d = new THREE.Vector3(pt.n[0], pt.n[1], pt.n[2]).transformDirection(M);
@@ -5787,6 +5887,7 @@ const bevelTool = {
       else
         zcUserStep(this.snap, 'bevel_edges', {points: this.edges.map(ed => zcArr(ed.A.clone().lerp(ed.B, 0.5))),
           size, segments: segs}, dv);
+      if(this.face < 0) rememberBevelSurfs(this.edges, size, segs);
     }
     if(!modified){ modified = true; s_mod.textContent = 'yes'; }
     clearEdgeSel(); hideChordHint();
@@ -10501,7 +10602,33 @@ function releaseToolInput(){ // фокус обратно на сцену
   const el = document.activeElement;
   if(el && el.tagName === 'INPUT') el.blur();
 }
+// дыры и рёбра на три грани в массиве вершин (как open/nonmanifold у get_state)
+function meshHealthOf(pos){
+  const cnt = new Map();
+  for(let o=0;o<pos.length;o+=9){
+    const ux=pos[o+3]-pos[o], uy=pos[o+4]-pos[o+1], uz=pos[o+5]-pos[o+2];
+    const vx=pos[o+6]-pos[o], vy=pos[o+7]-pos[o+1], vz=pos[o+8]-pos[o+2];
+    if(Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx) < 1e-6) continue;
+    for(let e=0;e<3;e++){
+      const o1 = o+e*3, o2 = o+((e+1)%3)*3;
+      const k1 = keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2 = keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+      if(k1 === k2) continue;
+      const ek = k1 < k2 ? k1+'|'+k2 : k2+'|'+k1;
+      cnt.set(ek, (cnt.get(ek) || 0) + 1);
+    }
+  }
+  let open = 0, nm = 0;
+  for(const c of cnt.values()){ if(c === 1) open++; else if(c > 2) nm++; }
+  return {open, nm};
+}
+// Выдавливание не вправе рвать тело: вырез E+Ctrl по плёнке 0.05 мм оставлял
+// 26 дыр и 39 рёбер на три грани, а объём менялся на 0.3 мм³ — модель
+// молча ломалась. Стало хуже, чем было до операции, — откат и сообщение
+// (как у скругления); команда агента получает ошибку
+let extrudeRejected = null;
 function commitExtrude(){
+  extrudeRejected = null;
+  const pre = exLive ? undoStack[undoStack.length - 1] : null; // снимок до выдавливания
   // шаг истории: грань одна (не мультивыбор), не лист — как extrude_face
   let args = null, top0 = null;
   if(exLive && ppPatch && !(ppParts && ppParts.length > 1) && !exLive.sheet && !zcCmdDepth && !zcReplaying){
@@ -10514,6 +10641,17 @@ function commitExtrude(){
     }
   }
   commitExtrudeRun();
+  if(pre && !exLive && mesh && undoStack[undoStack.length - 1] === pre){
+    const h0 = meshHealthOf(pre.pos), h1 = meshHealthOf(mesh.geometry.attributes.position.array);
+    if(h1.open > h0.open || h1.nm > h0.nm){
+      undo(true);
+      const what = [h1.open > h0.open ? (h1.open - h0.open) + ' open edges' : '',
+                    h1.nm > h0.nm ? (h1.nm - h0.nm) + ' edges on three faces' : ''].filter(Boolean).join(', ');
+      extrudeRejected = 'Extrude would break the body (' + what + ') — undone. The face is probably too thin here';
+      warnTip(extrudeRejected);
+      return;
+    }
+  }
   if(args && !exLive && mesh)
     zcUserStep(top0, 'extrude_face', args, meshVolumeOf(mesh.geometry.attributes.position.array) - meshVolumeOf(top0.pos));
 }
@@ -12703,7 +12841,7 @@ async function rebuild(){
   restoreGuides([]); curveSeq = 0; // новая модель — старые линии над ней не висят
   textSketches = [];
   hardEdges = [];
-  paints = []; // новая модель — покраска старой не переносится
+  paints = []; curvedSurfs = []; // новая модель — покраска старой не переносится
   modified = false; s_mod.textContent = 'no';
   undoStack = []; // новая серверная модель — новая точка отсчёта
   extractEdges();
@@ -12777,6 +12915,7 @@ function projectData(){
     sketches: textSketches,
     measures: measures.map(m => ({id: m.id, a: m.a, b: m.b, c: m.c})),
     paints: paints.map(pt => ({p: pt.p, n: pt.n, f: pt.f})),
+    surfs: curvedSurfs,
     history: zcHistToJSON()
   };
 }
@@ -12813,6 +12952,7 @@ function loadProjectData(d, name){
   measureSeq = Math.max(0, ...measures.map(m => m.id));
   measuresRender();
   paints = (d.paints || []).map(pt => ({p: pt.p.slice(), n: pt.n.slice(), f: pt.f | 0})).filter(pt => pt.f >= 2 && pt.f <= 8);
+  curvedSurfs = Array.isArray(d.surfs) ? d.surfs.map(S => Object.assign({}, S)) : [];
   paintRender();
   if(d.camera){
     yaw = d.camera.yaw; pitch = d.camera.pitch; camDist = d.camera.camDist;
@@ -13097,7 +13237,7 @@ function importMeshArray(raw, name){
   const arr = new Float32Array(raw.length);
   for(let i=0;i<raw.length;i++) arr[i] = q(raw[i]);
   setMeshFromArray(arr);
-  restoreGuides([]); clearAnchors(); curveSeq = 0; hardEdges = []; paints = [];
+  restoreGuides([]); clearAnchors(); curveSeq = 0; hardEdges = []; paints = []; curvedSurfs = [];
   cleanupMesh();
   tidySlivers();   // в чужих сетках щепки обычное дело
   modified = true; s_mod.textContent = 'yes';
@@ -17979,7 +18119,7 @@ function zcApplySolid(tris, op, round = true){
   }
   if(!out.length) throw new Error('the result is empty');
   pushHistory(snap);
-  if(op === 'new'){ restoreGuides([]); paints = []; }
+  if(op === 'new'){ restoreGuides([]); paints = []; curvedSurfs = []; }
   // Т-стыки на вырожденных треугольниках — сначала сварка микрорёбер, потом
   // честный разрез соседа (resolveDegenerate); если вдруг хуже — прежний путь
   // Т-стыки на вырожденных треугольниках — сначала сварка микрорёбер, потом
@@ -18798,6 +18938,7 @@ const ZC_COMMANDS = {
       applyExtrudeLive(snapMM(d));
       const v1 = undoStack.length;
       commitExtrude();
+      if(extrudeRejected) throw new Error(extrudeRejected.replace(/^Extrude/, 'extrude'));
       if(Math.abs(k - 1) > 1e-6 && !exLive && undoStack.length < v1){ releaseToolInput(); throw new Error('extrude with end_scale failed here (nothing to ' + (d < 0 ? 'cut' : 'add') + ', or the solid did not close)'); }
       if(exLive){ closeExtrude(); throw new Error('nothing to ' + (exOp() === 'cut' ? 'cut' : 'add') + ' here'); }
       releaseToolInput();

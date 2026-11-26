@@ -578,7 +578,7 @@ Texture the surface (displacement, like texture tools in slicers): the faces are
 
 ### `paint_face`
 
-Paint faces with a filament for multi-colour printing — the same as Shift+1…8 on selected faces in the editor. The whole face region under the point is painted (what a click selects: up to edges and drawn lines). filament 1 is the main one (clears the paint), 2–8 are the other filaments (AMS slots on a Bambu printer). The paint follows the face if it is extruded along its normal. export_3mf writes it per triangle as paint_color (Bambu Studio, OrcaSlicer) and slic3rpe:mmu_segmentation (PrusaSlicer).
+Paint faces with a filament for multi-colour printing — the same as Shift+1…8 on selected faces in the editor. The whole face region under the point is painted (what a click selects: up to edges and drawn lines); a point on a fillet made by bevel_edges / Ctrl+B paints the whole rounded surface — all its strips, ball corners and the coves joining them. filament 1 is the main one (clears the paint), 2–8 are the other filaments (AMS slots on a Bambu printer). The paint follows the face if it is extruded along its normal. export_3mf writes it per triangle as paint_color (Bambu Studio, OrcaSlicer) and slic3rpe:mmu_segmentation (PrusaSlicer).
 
 | параметр | тип | нужен | описание |
 |---|---|---|---|
