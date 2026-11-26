@@ -708,6 +708,103 @@ def rotate_body_upside_down():
 
 
 @case
+def concave_edge_gets_a_cove():
+    # Ctrl+B на внутреннем ребре: не срез, а добавка — выкружка между гранями
+    # (как Fillet во Fusion). Площадь добавки на 90° = r² − площадь сектора
+    # из segments хорд; ребро в кармане упирается в дно — выкружка до него
+    import math
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    b = lambda z: [[10, -1, z], [21, -1, z], [21, 21, z], [10, 21, z]]
+    call('loft_profiles', {'profile_a': b(10), 'profile_b': b(21), 'operation': 'cut'})   # ступенька
+    d = call('bevel_edges', {'points': [[10, 10, 10]], 'size': 2, 'segments': 8})
+    closed(d, 'step cove')
+    near(d['volume_change_mm3'], (4 - 0.5 * 4 * 8 * math.sin(math.pi / 16)) * 20, 0.02, 'step cove volume')
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    b = lambda z: [[5, 5, z], [15, 5, z], [15, 15, z], [5, 15, z]]
+    call('loft_profiles', {'profile_a': b(10), 'profile_b': b(21), 'operation': 'cut'})   # карман
+    d = call('bevel_edges', {'points': [[5, 5, 15]], 'size': 2, 'segments': 8})
+    closed(d, 'pocket corner cove')
+    near(d['volume_change_mm3'], (4 - 0.5 * 4 * 8 * math.sin(math.pi / 16)) * 10, 0.05, 'pocket cove volume')
+    assert d['bbox_max'][2] == 20, ('the cove must not stick out of the pocket', d)
+    # ребро дна упирается не в стенку, а в выкружку угла: выкружка дна
+    # всё равно идёт до самой стенки (раньше обрывалась на конце ребра —
+    # угол оставался веером с дырой). Ребро дна — 8 мм (угол занят
+    # выкружкой R2): без продления добавка 0.2196·4·8 ≈ 7.03 мм³
+    d = call('bevel_edges', {'points': [[10, 5, 10]], 'size': 2, 'segments': 8})
+    closed(d, 'floor cove into the corner cove')
+    assert d['volume_change_mm3'] > 7.5, ('the floor cove must reach the wall through the corner cove', d)
+
+
+@case
+def ball_corner_at_a_vertex():
+    # Три ребра в вершине под 90° — угол шариком (rolling ball во Fusion):
+    # кусок шара радиуса size, а не стык трёх цилиндров со складкой.
+    # Наружный угол срезается, внутренний (три вогнутых ребра) получает тело
+    import math
+    seg = lambda r: r * r - 0.5 * r * r * 8 * math.sin(math.pi / 16)   # сечение скругления из 8 хорд
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    d = call('bevel_edges', {'vertices': [[20, 20, 20]], 'size': 4, 'segments': 8})
+    closed(d, 'outer ball corner')
+    assert d['ball_corners'] == 1 and len(d['edges']) == 3, d
+    assert d['folded_edges'] == 0, ('no crease at the corner', d)
+    want = -(3 * seg(4) * 16 + 64 - math.pi * 64 / 6)
+    near(d['volume_change_mm3'], want, abs(want) * 0.02, 'outer corner volume')
+    # внутренний угол кармана: дно и две стенки
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    b = lambda z: [[5, 5, z], [15, 5, z], [15, 15, z], [5, 15, z]]
+    call('loft_profiles', {'profile_a': b(10), 'profile_b': b(21), 'operation': 'cut'})
+    d = call('bevel_edges', {'vertices': [[5, 5, 10]], 'size': 2, 'segments': 8})
+    closed(d, 'inner ball corner')
+    assert d['ball_corners'] == 1, d
+    want = 3 * seg(2) * 8 + 8 - math.pi * 8 / 6
+    near(d['volume_change_mm3'], want, want * 0.03, 'inner corner volume')
+    assert d['bbox_max'][2] == 20, ('nothing sticks out of the pocket', d)
+
+
+@case
+def extrude_against_a_wall_merges():
+    # Полоса у стены поднята выдавкой: бок призмы встаёт вплотную к стенке.
+    # Быстрый путь «сдвиг грани» оставлял между ними двойную внутреннюю
+    # грань (объём сходился!), и следующий выбор торца уходил за стенку,
+    # а выдавка рвала сетку (60 дыр). Теперь это союз — тела сливаются
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    call('cut_plane', {'point': [0, 0, 10], 'normal': [0, 0, 1]})
+    r = lambda z: [[0, 18, z], [20, 18, z], [20, 20, z], [0, 20, z]]
+    call('loft_profiles', {'profile_a': r(9.8), 'profile_b': r(15), 'operation': 'join'})   # бортик
+    call('draw_line', {'from': [20, 18, 10], 'to': [17.8, 18, 10]})
+    call('draw_line', {'from': [17.8, 18, 10], 'to': [17.8, 0, 10]})
+    d = call('extrude_face', {'point': [19, 9, 10], 'normal': [0, 0, 1], 'distance': 8})
+    closed(d, 'wall'); near(d['volume_change_mm3'], 2.2 * 18 * 8, 0.05, 'wall volume')
+    assert d['folded_edges'] == 0, ('no double face against the rim', d)
+    # торец стены над бортиком — только видимая часть 2.2 x 3, не до плиты
+    d = call('extrude_face', {'point': [19, 18, 16.5], 'normal': [0, 1, 0], 'distance': 2})
+    near(d['face_area_mm2'], 2.2 * 3, 0.01, 'only the visible end face')
+    closed(d, 'end pushed'); near(d['volume_change_mm3'], 2.2 * 3 * 2, 0.05, 'end volume')
+
+
+@case
+def kept_measurements_by_colour():
+    # замеры, оставленные на модели (рулетка + Alt): цвета по кругу, первый
+    # свободный; читаются агентом, живут в проекте и не попадают в историю
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    call('clear_measurements', {})
+    h0 = len(call('get_history', {})['steps'])
+    m1 = call('add_measurement', {'a': [0, 0, 20], 'b': [20, 0, 20]})
+    m2 = call('add_measurement', {'a': [0, 0, 0], 'b': [0, 0, 6.65]})
+    assert (m1['color'], m2['color']) == ('yellow', 'red'), (m1, m2)
+    assert m2['color_ru'] == 'красный', m2
+    near(m2['distance'], 6.65, 1e-6, 'distance')
+    ms = call('get_measurements', {})['measurements']
+    assert [m['color'] for m in ms] == ['yellow', 'red'], ms
+    near(ms[0]['dx'], 20, 1e-6, 'dx')
+    assert len(call('get_history', {})['steps']) == h0, 'measurements are not history steps'
+    # убрали жёлтый — следующий замер снова жёлтый (первый свободный цвет)
+    assert call('clear_measurements', {'which': 'жёлтый'})['removed'] == 1
+    assert call('add_measurement', {'a': [0, 0, 0], 'b': [1, 0, 0]})['color'] == 'yellow'
+    assert call('clear_measurements', {})['left'] == 0
+
+
+@case
 def symbol_pattern_and_relief_tilt():
     # Узор из любого знака библиотеки (kind symbol) и клин сот одного наклона
     # (honeycomb_relief, tilt down: ноль сверху, полная высота снизу)

@@ -9,7 +9,10 @@
 //!   GET /api/wheel.stl?...   -> бинарный STL с параметрами из query
 //!   POST /mcp                -> MCP для AI-агента (agent.rs); команды исполняет
 //!                               открытая вкладка: GET /agent/events (SSE),
-//!                               POST /agent/hello, /agent/result, /agent/lead
+//!                               POST /agent/hello, /agent/result, /agent/lead,
+//!                               /agent/ack (команду получила), /agent/bye
+//!   GET/POST /api/session    -> общий рабочий сеанс: последний проект любой
+//!                               вкладки; ?seq=1 — только «номер вкладка»
 //!
 //! Параметры query: dia, thk, shaft, n, depth, mouth (дефолты — в geometry.rs).
 
@@ -28,8 +31,66 @@ const APP_JS: &str = include_str!("../web/app.js");
 /// его в `agent::embedded_tools()`, чтобы отвечать на `tools/list` без вкладки.
 pub const TOOLS_JS: &str = include_str!("../web/tools.js");
 const THREE_JS: &str = include_str!("../web/vendor/three.min.js");
-const BUILD: &str = env!("ZEROCAD_BUILD");
+pub const BUILD: &str = env!("ZEROCAD_BUILD");
 static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+/// Общий рабочий сеанс: проект, который вкладки пишут при автосохранении.
+/// Новая вкладка открывается сразу на нём, остальные подхватывают правки по
+/// номеру версии. Хранится и на диске (exports/_session.zcad) — переживает
+/// перезапуск сервера.
+struct Session {
+    seq: u64,
+    tab: String,
+    data: Vec<u8>,
+}
+static SESSION: std::sync::Mutex<Option<Session>> = std::sync::Mutex::new(None);
+const SESSION_FILE: &str = "exports/_session.zcad";
+
+fn session_load() {
+    if let Ok(data) = std::fs::read(SESSION_FILE) {
+        if !data.is_empty() {
+            *SESSION.lock().unwrap() = Some(Session { seq: 1, tab: String::new(), data });
+        }
+    }
+}
+
+fn session_route(stream: &mut TcpStream, post: bool, query: &str, body: Vec<u8>) {
+    let tab: String = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("tab="))
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(32)
+        .collect();
+    let mut s = SESSION.lock().unwrap();
+    if post {
+        if body.is_empty() || body[0] != b'{' {
+            respond(stream, "400 Bad Request", "text/plain; charset=utf-8", &[], b"");
+            return;
+        }
+        let seq = s.as_ref().map_or(0, |x| x.seq) + 1;
+        let _ = std::fs::create_dir_all("exports");
+        let _ = std::fs::write(SESSION_FILE, &body);
+        *s = Some(Session { seq, tab, data: body });
+        respond(stream, "200 OK", "text/plain; charset=utf-8", &[], seq.to_string().as_bytes());
+        return;
+    }
+    match s.as_ref() {
+        None => respond(stream, "204 No Content", "text/plain; charset=utf-8", &[], b""),
+        Some(x) if query.split('&').any(|kv| kv == "seq=1") => {
+            let line = format!("{} {}", x.seq, x.tab);
+            respond(stream, "200 OK", "text/plain; charset=utf-8", &[], line.as_bytes())
+        }
+        Some(x) => respond(
+            stream,
+            "200 OK",
+            "application/json; charset=utf-8",
+            &[format!("X-Session-Seq: {}", x.seq), format!("X-Session-Tab: {}", x.tab)],
+            &x.data,
+        ),
+    }
+}
 
 fn port() -> u16 {
     *PORT.get().unwrap_or(&9000)
@@ -43,6 +104,7 @@ fn main() {
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(9000);
     let _ = PORT.set(port);
+    session_load();
     let addr = format!("127.0.0.1:{port}");
     let listener = TcpListener::bind(&addr).unwrap_or_else(|e| {
         eprintln!("не удалось занять {addr}: {e}");
@@ -91,7 +153,7 @@ fn handle(stream: TcpStream) {
     };
 
     // мост к агенту: только со страниц этого компьютера (DNS rebinding)
-    if (path == "/mcp" || path.starts_with("/agent/")) && !agent::origin_ok(origin.as_deref()) {
+    if (path == "/mcp" || path.starts_with("/agent/") || path == "/api/session") && !agent::origin_ok(origin.as_deref()) {
         respond(&mut stream, "403 Forbidden", "text/plain; charset=utf-8", &[], b"forbidden origin");
         return;
     }
@@ -103,10 +165,12 @@ fn handle(stream: TcpStream) {
                 .and_then(|v| v.parse::<u64>().ok());
             agent::open_events(stream, tab);
         }
-        "/agent/hello" | "/agent/result" | "/agent/lead" => {
+        "/agent/hello" | "/agent/result" | "/agent/lead" | "/agent/ack" | "/agent/bye" => {
             let ok = match path {
                 "/agent/hello" => agent::hello(&body),
                 "/agent/result" => agent::result(&body),
+                "/agent/ack" => agent::ack(&body),
+                "/agent/bye" => agent::bye(&body),
                 _ => agent::lead(&body),
             };
             let status = if ok { "204 No Content" } else { "400 Bad Request" };
@@ -124,6 +188,7 @@ fn handle(stream: TcpStream) {
                 respond(&mut stream, "405 Method Not Allowed", "text/plain; charset=utf-8", &["Allow: POST".to_string()], b"");
             }
         }
+        "/api/session" => session_route(&mut stream, request_line.starts_with("POST "), query, body),
         "/" | "/index.html" => {
             let page = INDEX_HTML.replace("__BUILD__", BUILD);
             respond(

@@ -11,6 +11,8 @@
 // Реализация команд (`run`) живёт в `ZC_COMMANDS` в app.js; имена здесь и
 // там обязаны совпадать — это проверяет `cargo test` и тест вкладки.
 // Правка здесь требует `cargo build` + перезапуск сервера + F5, как и app.js.
+// После правки команд: `python assets/gen_help.py` — обновит HELP.md
+// (справочник для агента; `cargo test` проверяет, что команда там есть).
 const ZC_TOOLS = [
   {
     "name": "get_state",
@@ -18,6 +20,38 @@ const ZC_TOOLS = [
     "inputSchema": {
       "type": "object",
       "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "get_measurements",
+    "description": "Measurements the user kept on the model: Tape (T), Alt on the second click. Each has a colour (yellow, red, green, blue, silver, purple, lime, orange; color_ru is the Russian name the user says, e.g. \"жёлтый замер\"), its two points a and b in mm and the distance with dx/dy/dz. Use it when the user refers to a measurement by colour.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "add_measurement",
+    "description": "Keep a measurement on the model between points a and b (mm), the same as the user's Alt+click with Tape: it gets the next free colour and shows its length. Use it to show the user which distance you mean.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "a": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "b": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+      },
+      "required": ["a", "b"]
+    }
+  },
+  {
+    "name": "clear_measurements",
+    "description": "Remove kept measurements: all of them, or one given by id or colour name (English or Russian).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "which": {"type": "string", "description": "id or colour; omit or 'all' for every measurement"}
+      },
       "required": []
     }
   },
@@ -413,7 +447,7 @@ const ZC_TOOLS = [
   },
   {
     "name": "bevel_edges",
-    "description": "Chamfer (segments = 1) or round/fillet (segments ≥ 2) straight convex edges of the body — the same tool as Ctrl+B. Each edge is given by a point on it (not at a corner). size is the setback along each face from the edge; on a 90° edge the fillet radius equals size.",
+    "description": "Chamfer (segments = 1) or round/fillet (segments ≥ 2) straight edges of the body — the same tool as Ctrl+B. A convex (outer) edge is cut away; a concave (inner) edge gets material added — a cove between the two faces. Each edge is given by a point on it (not at a corner). size is the setback along each face from the edge; on a 90° edge the fillet radius equals size. Ball corner: where three of the edges meet at right angles (all outer or all inner) the corner becomes a piece of a sphere of radius size instead of a crease — pass the corner in vertices to take all three of its edges at once (an inner corner gets material, which strengthens it).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -429,6 +463,18 @@ const ZC_TOOLS = [
           },
           "description": "one point on each edge, mm"
         },
+        "vertices": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "description": "corner points where three edges meet at 90°: all three edges are rounded and the corner becomes a ball, mm"
+        },
         "size": {
           "type": "number",
           "description": "mm, setback along the faces"
@@ -439,7 +485,6 @@ const ZC_TOOLS = [
         }
       },
       "required": [
-        "points",
         "size"
       ]
     }

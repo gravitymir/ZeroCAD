@@ -231,9 +231,15 @@ function sceneSpan(){
 }
 function camFarLimit(){ return Math.max(1200, sceneSpan() * 4); }
 // дальняя плоскость следом за отдалением, иначе далёкая сцена просто исчезает
+// ближняя — следом за приближением: на 2 мм от угла 0.1 мм уже срезала бы
+// ближние грани (мелкие замеры у самой детали)
+const CAM_MIN_DIST = 1.5;
 function updateCamRange(){
   const need = Math.max(5000, camDist * 3 + sceneSpan());
-  if(Math.abs(persp.far - need) > need * 0.05){ persp.far = need; persp.updateProjectionMatrix(); }
+  const near = Math.max(0.005, Math.min(0.1, camDist * 0.01));
+  if(Math.abs(persp.far - need) > need * 0.05 || Math.abs(persp.near - near) > near * 0.2){
+    persp.far = need; persp.near = near; persp.updateProjectionMatrix();
+  }
 }
 let viewAnim = null;
 function animateView(yaw1, pitch1){
@@ -1264,6 +1270,57 @@ function syncModifierClasses(e){
 }
 for(const type of ['keydown', 'keyup', 'pointermove', 'pointerdown'])
   window.addEventListener(type, syncModifierClasses, true);
+// Alt у рулетки — «оставить замер»: отпущенный Alt не должен уводить фокус в меню браузера
+window.addEventListener('keyup', e => { if(e.key === 'Alt' && activeTool === tapeTool) e.preventDefault(); });
+
+// Alt при простом просмотре — центр вращения снова в центре модели, как до
+// зума к курсору: пока Alt зажат, орбита и колесо — вокруг центра. Камера
+// остаётся на месте, только плавно поворачивается к центру (без скачка).
+// Отпустил — колесо снова приближает к точке под курсором. В инструментах
+// Alt занят (рулетка: оставить замер, точка: изгиб) — там не трогаем
+let altPivot = null; // анимация {P, t0, from, to}
+function modelCenter(){
+  // по самим вершинам: у буфера бывает запас за drawRange, и computeBoundingBox
+  // захватывал мусор (центр пластины 46 мм уезжал на x = 54.5)
+  if(!mesh) return new THREE.Vector3();
+  const pos = mesh.geometry.attributes.position.array;
+  const n = mesh.geometry.drawRange && isFinite(mesh.geometry.drawRange.count) ? Math.min(pos.length, mesh.geometry.drawRange.count * 3) : pos.length;
+  const box = new THREE.Box3(), v = new THREE.Vector3();
+  for(let i=0;i<n;i+=3) box.expandByPoint(v.set(pos[i], pos[i+1], pos[i+2]));
+  return box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3());
+}
+function camPosNow(){
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  return new THREE.Vector3(camTarget.x + camDist*cp*Math.cos(yaw),
+                           camTarget.y + camDist*cp*Math.sin(yaw), camTarget.z + camDist*sp);
+}
+// камера стоит в P и смотрит на T: угол, наклон и дистанция под это
+function aimCamera(P, T){
+  const d = new THREE.Vector3().subVectors(P, T), L = Math.max(CAM_MIN_DIST, d.length());
+  camTarget.copy(T); camDist = L;
+  pitch = Math.max(-1.5, Math.min(1.5, Math.asin(Math.max(-1, Math.min(1, d.z / L)))));
+  yaw = Math.atan2(d.y, d.x);
+}
+function pivotToCenter(){
+  const C = modelCenter();
+  if(C.distanceTo(camTarget) < 1e-3) return;
+  altPivot = {P: camPosNow(), from: camTarget.clone(), to: C, t0: performance.now()};
+}
+function altPivotStep(){ // зовётся из кадра
+  if(!altPivot) return;
+  const k = Math.min(1, (performance.now() - altPivot.t0) / 220), e = k * (2 - k);
+  aimCamera(altPivot.P, altPivot.from.clone().lerp(altPivot.to, e));
+  if(k >= 1) altPivot = null;
+}
+function altPivotAllowed(){
+  const ae = document.activeElement;
+  if(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return false;
+  return !activeTool && !lineMode && !circleMode && !pointMode && !dragPt && !edgeDrag && !exLive;
+}
+window.addEventListener('keydown', e => {
+  if(e.key === 'Alt' && !e.repeat && altPivotAllowed()){ e.preventDefault(); pivotToCenter(); }
+});
+window.addEventListener('keyup', e => { if(e.key === 'Alt' && altPivotAllowed()) e.preventDefault(); });
 window.addEventListener('blur', ()=>{
   document.body.classList.remove('ctrlHeld', 'shiftHeld', 'altHeld');
   if(typeof exLive !== 'undefined' && exLive && exCtrl){ exCtrl = false; paintExOp(); } // Ctrl отпущен вне окна
@@ -2219,28 +2276,199 @@ function axisTriple(dx, dy, dz){
        + '<span style="color:' + AXIS_CSS.z + '">ΔZ ' + dz.toFixed(1) + '</span>';
 }
 // T — Рулетка (Tape Measure в SketchUp): расстояние между двумя точками с
-// магнитами и его разложение по осям. Замер держится на экране до нового
+// магнитами и его разложение по осям. Замер держится на экране до нового.
+// Как у линии: оси, параллель и прямой угол к рёбрам в начальной точке,
+// знак прямого угла и в конце — если замер упёрся в ребро под 90°.
+// Alt на втором клике — замер остаётся на модели своим цветом (MEASURE_COLORS
+// по кругу), хранится в проекте и общем сеансе; агент читает его командой
+// get_measurements («жёлтый замер — должен быть 6.65»)
+const MEASURE_COLORS = [
+  {name: 'yellow', ru: 'жёлтый', hex: 0xffd21f, css: '#ffd21f'},
+  {name: 'red', ru: 'красный', hex: 0xff4040, css: '#ff4040'},
+  {name: 'green', ru: 'зелёный', hex: 0x22c55e, css: '#22c55e'},
+  {name: 'blue', ru: 'синий', hex: 0x3b82f6, css: '#3b82f6'},
+  {name: 'silver', ru: 'серебристый', hex: 0xc0c7d0, css: '#c0c7d0'},
+  {name: 'purple', ru: 'фиолетовый', hex: 0xa855f7, css: '#a855f7'},
+  {name: 'lime', ru: 'салатовый', hex: 0xa3e635, css: '#a3e635'},
+  {name: 'orange', ru: 'оранжевый', hex: 0xff8a1f, css: '#ff8a1f'}
+];
+let measures = [];     // [{id, a:[x,y,z], b:[x,y,z], c: индекс цвета}]
+let measureSeq = 0;
+let measureObjs = [];  // объекты сцены: {obj, dot | label}
+function measureNextColor(){
+  // первый цвет, которого сейчас нет на модели; все заняты — по кругу
+  for(let i=0;i<MEASURE_COLORS.length;i++) if(!measures.some(m => m.c === i)) return i;
+  return measures.length % MEASURE_COLORS.length;
+}
+function measureLabelSprite(text, css){
+  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 72;
+  const ctx = cv.getContext('2d');
+  ctx.font = 'bold 44px system-ui, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round'; ctx.lineWidth = 9; ctx.strokeStyle = 'rgba(12,14,18,0.95)';
+  ctx.strokeText(text, 128, 38);
+  ctx.fillStyle = css; ctx.fillText(text, 128, 38);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial(
+    {map: new THREE.CanvasTexture(cv), transparent: true, depthTest: false}));
+  sp.renderOrder = 10;
+  return sp;
+}
+function measuresRender(){
+  for(const o of measureObjs){
+    scene.remove(o.obj);
+    if(o.obj.geometry && o.obj.geometry !== sphereGeo) o.obj.geometry.dispose();
+    if(o.obj.material && o.obj.material.map) o.obj.material.map.dispose();
+  }
+  measureObjs = [];
+  for(const m of measures){
+    const col = MEASURE_COLORS[m.c % MEASURE_COLORS.length];
+    const A = a3v(m.a), B = a3v(m.b);
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([A, B]),
+      new THREE.LineBasicMaterial({color: col.hex, depthTest: false}));
+    line.renderOrder = 9;
+    scene.add(line); measureObjs.push({obj: line});
+    for(const P of [A, B]){
+      const d = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color: col.hex})));
+      d.position.copy(P); scene.add(d); measureObjs.push({obj: d, dot: true});
+    }
+    const sp = measureLabelSprite(A.distanceTo(B).toFixed(2), col.css);
+    sp.position.copy(A).lerp(B, 0.5);
+    scene.add(sp); measureObjs.push({obj: sp, label: true});
+  }
+}
+function measurePin(A, B){
+  const c = measureNextColor();
+  measures.push({id: ++measureSeq, a: v3a(A), b: v3a(B), c});
+  measuresRender(); scheduleAutosave();
+  return MEASURE_COLORS[c];
+}
+function measuresList(){
+  return measures.map(m => {
+    const A = a3v(m.a), B = a3v(m.b), d = new THREE.Vector3().subVectors(B, A);
+    const col = MEASURE_COLORS[m.c % MEASURE_COLORS.length];
+    return {id: m.id, color: col.name, color_ru: col.ru, a: m.a, b: m.b,
+            distance: +d.length().toFixed(3), dx: +d.x.toFixed(3), dy: +d.y.toFixed(3), dz: +d.z.toFixed(3)};
+  });
+}
+function measuresClear(which){ // which: нет — все, иначе id или имя цвета
+  const before = measures.length;
+  if(which === undefined || which === null || which === 'all') measures = [];
+  else measures = measures.filter(m => {
+    const col = MEASURE_COLORS[m.c % MEASURE_COLORS.length];
+    return m.id !== +which && col.name !== which && col.ru !== which;
+  });
+  if(measures.length !== before){ measuresRender(); scheduleAutosave(); }
+  return before - measures.length;
+}
+// направления рёбер и линий через точку P (у вершины — оба ребра угла)
+function edgeDirsAt(P){
+  const out = [];
+  const add = v => {
+    if(v.lengthSq() < 1e-10) return;
+    v.normalize();
+    if(!out.some(u => Math.abs(u.dot(v)) > 0.9995)) out.push(v);
+  };
+  for(const ch of chains){
+    for(let i=1;i<ch.pts.length;i++){
+      const A = ch.pts[i-1], B = ch.pts[i];
+      const ab = new THREE.Vector3().subVectors(B, A), L2 = ab.lengthSq();
+      if(L2 < 1e-10) continue;
+      const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(P, A).dot(ab) / L2));
+      if(new THREE.Vector3().copy(A).addScaledVector(ab, t).distanceTo(P) < 0.02) add(ab);
+    }
+  }
+  return out;
+}
+// угол между замером и ребром (0…90): берём ребро, к которому угол «ровнее»
+function tapeAngleTo(dirs, d){
+  const L = d.length();
+  if(L < 0.1 || !dirs.length) return null;
+  let best = null;
+  for(const u of dirs){
+    const deg = Math.acos(Math.min(1, Math.abs(d.dot(u)) / L)) * 180 / Math.PI;
+    const off = Math.min(Math.abs(90 - deg), deg);
+    if(!best || off < best.off) best = {deg, u, off};
+  }
+  return best;
+}
 const tapeTool = {
-  hud: 'TAPE MEASURE · click two points · Esc — clear, Esc — exit',
-  a: null, b: null, line: null, dots: [],
+  hud: 'TAPE MEASURE · click two points · Alt on the 2nd click — keep it (colour) · Backspace — remove the last kept · Esc — clear, Esc — exit',
+  a: null, b: null, line: null, dots: [], dirsA: [], marks: [],
   on(){ this.clear(); },
   off(){ this.clear(); ghost.visible = false; tipHide(); hideChordHint(); },
+  clearMarks(){
+    for(const m of this.marks){ scene.remove(m); m.geometry.dispose(); }
+    this.marks = [];
+  },
   clear(){
-    this.a = null; this.b = null;
+    this.a = null; this.b = null; this.dirsA = [];
     if(this.line){ scene.remove(this.line); this.line.geometry.dispose(); this.line = null; }
     for(const m of this.dots) scene.remove(m);
     this.dots = [];
+    this.clearMarks();
   },
   addDot(P){
     const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color: 0xf5c542})));
     m.position.copy(P); scene.add(m); this.dots.push(m);
   },
-  drawLine(A, B){
+  drawLine(A, B, color, dashed){
     if(this.line){ scene.remove(this.line); this.line.geometry.dispose(); }
+    const c = color === undefined ? 0xf5c542 : color;
     this.line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([A, B]),
-      new THREE.LineDashedMaterial({color: 0xf5c542, dashSize: 1.2, gapSize: 0.8}));
+      dashed === false ? new THREE.LineBasicMaterial({color: c})
+                       : new THREE.LineDashedMaterial({color: c, dashSize: 1.2, gapSize: 0.8}));
     this.line.computeLineDistances();
     scene.add(this.line);
+  },
+  // знак прямого угла у точки at: катеты вдоль ребра u и вдоль замера v
+  mark(at, u, v, len){
+    const s = Math.max(1.0, Math.min(2.5, len * 0.3));
+    const U = u.clone().multiplyScalar(s), V = v.clone().multiplyScalar(s);
+    const g = new THREE.BufferGeometry().setFromPoints([at.clone().add(U), at.clone().add(U).add(V), at.clone().add(V)]);
+    const m = new THREE.Line(g, new THREE.LineBasicMaterial({color: 0xd9534f, depthTest: false}));
+    m.renderOrder = 9;
+    scene.add(m); this.marks.push(m);
+  },
+  // второй конец с привязками: ось, параллель/перпендикуляр к рёбрам старта
+  snapEnd(pt){
+    let pos = pt.pos, note = kindLabel(pt.kind), how = null;
+    if(pt.kind === 'on face' || pt.kind === 'on edge' || pt.kind === 'on ground'){
+      const ax = axisInfer(this.a, pos);
+      if(ax){ pos = ax.p; how = {axis: ax.ax}; note = 'on axis ' + ax.ax.toUpperCase(); }
+      else {
+        const d = new THREE.Vector3().subVectors(pos, this.a), L = d.length();
+        for(const u of (L < 1 ? [] : this.dirsA)){
+          const c = d.dot(u) / L;
+          if(Math.abs(c) > 0.996){ // параллель ребру старта
+            pos = this.a.clone().addScaledVector(u, snapMM(d.dot(u)));
+            how = {par: true}; note = 'parallel to edge'; break;
+          }
+          if(Math.abs(c) < 0.07){ // перпендикуляр: убираем составляющую вдоль ребра
+            pos = this.a.clone().add(d.clone().addScaledVector(u, -d.dot(u)));
+            how = {perp: true}; note = 'perpendicular to edge'; break;
+          }
+        }
+      }
+    }
+    return {pos, note, how};
+  },
+  // подписи и знаки углов: у старта — к рёбрам старта, у конца — к рёбрам конца
+  angles(A, B, dirsB){
+    this.clearMarks();
+    const d = new THREE.Vector3().subVectors(B, A), L = d.length();
+    let html = '';
+    const show = (tag, dirs, at, sign) => {
+      const r = tapeAngleTo(dirs, d);
+      if(!r) return;
+      const deg = r.deg, exact90 = Math.abs(90 - deg) < 0.25, exact0 = deg < 0.25;
+      const css = exact90 ? ANGLE_CSS[90] : (exact0 ? ANGLE_CSS[0] : null);
+      const txt = tag + ' ∠ ' + (exact90 ? '90' : exact0 ? '0' : deg.toFixed(1)) + '°';
+      html += ' · ' + (css ? '<span style="color:' + css + ';font-weight:700">' + txt + '</span>' : txt);
+      if(exact90) this.mark(at, r.u, d.clone().normalize().multiplyScalar(sign), L);
+    };
+    show('start', this.dirsA, A, 1);
+    show('end', dirsB, B, -1);
+    return html;
   },
   down(e, q){
     if(e.button !== 0 || !q.inside) return;
@@ -2249,10 +2477,22 @@ const tapeTool = {
     if(!this.a || this.b){ // новый замер
       this.clear(); hideChordHint();
       this.a = pt.pos.clone(); this.addDot(this.a);
+      this.dirsA = edgeDirsAt(this.a);
     } else {
-      this.b = pt.pos.clone(); this.addDot(this.b);
-      this.drawLine(this.a, this.b);
+      const s = this.snapEnd(pt);
+      this.b = s.pos.clone();
       ghost.visible = false;
+      if(e.altKey){ // Alt — оставить замер на модели
+        e.preventDefault();
+        const d = this.a.distanceTo(this.b);
+        const col = measurePin(this.a, this.b);
+        this.clear(); tipHide();
+        warnTip('Kept: ' + col.name + ' ' + d.toFixed(2) + ' mm');
+        return;
+      }
+      this.addDot(this.b);
+      this.drawLine(this.a, this.b);
+      this.angles(this.a, this.b, edgeDirsAt(this.b));
       this.pin();
     }
   },
@@ -2261,27 +2501,46 @@ const tapeTool = {
     if(!this.a || this.b){ showPickGhost(e, q, 'Tape · from: '); return; }
     const pt = showPickGhost(e, q, '');
     if(!pt) return;
-    this.drawLine(this.a, pt.pos);
-    const d = new THREE.Vector3().subVectors(pt.pos, this.a);
-    tipAt(e, 'Distance <b>' + d.length().toFixed(1) + '</b> mm · ' + kindLabel(pt.kind)
-      + '<br>' + axisTriple(d.x, d.y, d.z));
+    const s = this.snapEnd(pt);
+    ghost.position.copy(s.pos);
+    const color = s.how && s.how.axis ? AXIS_COLORS[s.how.axis]
+                : s.how && s.how.perp ? ANGLE_COLORS[90]
+                : s.how && s.how.par ? 0xe040e0 : 0xf5c542;
+    this.drawLine(this.a, s.pos, color, !(s.how && (s.how.axis || s.how.par)));
+    const ang = this.angles(this.a, s.pos, edgeDirsAt(s.pos));
+    const d = new THREE.Vector3().subVectors(s.pos, this.a);
+    const kept = MEASURE_COLORS[measureNextColor()];
+    tipAt(e, 'Distance <b>' + d.length().toFixed(2) + '</b> mm · ' + s.note + ang
+      + '<br>' + axisTriple(d.x, d.y, d.z)
+      + '<br><span style="opacity:.75">Alt+click — keep as </span><span style="color:' + kept.css + ';font-weight:700">' + kept.name + '</span>');
   },
   pin(){ // итог замера — в перетаскиваемой палитре, как данные выбранного объекта
     const d = new THREE.Vector3().subVectors(this.b, this.a);
     const vr = view.getBoundingClientRect();
     chordHint.innerHTML = CH_GRIP +
-      '<div style="color:var(--text);font-weight:600">Tape<br>Distance ' + d.length().toFixed(1) + ' mm'
-      + '<br><span style="color:' + AXIS_CSS.x + '">ΔX ' + d.x.toFixed(1) + '</span>'
-      + '<br><span style="color:' + AXIS_CSS.y + '">ΔY ' + d.y.toFixed(1) + '</span>'
-      + '<br><span style="color:' + AXIS_CSS.z + '">ΔZ ' + d.z.toFixed(1) + '</span></div>'
+      '<div style="color:var(--text);font-weight:600">Tape<br>Distance ' + d.length().toFixed(2) + ' mm'
+      + '<br><span style="color:' + AXIS_CSS.x + '">ΔX ' + d.x.toFixed(2) + '</span>'
+      + '<br><span style="color:' + AXIS_CSS.y + '">ΔY ' + d.y.toFixed(2) + '</span>'
+      + '<br><span style="color:' + AXIS_CSS.z + '">ΔZ ' + d.z.toFixed(2) + '</span></div>'
       + (!hintsChk.checked ? '' :
         '<div><span class="key">Click</span> — new measurement</div>'
+        + '<div><span class="key">Alt+click</span> — keep it on the model</div>'
         + '<div style="opacity:.55">Esc — clear</div>');
     chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
     chordHint.style.top  = Math.min(lastMY - vr.top + 20, vr.height - 220) + 'px';
     chordHint.hidden = false;
     clearTimeout(showChordHint._t);
     tipHide();
+  },
+  key(e){ // Backspace / Delete — убрать последний оставленный замер
+    if((e.key === 'Backspace' || e.key === 'Delete') && measures.length){
+      e.preventDefault();
+      const m = measures[measures.length - 1];
+      measuresClear(m.id);
+      warnTip('Removed: ' + MEASURE_COLORS[m.c % MEASURE_COLORS.length].name);
+      return true;
+    }
+    return false;
   },
   esc(){ // первый Esc стирает замер, второй выходит из рулетки
     if(!this.a) return false;
@@ -4827,7 +5086,9 @@ function analyzeBevelEdge(pts){
   const s1 = side(tr[0]), s2 = side(tr[1]);
   const alpha = Math.acos(Math.max(-1, Math.min(1, s1.t.dot(s2.t))));
   if(alpha < 5*Math.PI/180 || alpha > 175*Math.PI/180) return {err: 'Faces are almost flat — nothing to bevel'};
-  if(s1.t.dot(s2.n) > -1e-6) return {err: 'Only convex edges for now'};
+  // вогнутое ребро (внутренний угол): скругление не срезает, а добавляет
+  // материал — выкружку между гранями, как Fillet во Fusion на внутреннем угле
+  const concave = s1.t.dot(s2.n) > -1e-6;
   // Конец ребра упирается в стенку (грань смотрит назад, на ребро) — вырез
   // там кончается. Иначе за концом воздух или соседнее скругление, укоротившее
   // ребро: вырез продлевается, чтобы угол скруглился так же, как при
@@ -4837,12 +5098,24 @@ function analyzeBevelEdge(pts){
       if(triNormalAt(ti).dot(out) < -0.3) return false;
     return true;
   };
-  return {A: A.clone(), B: B.clone(), e, L, t1: s1.t, n1: s1.n, t2: s2.t, n2: s2.n, alpha,
+  if(concave){ // тело до скругления: по нему лучи ищут стенку за концом ребра
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos.slice(), 3));
+    var probe = new THREE.Mesh(g, new THREE.MeshBasicMaterial({side: THREE.DoubleSide}));
+    probe.updateMatrixWorld(true);
+  }
+  return {A: A.clone(), B: B.clone(), e, L, t1: s1.t, n1: s1.n, t2: s2.t, n2: s2.n, alpha, concave, probe,
           openA: openEnd(A, e.clone().negate()), openB: openEnd(B, e)};
+}
+// рёбра тела, сходящиеся в вершине P (концы цепочек в пределах tol)
+function cornerEdgeChains(P, tol){
+  return chains.filter(ch => !ch.isGuide && !ch.closed && ch.pts.length > 1 &&
+    (ch.pts[0].distanceTo(P) < tol || ch.pts[ch.pts.length-1].distanceTo(P) < tol));
 }
 // профиль выреза в точке P ребра. Стороны вдоль граней вынесены на eps в
 // воздух: копланарные с гранями плоскости BSP разрезает ненадёжно
 function bevelProfile(ed, P, size, segs){
+  if(ed.concave) return bevelProfileConcave(ed, P, size, segs);
   const eps = 0.5;
   const T1 = P.clone().addScaledVector(ed.t1, size);
   const T2 = P.clone().addScaledVector(ed.t2, size);
@@ -4863,10 +5136,76 @@ function bevelProfile(ed, P, size, segs){
     T2.clone().addScaledVector(ed.n2, eps),
     P.clone().addScaledVector(ed.n1, eps).addScaledVector(ed.n2, eps)]};
 }
+// Вогнутое ребро: угол в воздухе между гранями равен alpha, центр дуги — в
+// воздухе (T1 + n1·r), дуга выгнута к самому ребру. Добавка — область между
+// ребром, гранями и дугой; её стороны вдоль граней уходят на eps в материал
+// (союз с перекрытием надёжнее касания). eps мал: стенка тоньше не протечёт
+function bevelProfileConcave(ed, P, size, segs){
+  const eps = 0.05;
+  const T1 = P.clone().addScaledVector(ed.t1, size);
+  const T2 = P.clone().addScaledVector(ed.t2, size);
+  const arc = [T1];
+  const r = size * Math.tan(ed.alpha / 2);
+  if(segs >= 2){
+    const C = T1.clone().addScaledVector(ed.n1, r);
+    const phi = Math.acos(Math.max(-1, Math.min(1, ed.n1.dot(ed.n2))));
+    for(let k=1;k<segs;k++){
+      const f = k / segs;
+      const dir = ed.n1.clone().multiplyScalar(-Math.sin((1-f)*phi))
+        .addScaledVector(ed.n2, -Math.sin(f*phi)).multiplyScalar(1 / Math.sin(phi));
+      arc.push(C.clone().addScaledVector(dir, r));
+    }
+  }
+  arc.push(T2);
+  return {arc, loop: [T1.clone().addScaledVector(ed.n1, -eps), ...arc,
+    T2.clone().addScaledVector(ed.n2, -eps),
+    P.clone().addScaledVector(ed.n1, -eps).addScaledVector(ed.n2, -eps)]};
+}
 // запас выреза за концом ребра: у стенки — чуть-чуть, у открытого конца —
 // с перекрытием соседнего скругления того же порядка размера
+// Конец вогнутого ребра: выкружка идёт до ближайшей стенки за концом.
+// Ребро под крышкой упиралось не в стенку, а в соседнюю выкружку угла (её
+// поверхность у конца ребра смотрит вбок) — продление 0, выкружка
+// обрывалась в миллиметре от стенки, угол оставался веером с дырой. Теперь
+// из точек сечения (чуть в воздух от дуги) пускаем лучи за конец: дальняя
+// стенка из найденных — граница (соседняя выкружка остаётся внутри союза),
+// ни один луч не упёрся в пределах 3·size — конец открытый, продления нет
+function concaveEndExt(ed, size, end){
+  ed._ext = ed._ext || {};
+  const key = end + '|' + size;
+  if(ed._ext[key] != null) return ed._ext[key];
+  let ext = 0.05;
+  if(ed.probe){
+    const P = end === 'A' ? ed.A : ed.B;
+    const dir = end === 'A' ? ed.e.clone().negate() : ed.e.clone();
+    const r = size * Math.tan(ed.alpha / 2);
+    const C = P.clone().addScaledVector(ed.t1, size).addScaledVector(ed.n1, r); // центр дуги
+    const arc = bevelProfileConcave(ed, P, size, 6).arc;
+    const cap = 3 * size + 2;
+    let far = -1, hits = 0;
+    for(const Q of arc){
+      const S = Q.clone().addScaledVector(new THREE.Vector3().subVectors(C, Q).normalize(), 0.03)
+        .addScaledVector(dir, -0.01);
+      raycaster.set(S, dir);
+      raycaster.far = cap;
+      const h = raycaster.intersectObject(ed.probe).find(x => x.distance > 1e-4);
+      raycaster.far = Infinity;
+      if(h){ hits++; far = Math.max(far, h.distance); }
+    }
+    ext = hits ? far + 0.05 : 0;
+  }
+  ed._ext[key] = ext;
+  return ext;
+}
 function bevelExt(ed, size, end){
-  return (end === 'A' ? ed.openA : ed.openB) ? 2*size + 1 : 0.02;
+  const open = end === 'A' ? ed.openA : ed.openB;
+  // вогнутое: у стенки на торце — чуть в неё (союз), у открытого конца —
+  // ровно до конца ребра, иначе выкружка торчала бы в воздух
+  // конец в вершине-шарике: скругление ребра начинается в size от вершины
+  // (с перекрытием 0.05), весь угол до него делает угловой инструмент
+  if(ed['corner' + end]) return -(size - 0.05);
+  if(ed.concave) return concaveEndExt(ed, size, end);
+  return open ? 2*size + 1 : 0.02;
 }
 function bevelPrism(ed, size, segs){
   const mA = bevelExt(ed, size, 'A'), mB = bevelExt(ed, size, 'B');
@@ -4878,7 +5217,81 @@ function bevelPrism(ed, size, segs){
     nw.x += (a.y-b.y)*(a.z+b.z); nw.y += (a.z-b.z)*(a.x+b.x); nw.z += (a.x-b.x)*(a.y+b.y);
   }
   if(nw.dot(ed.e) < 0) loop = loop.reverse();
+  if(ed.L + mA + mB < 0.1) throw new Error('size is too big for a ball corner on this edge');
   return buildPrismTris(loop, ed.e, ed.L + mA + mB, 0);
+}
+
+// ---------- Скругление вершины «шариком» ----------
+// Три выбранных ребра сходятся в вершине под прямыми углами (или выбрана сама
+// вершина): угол — кусок шара радиуса size, а не стык трёх цилиндров со
+// складкой и иглами. Как Fillet во Fusion, когда в нём все три ребра угла
+// (rolling ball). В локальных осях вершины (s вдоль рёбер) угловой инструмент —
+// куб [−e, size]³ без шара с центром (size, size, size). Наружный угол его
+// вычитает, внутренний (три вогнутых ребра) — добавляет: тот же инструмент,
+// материал там, где наружный угол воздух. Дуги шара по краям — те же точки,
+// что у профиля скругления ребра, поэтому стыки без щелей
+function bevelCorners(edges){
+  for(const ed of edges){ ed.cornerA = false; ed.cornerB = false; }
+  const key = P => Math.round(P.x*200) + ',' + Math.round(P.y*200) + ',' + Math.round(P.z*200);
+  const groups = new Map();
+  for(const ed of edges) for(const end of ['A', 'B']){
+    const k = key(ed[end]);
+    if(!groups.has(k)) groups.set(k, []);
+    groups.get(k).push({ed, end});
+  }
+  const out = [];
+  for(const g of groups.values()){
+    if(g.length !== 3 || g.some(x => x.ed.concave !== g[0].ed.concave)) continue;
+    const d = g.map(x => x.end === 'A' ? x.ed.e.clone() : x.ed.e.clone().negate());
+    if(Math.abs(d[0].dot(d[1])) > 0.035 || Math.abs(d[0].dot(d[2])) > 0.035 || Math.abs(d[1].dot(d[2])) > 0.035) continue;
+    for(const x of g) x.ed['corner' + x.end] = true;
+    out.push({V: g[0].ed[g[0].end].clone(), d, concave: g[0].ed.concave});
+  }
+  return out;
+}
+function cornerBallTris(c, size, segs){
+  const n = Math.max(1, segs), r = size, e = 0.05;
+  const at = s => c.V.clone().addScaledVector(c.d[0], s[0]).addScaledVector(c.d[1], s[1]).addScaledVector(c.d[2], s[2]);
+  const C = at([r, r, r]);
+  const tris = [];
+  const add = (a, b, q, out) => {
+    const nn = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(q, a));
+    if(nn.lengthSq() < 1e-14) return;
+    tris.push(nn.dot(out) >= 0 ? [a, b, q] : [a, q, b]);
+  };
+  // восьмушка шара: индексы (i0, i1, i2), сумма n; направление от центра —
+  // нормированное (sin(i0·π/2n), …): на краях шаги дуги равные по углу
+  const S = t => Math.sin(t * Math.PI / (2 * n));
+  const grid = new Map();
+  const g = (i0, i1) => {
+    const k = i0 * 1000 + i1;
+    if(!grid.has(k)){
+      const v = [S(i0), S(i1), S(n - i0 - i1)], L = Math.hypot(v[0], v[1], v[2]);
+      grid.set(k, at(v.map(x => r - r * x / L)));
+    }
+    return grid.get(k);
+  };
+  const ball = (a, b, q) => add(a, b, q, new THREE.Vector3().subVectors(C, a.clone().add(b).add(q).multiplyScalar(1/3)));
+  for(let i=0;i<n;i++) for(let j=0;i+j<n;j++){
+    ball(g(i, j), g(i+1, j), g(i, j+1));
+    if(i + j < n - 1) ball(g(i+1, j), g(i+1, j+1), g(i, j+1));
+  }
+  const idx = (a, va, b, vb, c2, vc) => { const t = [0, 0, 0]; t[a] = va; t[b] = vb; t[c2] = vc; return g(t[0], t[1]); };
+  for(let a=0;a<3;a++){
+    const b = (a + 1) % 3, c2 = (a + 2) % 3;
+    const pt = (sa, sb, sc) => { const t = [0, 0, 0]; t[a] = sa; t[b] = sb; t[c2] = sc; return at(t); };
+    // крышка s_a = r: веер из угла (−e, −e) по контуру до дуги шара и обратно
+    const ring = [pt(r, r, -e)];
+    for(let m=0;m<=n;m++) ring.push(idx(a, 0, b, m, c2, n - m));
+    ring.push(pt(r, -e, r));
+    const P0 = pt(r, -e, -e);
+    for(let k=0;k+1<ring.length;k++) add(P0, ring[k], ring[k+1], c.d[a]);
+    // квадрат s_a = −e (в воздухе у наружного угла, в материале у внутреннего)
+    const q0 = pt(-e, -e, -e), q1 = pt(-e, r, -e), q2 = pt(-e, r, r), q3 = pt(-e, -e, r);
+    const out = c.d[a].clone().negate();
+    add(q0, q1, q2, out); add(q0, q2, q3, out);
+  }
+  return tris;
 }
 // Предпросмотр — сам результат на модели, как Bevel в Blender и Fillet во
 // Fusion: тело живьём срезается при каждом изменении окна (с короткой
@@ -4941,6 +5354,8 @@ const bevelTool = {
       bev_info.textContent = segs === 1
         ? 'Face ' + (2 * size * Math.sin(alpha / 2)).toFixed(2) + ' mm wide'
         : 'R ' + (size * Math.tan(alpha / 2)).toFixed(2) + ' mm · ' + segs + ' segments';
+      const nc = bevelCorners(this.edges).length;
+      if(nc) bev_info.textContent += ' · ' + (nc === 1 ? 'ball corner' : nc + ' ball corners');
     }
     clearTimeout(this.timer);
     if(now) this.apply();
@@ -4959,25 +5374,46 @@ const bevelTool = {
         body.push([new THREE.Vector3(base[i],base[i+1],base[i+2]),
                    new THREE.Vector3(base[i+3],base[i+4],base[i+5]),
                    new THREE.Vector3(base[i+6],base[i+7],base[i+8])]);
+      const corners = bevelCorners(this.edges);
       for(const ed of this.edges){
-        body = csgSubtract(body, bevelPrism(ed, size, segs));
+        body = ed.concave ? csgUnion(body, bevelPrism(ed, size, segs))
+                          : csgSubtract(body, bevelPrism(ed, size, segs));
         body = body.filter(t => new THREE.Vector3().subVectors(t[1],t[0])
           .cross(new THREE.Vector3().subVectors(t[2],t[0])).length() > 1e-6);
       }
+      for(const c of corners){ // вершины, где сошлись три выбранных ребра, — шариком
+        const tool = cornerBallTris(c, size, segs);
+        body = c.concave ? csgUnion(body, tool) : csgSubtract(body, tool);
+        body = body.filter(t => new THREE.Vector3().subVectors(t[1],t[0])
+          .cross(new THREE.Vector3().subVectors(t[2],t[0])).length() > 1e-6);
+      }
+      this.corners = corners.length;
       const q = x => Math.round(x*1000)/1000;
       const arr = [];
       for(const t of body) for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
       setMeshFromArray(new Float32Array(arr));
       healAfterBool();
       // стык нескольких скруглений: убрать вершины-разрезы на прямых и
-      // заново сшить Т-стыки, иначе грани расползаются на треугольники
-      if(collapseCollinearVertices()){
-        for(let i=0;i<40;i++){
-          const len0 = mesh.geometry.attributes.position.array.length;
-          cleanupMesh(); healTJunctions();
-          if(mesh.geometry.attributes.position.array.length === len0) break;
+      // заново сшить Т-стыки, иначе грани расползаются на треугольники.
+      // Уборка — косметика, и она не вправе портить тело: на коробке с
+      // крюками она выкидывала 454 вершины и съедала кусок ребра крюка
+      // далеко от скругления (−58 мм³, дыры). Испортила (дыры, рёбра на три
+      // грани, объём) — возвращаем сетку как была после булевой
+      {
+        const pre = mesh.geometry.attributes.position.array.slice();
+        const bad = pos => ({open: openEdgeCount(), nm: zcSummary().nonmanifold_edges, vol: meshVolumeOf(pos)});
+        const b0 = bad(pre);
+        if(collapseCollinearVertices()){
+          for(let i=0;i<40;i++){
+            const len0 = mesh.geometry.attributes.position.array.length;
+            cleanupMesh(); healTJunctions();
+            if(mesh.geometry.attributes.position.array.length === len0) break;
+          }
+          removeInvertedShells();
+          const b1 = bad(mesh.geometry.attributes.position.array);
+          if(b1.open > b0.open || b1.nm > b0.nm || Math.abs(b1.vol - b0.vol) > Math.max(0.05, Math.abs(b0.vol) * 1e-5))
+            setMeshFromArray(pre);
         }
-        removeInvertedShells();
       }
       // рёбра между гранями скругления — жёсткие: видны и выбираются при
       // любом числе сегментов. Отрезки с запасом за концы, как у выреза
@@ -9528,6 +9964,25 @@ function paintExOp(){
   for(const el of exPopup.querySelectorAll('.exline')) el.hidden = !hintsChk.checked; // подсказки — под флагом
 }
 function setExOp(op){ exOpManual = op; paintExOp(); }
+// треугольники лоскута, которые принадлежат листу, а не телу: связность по
+// рёбрам ровно с двумя гранями (лист цепляется к телу ребром на три грани
+// и в его кусок не попадает); кусок с открытым ребром — лист
+function sheetTrisOf(pos, tris){
+  const nT = pos.length / 9, edges = new Map();
+  for(let t=0;t<nT;t++) for(let e=0;e<3;e++){
+    const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
+    const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+    if(k1 === k2) continue;
+    const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
+    const L = edges.get(ek); if(L) L.push(t); else edges.set(ek, [t]);
+  }
+  const par = new Int32Array(nT); for(let i=0;i<nT;i++) par[i] = i;
+  const find = x => { while(par[x] !== x){ par[x] = par[par[x]]; x = par[x]; } return x; };
+  for(const L of edges.values()) if(L.length === 2){ const a = find(L[0]), b = find(L[1]); if(a !== b) par[a] = b; }
+  const open = new Set();
+  for(const L of edges.values()) if(L.length === 1) open.add(find(L[0]));
+  return tris.filter(t => open.has(find(t)));
+}
 // лоскут — лист (у контура есть открытое ребро: с обратной стороны воздух)?
 function patchIsSheet(pos, tris){
   const cnt = new Map();
@@ -9763,12 +10218,19 @@ function commitExtrude(){
       if(sheet){
         // Join от листа: лист убирается, а остальное тело объединяется с
         // замкнутой призмой (лист становится её крышкой). Простая склейка не
-        // годится: стенки призмы ложатся на бока тела и оставляют щели
-        const drop = new Set(patchTris);
+        // годится: стенки призмы ложатся на бока тела и оставляют щели.
+        // Лоскут — вся плоскость, а лист в нём лишь часть: залитая крышка
+        // коробки лежит в одной плоскости с торцами стенок. Раньше убирались
+        // и они — стенки становились дырявыми, союз их откладывал, и модель
+        // ломалась (−19 500 мм³, 74 ребра на три грани). Убираем и
+        // выдавливаем только сам лист
+        const sheetOnly = sheetTrisOf(snap.pos, patchTris);
+        const own = sheetOnly.length ? sheetOnly : patchTris;
+        const drop = new Set(own);
         const keep = [];
         for(let t=0;t<snap.pos.length/9;t++)
           if(!drop.has(t)) for(let j=0;j<9;j++) keep.push(snap.pos[t*9+j]);
-        extrudeCSG(new Float32Array(keep), buildPatchPrismRange(snap.pos, patchTris, n, lo, hi), 'join');
+        extrudeCSG(new Float32Array(keep), buildPatchPrismRange(snap.pos, own, n, lo, hi), 'join');
       } else if(op === 'join'){
         // Join против нормали: союз с призмой под гранью (у сплошного тела
         // там уже материал — Fusion в таком случае тоже ничего не меняет)
@@ -9809,7 +10271,12 @@ function commitExtrude(){
   // Если предпросмотр уже дал замкнутое тело с точным объёмом (обычный
   // подъём грани), берём его как есть: ни булевых, ни лечилок
   cleanupMesh();
-  if(patchTris && prismClear && extrudeLooksClean(undoStack[undoStack.length-1].pos, applied, patchArea)){
+  // ...и если не появилось двойных граней: стенка, поднятая вплотную к
+  // бортику, вставала к нему встык — между ними оставалась внутренняя грань
+  // (объём сходится, сетка «замкнута»), и следующий выбор торца уходил за
+  // бортик до самой плиты, а выдавка рвала сетку. Такая склейка — союз
+  if(patchTris && prismClear && extrudeLooksClean(undoStack[undoStack.length-1].pos, applied, patchArea)
+     && !extrudeAddedFolds(undoStack[undoStack.length-1].pos)){
     tidyAfterEdit();
     return;
   }
@@ -9854,6 +10321,13 @@ function commitExtrude(){
 }
 // Операция прошла честно? Сетка замкнута, а объём изменился ровно на
 // площадь лоскута x высоту. Если да — лечить нечего и звать булевы незачем
+// Быстрый путь сложил грани встык (двойная внутренняя грань)? Судим только
+// по чистому снимку: тело уже со складками (карман старым путём, README
+// «Загибы») союз не спасёт — BSP по такой сетке рвал её на 720 дыр
+function extrudeAddedFolds(snapPos){
+  if(foldedEdgeCount(snapPos) > 0) return false;
+  return foldedEdgeCount(mesh.geometry.attributes.position.array) > 0;
+}
 function extrudeLooksClean(snapPos, applied, patchArea){
   if(!(patchArea > 0)) return false;
   if(countBoundaryEdges() !== 0) return false;
@@ -11848,6 +12322,7 @@ function projectData(){
     hotspots: hotspots.map(x => ({name: x.name, p: x.p.slice()})),
     camera: {yaw, pitch, camDist, target: v3a(camTarget)},
     sketches: textSketches,
+    measures: measures.map(m => ({id: m.id, a: m.a, b: m.b, c: m.c})),
     history: zcHistToJSON()
   };
 }
@@ -11880,6 +12355,9 @@ function loadProjectData(d, name){
   hotspots = (d.hotspots || []).map(x => ({name: x.name, p: x.p.slice()}));
   traceLoad(d.trace);
   partsUI(); markHotspotsInScene();
+  measures = (d.measures || []).map(m => ({id: m.id, a: m.a.slice(), b: m.b.slice(), c: m.c | 0}));
+  measureSeq = Math.max(0, ...measures.map(m => m.id));
+  measuresRender();
   if(d.camera){
     yaw = d.camera.yaw; pitch = d.camera.pitch; camDist = d.camera.camDist;
     camTarget.copy(a3v(d.camera.target));
@@ -11899,9 +12377,73 @@ function loadProjectData(d, name){
   if(fixed > 4) warnTip('Cleaned ' + fixed + ' sliver triangles from this file');
   if(name) projectName = name.replace(/\.zcad$/i, '');
   setProjectDirty(false);
+  sessionPushSoon(); // открытый файл становится общим сеансом
+}
+// ---- общий рабочий сеанс (сервер) ----
+// Каждая вкладка шлёт свой проект на сервер вместе с автосохранением; новая
+// вкладка открывается сразу на нём, а открытые подхватывают чужие правки по
+// номеру версии. Так человек и агент смотрят одну модель: агент строит, человек
+// открывает ссылку и меряет, правит — агент видит правку.
+const SESSION_TAB = Math.random().toString(36).slice(2, 10);
+let sessionSeq = 0, sessionApplying = false, sessionPushT = 0, sessionPending = false;
+async function sessionPushNow(){
+  clearTimeout(sessionPushT); sessionPushT = 0;
+  if(!mesh) return;
+  sessionPending = false;
+  try{
+    const d = Object.assign(projectData(), {name: projectName});
+    const r = await fetch('/api/session?tab=' + SESSION_TAB, {method: 'POST', body: JSON.stringify(d)});
+    if(r.ok) sessionSeq = Math.max(sessionSeq, +(await r.text()) || 0);
+  }catch(_){}
+}
+function sessionPushSoon(){
+  if(!HAS_SERVER || sessionApplying || !mesh) return;
+  sessionPending = true;
+  clearTimeout(sessionPushT);
+  sessionPushT = setTimeout(sessionPushNow, 600);
+}
+function sessionBusy(){
+  // посреди инструмента или ввода чужую версию не подсовываем — подождём
+  if(activeTool || lineMode || circleMode || pointMode) return true;
+  const ae = document.activeElement;
+  return !!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA'));
+}
+function sessionApply(d, seq, keepCamera){
+  const cam = {yaw, pitch, camDist, target: camTarget.clone()};
+  sessionApplying = true;
+  try{ loadProjectData(d, d.name ? d.name + '.zcad' : null); }
+  finally{ sessionApplying = false; }
+  if(keepCamera){ yaw = cam.yaw; pitch = cam.pitch; camDist = cam.camDist; camTarget.copy(cam.target); }
+  sessionSeq = seq;
+}
+async function sessionPoll(){
+  if(!HAS_SERVER) return;
+  try{
+    const r = await fetch('/api/session?seq=1');
+    if(r.status !== 200) return;
+    const [seqS, tab] = (await r.text()).split(' ');
+    const seq = +seqS || 0;
+    if(seq <= sessionSeq) return;
+    if(tab === SESSION_TAB){ sessionSeq = seq; return; }
+    if(sessionBusy()) return;
+    const full = await fetch('/api/session');
+    if(full.status !== 200) return;
+    const fseq = +full.headers.get('X-Session-Seq') || seq;
+    sessionApply(await full.json(), fseq, true);
+  }catch(err){ console.warn('session poll', err); }
+}
+async function sessionRestore(){
+  if(!HAS_SERVER) return false;
+  try{
+    const r = await fetch('/api/session');
+    if(r.status !== 200) return false;
+    sessionApply(await r.json(), +r.headers.get('X-Session-Seq') || 0, false);
+    return true;
+  }catch(err){ console.warn('session not restored', err); return false; }
 }
 function scheduleAutosave(){
-  if(!autosaveArmed) return;
+  if(!autosaveArmed || sessionApplying) return;
+  sessionPushSoon();
   setProjectDirty(true);
   clearTimeout(autosaveT);
   autosaveT = setTimeout(()=>{
@@ -13077,7 +13619,21 @@ window.addEventListener('keydown', e=>{
       setActiveTool(bevelTool);
       return;
     }
-    if(!mesheEdges.length){ warnTip('Select an edge of the body or a face to bevel'); return; }
+    if(!mesheEdges.length && sel){ // вершина: три её ребра и угол шариком
+      const chs = cornerEdgeChains(sel.pos, 1e-3);
+      if(chs.length !== 3){ warnTip('A ball corner needs exactly three edges at the point (here ' + chs.length + ')'); return; }
+      const eds = [];
+      for(const ch of chs){
+        const ed = analyzeBevelEdge(ch.pts);
+        if(ed.err){ warnTip(ed.err); return; }
+        eds.push(ed);
+      }
+      if(!bevelCorners(eds).length){ warnTip('The three edges must meet at right angles, all outer or all inner'); return; }
+      hideChordHint(); deselect();
+      bevelTool.edges = eds; bevelTool.face = -1; setActiveTool(bevelTool);
+      return;
+    }
+    if(!mesheEdges.length){ warnTip('Select an edge of the body, a corner point or a face to bevel'); return; }
     const eds = [];
     for(const es of mesheEdges){
       const ed = analyzeBevelEdge(es.pts);
@@ -14443,7 +14999,16 @@ canvas.addEventListener('wheel', e=>{
   e.preventDefault();
   const k = 1+Math.sign(e.deltaY)*0.1;
   if(q.is3D){
-    camDist = Math.max(20, Math.min(camFarLimit(), camDist*k));
+    // приближение к точке под курсором (как Fusion/SketchUp): она остаётся
+    // под курсором, центр вращения едет к ней — так подходят к мелкому углу,
+    // а не к середине модели. Пусто под курсором — как раньше, к центру
+    const d1 = Math.max(CAM_MIN_DIST, Math.min(camFarLimit(), camDist*k));
+    const hit = e.altKey && altPivotAllowed() ? null : raycastFace(q); // Alt — вокруг центра
+    if(hit && d1 !== camDist){
+      const kk = d1 / camDist;
+      camTarget.sub(hit.point).multiplyScalar(kk).add(hit.point);
+    }
+    camDist = d1;
   } else { // зум орто-видов (общий для трёх)
     orthoFit = Math.max(5, Math.min(400, orthoFit*k));
     updateOrthoFrusta();
@@ -14478,6 +15043,7 @@ function loop(t){
     if(k>=1) viewAnim = null;
   }
   updateCamRange();
+  altPivotStep(); // Alt: центр вращения плавно едет в центр модели
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   persp.position.set(
     camTarget.x + camDist*cp*Math.cos(yaw),
@@ -14507,6 +15073,10 @@ function loop(t){
   syncSnapMarkers((pointMode || lineMode || activeTool === rectTool || activeTool === tapeTool || !!linePrev || !!edgeDrag) && !divCtx);
   for(const m of snapMarkers) dot(m, 0.004);
   if(activeTool && activeTool.dots) for(const m of activeTool.dots) dot(m);
+  for(const o of measureObjs){ // оставленные замеры: точки и подписи
+    if(o.dot) dot(o.obj);
+    else if(o.label){ const d = persp.position.distanceTo(o.obj.position); o.obj.scale.set(d*0.1, d*0.028, 1); }
+  }
   if(txAnchor) dot(txAnchor, 0.0035);       // якорь текста (красный центр)
   if(txCenterDot) dot(txCenterDot, 0.0035); // центр грани (салатовый)
   dot(selEndA); dot(selEndB);
@@ -17656,6 +18226,19 @@ const ZC_COMMANDS = {
   get_state: {
     run: () => zcSummary()
   },
+  get_measurements: {
+    run: () => ({measurements: measuresList()})
+  },
+  clear_measurements: {
+    run(a){ return {removed: measuresClear(a && a.which != null ? a.which : undefined), left: measures.length}; }
+  },
+  add_measurement: {
+    run(a){
+      if(!Array.isArray(a.a) || !Array.isArray(a.b)) throw new Error('a and b are points [x, y, z]');
+      const col = measurePin(a3v(a.a), a3v(a.b));
+      return {color: col.name, color_ru: col.ru, distance: +a3v(a.a).distanceTo(a3v(a.b)).toFixed(3)};
+    }
+  },
   new_shape: {
     async run(a){
       const kind = a.shape === 'gear' ? 'wheel' : a.shape;
@@ -17955,12 +18538,35 @@ const ZC_COMMANDS = {
   },
   bevel_edges: {
     run(a){
-      if(!Array.isArray(a.points) || !a.points.length) throw new Error('points must list at least one point on an edge');
+      const vs = Array.isArray(a.vertices) ? a.vertices : [];
+      if((!Array.isArray(a.points) || !a.points.length) && !vs.length)
+        throw new Error('points must list at least one point on an edge (or vertices — corner points)');
       const size = +a.size;
       if(!(size >= 0.1)) throw new Error('size must be at least 0.1 mm');
       const segs = Math.max(1, Math.min(32, Math.round(a.segments == null ? 8 : +a.segments)));
       const found = [], info = [];
-      a.points.forEach((pt, i) => {
+      const take = (best, label) => {
+        if(found.some(f => f.ch === best)) return;
+        const ed = analyzeBevelEdge(best.pts);
+        if(ed.err) throw new Error(label + ': ' + ed.err);
+        const M = ed.A.clone().lerp(ed.B, 0.5);
+        for(const [t, n] of [[ed.t1, ed.n1], [ed.t2, ed.n2]])
+          if(zcFaceAt(M.clone().addScaledVector(t, size), n) < 0)
+            throw new Error(label + ': size ' + size + ' mm does not fit on the faces of this edge');
+        found.push({ch: best, ed});
+        const deg = ed.alpha * 180 / Math.PI;
+        info.push(segs === 1
+          ? {edge_length_mm: +ed.L.toFixed(3), angle_deg: +deg.toFixed(2), chamfer_face_width_mm: +(2 * size * Math.sin(ed.alpha / 2)).toFixed(3)}
+          : {edge_length_mm: +ed.L.toFixed(3), angle_deg: +deg.toFixed(2), radius_mm: +(size * Math.tan(ed.alpha / 2)).toFixed(3)});
+      };
+      // вершина: все три её ребра, угол — шариком
+      vs.forEach((pt, i) => {
+        const P = zcV3(pt, 'vertices[' + i + ']');
+        const chs = cornerEdgeChains(P, 0.05);
+        if(chs.length !== 3) throw new Error('vertices[' + i + ']: a ball corner needs exactly three edges at the point, found ' + chs.length);
+        for(const ch of chs) take(ch, 'vertices[' + i + ']');
+      });
+      (a.points || []).forEach((pt, i) => {
         const P = zcV3(pt, 'points[' + i + ']');
         // ребро тела, на котором лежит точка (ближайший отрезок цепочки, ≤ 0.05 мм)
         let best = null, bd = 0.05, second = Infinity;
@@ -17994,6 +18600,8 @@ const ZC_COMMANDS = {
           ? {edge_length_mm: +ed.L.toFixed(3), angle_deg: +deg.toFixed(2), chamfer_face_width_mm: +(2 * size * Math.sin(ed.alpha / 2)).toFixed(3)}
           : {edge_length_mm: +ed.L.toFixed(3), angle_deg: +deg.toFixed(2), radius_mm: +(size * Math.tan(ed.alpha / 2)).toFixed(3)});
       });
+      const nc = bevelCorners(found.map(f => f.ed)).length;
+      if(vs.length && nc < vs.length) throw new Error('vertices: the three edges must meet at right angles, all outer or all inner');
       if(activeTool) setActiveTool(null);
       clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
       const v0 = meshVolumeOf(mesh.geometry.attributes.position.array), u0 = undoStack.length;
@@ -18003,7 +18611,7 @@ const ZC_COMMANDS = {
       bevelTool.commit();         // одна запись истории на все рёбра
       if(activeTool === bevelTool){ setActiveTool(null); throw new Error('bevel failed with these values (too big for the faces?)'); }
       if(undoStack.length === u0) throw new Error('bevel did not change the body');
-      return Object.assign({kind: segs === 1 ? 'chamfer' : 'round', edges: info,
+      return Object.assign({kind: segs === 1 ? 'chamfer' : 'round', edges: info, ball_corners: nc,
         volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());
     }
   },
@@ -18448,7 +19056,7 @@ function zcApplyView(a){
     for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
     box.getCenter(camTarget);
     const r = box.getSize(new THREE.Vector3()).length() / 2;
-    camDist = Math.max(20, Math.min(camFarLimit(), r / Math.sin(persp.fov * Math.PI / 360) * 1.15));
+    camDist = Math.max(CAM_MIN_DIST, Math.min(camFarLimit(), r / Math.sin(persp.fov * Math.PI / 360) * 1.15));
   }
   if(a.target != null) camTarget.copy(zcV3(a.target, 'target'));
   if(a.distance != null){
@@ -18473,8 +19081,8 @@ function zcApplyView(a){
 // Шаг, который при повторе не прошёл (его грань уехала, размер не влез),
 // помечается failed и пропускается, остальные идут дальше — как красный
 // узел дерева во Fusion
-const ZC_READONLY = ['get_state', 'screenshot', 'set_view', 'export_stl', 'export_3mf', 'export_glb', 'save_file', 'get_history'];
-const ZC_NO_RECORD = new Set([...ZC_READONLY, 'edit_step', 'delete_step', 'undo', 'trace_car', 'trace_reference']);
+const ZC_READONLY = ['get_state', 'get_measurements', 'screenshot', 'set_view', 'export_stl', 'export_3mf', 'export_glb', 'save_file', 'get_history'];
+const ZC_NO_RECORD = new Set([...ZC_READONLY, 'add_measurement', 'clear_measurements', 'edit_step', 'delete_step', 'undo', 'trace_car', 'trace_reference']);
 let zcHist = [];          // [{command, args, status, change}] | {command: 'base', snap, note}
 let zcHistFp = null;      // отпечаток модели после последнего шага истории
 let zcReplaying = false;  // идёт повтор — команды не записываются
@@ -18648,14 +19256,29 @@ if(HAS_SERVER && window.EventSource){
     fetch('/agent/hello', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({build: window.ZC_BUILD, tools: zcToolList(), tab: zcTab})}).catch(() => {});
   });
+  // вкладку закрывают — пусть сервер сразу ведёт следующую
+  window.addEventListener('pagehide', () => {
+    try{ navigator.sendBeacon('/agent/bye', JSON.stringify({tab: zcTab})); }catch(_){}
+  });
   // смотрим на эту вкладку — значит, рисовать агент должен в ней
   window.addEventListener('focus', () => {
     fetch('/agent/lead', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({tab: zcTab})}).catch(() => {});
   });
+  // сервер пересобран, а страница старая — перезагрузиться на новую; свои
+  // неотправленные правки сначала в сеанс (чужие новее не затираем)
+  es.addEventListener('build', async ev => {
+    if(!ev.data || ev.data === window.ZC_BUILD) return;
+    es.close();
+    if(sessionPending) await sessionPushNow();
+    location.reload();
+  });
   es.addEventListener('command', async ev => {
     let msg;
     try{ msg = JSON.parse(ev.data); }catch(_){ return; }
+    // сразу «получила»: молчащую (закрытую) вкладку сервер обходит за 5 с
+    fetch('/agent/ack', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: msg.id, tab: zcTab})}).catch(() => {});
     let out;
     try{
       const c = ZC_COMMANDS[msg.tool];
@@ -19296,8 +19919,10 @@ window.addEventListener('keydown', e => {
 
 resize();
 (async ()=>{
-  let restored = false;
-  try{
+  let restored = false, live = false;
+  // сеанс сервера важнее своего localStorage: там то, над чем идёт работа
+  if(await sessionRestore()){ restored = true; live = true; }
+  if(!restored) try{
     const txt = localStorage.getItem(AUTOSAVE_KEY);
     if(txt){
       const d = JSON.parse(txt);
@@ -19307,6 +19932,7 @@ resize();
   }catch(err){ console.warn('autosave not restored', err); }
   if(!restored) await rebuild();
   autosaveArmed = true;
-  openStartScreen();
+  if(!live) openStartScreen(); // работа уже идёт — сразу в модель
+  setInterval(sessionPoll, 1500);
 })();
 requestAnimationFrame(loop);

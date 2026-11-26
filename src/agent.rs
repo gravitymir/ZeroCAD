@@ -270,6 +270,9 @@ fn parse_str(b: &[u8], i: &mut usize) -> Option<String> {
 struct Tab {
     id: u64,
     stream: TcpStream,
+    /// страница другой сборки (открыта до пересборки сервера и не умеет
+    /// перезагружаться сама): команды ей не шлём — у неё старый код
+    stale: bool,
 }
 
 /// Вкладка не ответила за `timeout`, но считает дальше — JS однопоточный, и
@@ -293,6 +296,8 @@ struct Bridge {
     /// id команд, которых ещё кто-то ждёт: ответ на всё остальное —
     /// опоздавший или от лишней вкладки, его надо выбросить, а не копить
     pending: std::collections::HashSet<u64>,
+    /// команды, получение которых вкладка уже подтвердила (POST /agent/ack)
+    acked: std::collections::HashSet<u64>,
     /// команда, которую вкладка считает прямо сейчас: id, имя, когда начали
     inflight: Option<(u64, String, Instant)>,
     /// инструменты из реестра команд вкладки
@@ -322,6 +327,7 @@ fn bridge() -> &'static (Mutex<Bridge>, Condvar) {
                 next_tab: 1,
                 results: HashMap::new(),
                 pending: std::collections::HashSet::new(),
+                acked: std::collections::HashSet::new(),
                 inflight: None,
                 tools: None,
                 build: String::new(),
@@ -349,7 +355,12 @@ pub fn origin_ok(origin: Option<&str>) -> bool {
 /// придумывает себе сама; без неё (старая страница из кеша) метку выдаёт
 /// сервер — вести такая вкладка сможет, а перехватывать по фокусу нет.
 pub fn open_events(mut stream: TcpStream, tab: Option<u64>) {
-    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n: zerocad agent link\n\n";
+    // первым кадром — сборка сервера: вкладка со старой страницей (открыта до
+    // пересборки, переподключилась сама) перезагружается на новую
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n: zerocad agent link\n\nevent: build\ndata: {}\n\n",
+        crate::BUILD
+    );
     if stream.write_all(head.as_bytes()).and_then(|_| stream.flush()).is_err() {
         return;
     }
@@ -361,9 +372,35 @@ pub fn open_events(mut stream: TcpStream, tab: Option<u64>) {
     });
     // та же вкладка после F5 — не вторая копия
     st.tabs.retain(|t| t.id != id);
-    st.tabs.push(Tab { id, stream });
+    st.tabs.push(Tab { id, stream, stale: false });
     // только что открытая вкладка и есть та, на которую смотрит пользователь
     st.leader = Some(id);
+}
+
+/// POST /agent/ack — вкладка получила команду {id} и взялась за неё
+pub fn ack(body: &[u8]) -> bool {
+    let Some(v) = std::str::from_utf8(body).ok().and_then(Json::parse) else { return false };
+    let Some(id) = v.get("id").and_then(Json::as_f64) else { return false };
+    let (m, cv) = bridge();
+    let mut st = m.lock().unwrap();
+    if st.pending.contains(&(id as u64)) {
+        st.acked.insert(id as u64);
+        cv.notify_all();
+    }
+    true
+}
+
+/// POST /agent/bye — вкладка закрывается: команды больше не ей
+pub fn bye(body: &[u8]) -> bool {
+    let Some(v) = std::str::from_utf8(body).ok().and_then(Json::parse) else { return false };
+    let Some(id) = v.get("tab").and_then(Json::as_f64) else { return false };
+    let (m, _) = bridge();
+    let mut st = m.lock().unwrap();
+    st.tabs.retain(|t| t.id != id as u64);
+    if st.leader == Some(id as u64) {
+        st.leader = st.tabs.last().map(|t| t.id);
+    }
+    true
 }
 
 /// POST /agent/lead — вкладка получила фокус и просит команды себе. Так агент
@@ -374,7 +411,7 @@ pub fn lead(body: &[u8]) -> bool {
     let (m, _) = bridge();
     let mut st = m.lock().unwrap();
     let id = id as u64;
-    if st.tabs.iter().any(|t| t.id == id) {
+    if st.tabs.iter().any(|t| t.id == id && !t.stale) {
         st.leader = Some(id);
     }
     true
@@ -404,11 +441,25 @@ pub fn hello(body: &[u8]) -> bool {
     let Some(v) = std::str::from_utf8(body).ok().and_then(Json::parse) else { return false };
     let (m, cv) = bridge();
     let mut st = m.lock().unwrap();
+    let build = v.get("build").and_then(Json::as_str).unwrap_or("");
+    if !build.is_empty() && build != crate::BUILD {
+        // старая страница: её список команд и сборку не берём, ведущей не
+        // делаем; если уже стала ведущей — ведёт последняя свежая
+        let id = v.get("tab").and_then(Json::as_f64).map(|x| x as u64);
+        if let Some(t) = st.tabs.iter_mut().find(|t| Some(t.id) == id) {
+            t.stale = true;
+        }
+        if st.leader.is_some() && st.leader == id {
+            st.leader = st.tabs.iter().rev().find(|t| !t.stale).map(|t| t.id);
+        }
+        cv.notify_all();
+        return true;
+    }
     if let Some(t) = v.get("tools") {
         st.tools = Some(t.clone());
     }
-    if let Some(b) = v.get("build").and_then(Json::as_str) {
-        st.build = b.to_string();
+    if !build.is_empty() {
+        st.build = build.to_string();
     }
     cv.notify_all();
     true
@@ -456,24 +507,46 @@ fn call_tab(tool: &str, args: &Json, timeout: Duration) -> Result<Json, String> 
     // Команда уходит ОДНОЙ вкладке — ведущей. Раньше кадр писался всем сразу,
     // и две открытые вкладки выполняли одну команду обе: агент видел первый
     // ответ, а вторая модель менялась молча.
+    // Запись в закрытый сокет часто «проходит» (буфер ОС), и команда уходила
+    // в закрытую вкладку на все 120 с. Поэтому вкладка сразу подтверждает
+    // получение (/agent/ack); нет ответа за ACK_WAIT — вкладка мертва,
+    // отдаём команду следующей.
+    const ACK_WAIT: Duration = Duration::from_secs(5);
+    st.pending.insert(id);
     loop {
         let Some(&Tab { id: lead_id, .. }) = st
             .leader
-            .and_then(|l| st.tabs.iter().find(|t| t.id == l))
-            .or_else(|| st.tabs.last())
+            .and_then(|l| st.tabs.iter().find(|t| t.id == l && !t.stale))
+            .or_else(|| st.tabs.iter().rev().find(|t| !t.stale))
         else {
             st.leader = None;
+            st.pending.remove(&id);
+            if st.tabs.iter().any(|t| t.stale) {
+                return Err(format!(
+                    "The open ZeroCAD tab is an old page (built before the server was rebuilt). Reload it (F5) at http://127.0.0.1:{} and try again.",
+                    crate::port()
+                ));
+            }
             return Err(no_tab_message());
         };
         st.leader = Some(lead_id);
         let tab = st.tabs.iter_mut().find(|t| t.id == lead_id).expect("вкладка только что найдена");
         if tab.stream.write_all(frame.as_bytes()).and_then(|_| tab.stream.flush()).is_ok() {
-            break;
+            let until = Instant::now() + ACK_WAIT;
+            while !st.acked.contains(&id) && !st.results.contains_key(&id) {
+                let now = Instant::now();
+                if now >= until {
+                    break;
+                }
+                st = cv.wait_timeout(st, until - now).unwrap().0;
+            }
+            if st.acked.remove(&id) || st.results.contains_key(&id) {
+                break;
+            }
         }
-        st.tabs.retain(|t| t.id != lead_id); // закрылась между проверкой и отправкой
+        st.tabs.retain(|t| t.id != lead_id); // закрылась или молчит
         st.leader = None;
     }
-    st.pending.insert(id);
     st.inflight = Some((id, tool.to_string(), Instant::now()));
     let deadline = Instant::now() + timeout;
     let out = loop {
@@ -490,6 +563,7 @@ fn call_tab(tool: &str, args: &Json, timeout: Duration) -> Result<Json, String> 
         st = cv.wait_timeout(st, deadline - now).unwrap().0;
     };
     st.pending.remove(&id);
+    st.acked.remove(&id);
     st.results.remove(&id);
     out
 }
@@ -877,5 +951,19 @@ mod tests {
         }
         // «gear» — колесо-дозатор: без этой оговорки агент строит «шестерню»
         assert!(b.contains("NOT a toothed gear"), "new_shape не предупреждает про gear");
+    }
+    /// HELP.md — справочник команд для агента — не отстаёт от `web/tools.js`:
+    /// в нём есть раздел про каждую команду (обновляется `python assets/gen_help.py`)
+    #[test]
+    fn help_md_lists_every_tool() {
+        let help = include_str!("../HELP.md");
+        let Json::Arr(tools) = embedded_tools() else { panic!("tools.js не разобрался") };
+        for t in &tools {
+            let name = t.get("name").and_then(Json::as_str).unwrap_or("");
+            assert!(
+                help.contains(&format!("### `{name}`")),
+                "в HELP.md нет команды {name} — запустите python assets/gen_help.py"
+            );
+        }
     }
 }
