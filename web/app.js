@@ -3087,6 +3087,48 @@ function killGroup(g){ if(g){ scene.remove(g); g.traverse(o => { if(o.geometry) 
 // keep — оригинал остаётся (Copy, Mirror Join), иначе тело заменяется
 // первой копией. Копия, чей габарит задевает остальное, объединяется точной
 // булевой, остальные просто добавляются. Линии на теле едут вместе с ним
+// ---------- K — положить гранью на стол (Lay on Face в слайсерах) ----------
+// Выбранная грань ложится на плоскость XY: вся модель поворачивается так, что
+// наружная нормаль грани смотрит вниз (−Z), и опускается на стол (низ — z=0,
+// середина по X/Y остаётся на месте). Вместе с телом поворачиваются линии,
+// жёсткие рёбра, точки и замеры. Одна запись отмены; шаг истории lay_flat
+function layFlatMatrix(n){
+  const pos = mesh.geometry.attributes.position.array;
+  const box = new THREE.Box3();
+  for(let i=0;i<pos.length;i+=3) box.expandByPoint(new THREE.Vector3(pos[i], pos[i+1], pos[i+2]));
+  const C = box.getCenter(new THREE.Vector3());
+  const R = new THREE.Matrix4().makeRotationFromQuaternion(
+    new THREE.Quaternion().setFromUnitVectors(n.clone().normalize(), new THREE.Vector3(0, 0, -1)));
+  const M = new THREE.Matrix4().makeTranslation(C.x, C.y, C.z).multiply(R).multiply(new THREE.Matrix4().makeTranslation(-C.x, -C.y, -C.z));
+  let minZ = Infinity;
+  const v = new THREE.Vector3();
+  for(let i=0;i<pos.length;i+=3){ v.set(pos[i], pos[i+1], pos[i+2]).applyMatrix4(M); minZ = Math.min(minZ, v.z); }
+  return new THREE.Matrix4().makeTranslation(0, 0, -minZ).multiply(M);
+}
+function layFlatOnFace(n){
+  if(!mesh || !mesh.geometry.attributes.position.array.length) throw new Error('the model is empty');
+  if(n.length() < 1e-9) throw new Error('face normal is zero');
+  n = n.clone().normalize();
+  if(n.z < -0.99999) return {already_flat: true}; // грань уже на столе
+  const M = layFlatMatrix(n), snap = takeSnapshot();
+  const pos = mesh.geometry.attributes.position.array, out = new Float32Array(pos.length), v = new THREE.Vector3();
+  for(let i=0;i<pos.length;i+=3){ v.set(pos[i], pos[i+1], pos[i+2]).applyMatrix4(M); out[i] = v.x; out[i+1] = v.y; out[i+2] = v.z; }
+  const T = P => P.clone().applyMatrix4(M);
+  pushHistory(snap);
+  setMeshFromArray(out);
+  hardEdges = hardEdges.map(h => ({a: T(h.a), b: T(h.b)}));
+  restoreGuides(snap.guides.map(g => ({a: T(g.a), b: T(g.b), noExt: g.noExt, curve: g.curve})));
+  clearAnchors();
+  for(const sa of snap.anchors) makeAnchor(T(sa.pos));
+  const TA = arr => { const q = T(new THREE.Vector3(arr[0], arr[1], arr[2])); return [q.x, q.y, q.z]; };
+  for(const m of measures){ m.a = TA(m.a); m.b = TA(m.b); }
+  measuresRender();
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  clearEdgeSel(); deselect(); hidePatch(); ppPatch = null; ppParts = null; hideChordHint();
+  extractEdges();
+  return {snap};
+}
+
 function applyBodyTransform(tris, mats, keep){
   const pos = mesh.geometry.attributes.position.array, nT = pos.length / 9;
   if(!nT) throw new Error('the model is empty');
@@ -7753,6 +7795,7 @@ function showFacePalette(){
     '<div><span class="key">Ctrl+click</span> — multi-select (same plane)</div>' +
     '<div><span class="key">Ctrl+I</span> — invert: the other areas of this plane</div>' +
     '<div><span class="key">B</span> — bounding edges</div>' +
+    '<div><span class="key">K</span> — lay flat: this face down on the bed</div>' +
     '<div><span class="key">Del</span> — Delete face</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
@@ -14072,6 +14115,21 @@ window.addEventListener('keydown', e=>{
     showChordHint();
     return;
   }
+  // K — выбранную грань на стол (вся модель поворачивается, грань ложится на XY)
+  if(e.code === 'KeyK' && !e.ctrlKey && !e.altKey && !e.metaKey && !chordG && !activeTool && !exLive
+     && document.activeElement.tagName !== 'INPUT'){
+    if(!ppPatch){ warnTip('Select a face to lay it on the bed'); return; }
+    e.preventDefault();
+    if(ppParts && ppParts.length > 1){ warnTip('Select one face to lay it on the bed'); return; }
+    const t = ppPatch.tris[0], n = triNormalAt(t);
+    const P = zcTriCentroid(mesh.geometry.attributes.position.array, t);
+    try{
+      const r = layFlatOnFace(n);
+      if(r.already_flat){ warnTip('This face already lies on the bed'); return; }
+      zcUserStep(r.snap, 'lay_flat', {point: zcArr(P), normal: zcArr(n, 6)}, 0);
+    }catch(err){ warnTip(err.message); }
+    return;
+  }
   if((e.code==='KeyL' || e.key.toLowerCase()==='l') && !e.ctrlKey && !e.altKey && !e.metaKey
      && !dragPt && document.activeElement.tagName!=='INPUT'){
     e.preventDefault();
@@ -19086,6 +19144,18 @@ const ZC_COMMANDS = {
       if(mode !== 'join' && mode !== 'flip') throw new Error('mode must be join or flip');
       const r = applyBodyTransform(zcBodyAt(a.body_point), [mirrorMatrix(zcV3(a.plane_point, 'plane_point'), n.normalize())], mode === 'join');
       return Object.assign({boolean: lastBoolPath || 'none'}, r);
+    }
+  },
+  lay_flat: {
+    // то же, что K по выбранной грани: модель ложится этой гранью на стол
+    run(a){
+      const P = zcV3(a.point, 'point');
+      const t = zcFaceAt(P, a.normal ? zcV3(a.normal, 'normal').normalize() : null);
+      if(t < 0) throw new Error('no face at this point');
+      if(activeTool) setActiveTool(null);
+      const r = layFlatOnFace(triNormalAt(t));
+      if(r.already_flat) throw new Error('this face already lies on the bed');
+      return zcSummary();
     }
   },
   transform_body: {

@@ -86,7 +86,7 @@
 
 <!-- commands:begin -->
 
-## Все команды (45)
+## Все команды (46)
 
 _Сгенерировано из `web/tools.js` скриптом `assets/gen_help.py` — правьте описания там и перезапустите скрипт._
 
@@ -96,7 +96,7 @@ _Сгенерировано из `web/tools.js` скриптом `assets/gen_hel
 - **Эскиз: линии, круги, кривые:** `draw_line`, `draw_circle`, `draw_curve`, `bend_line`
 - **Выдавливание и вырезы:** `extrude_face`, `cut_through`, `cut_plane`, `add_hole`, `move_edge`
 - **Тела из профилей:** `add_frustum`, `add_revolve`, `add_sweep`, `loft_profiles`, `revolve_profile`, `sweep_profile`
-- **Фаски, оболочка, перенос, массивы:** `bevel_edges`, `bevel_outline`, `shell_body`, `mirror_body`, `transform_body`, `pattern_body`
+- **Фаски, оболочка, перенос, массивы:** `bevel_edges`, `bevel_outline`, `shell_body`, `mirror_body`, `transform_body`, `lay_flat`, `pattern_body`
 - **Текст, узоры, текстуры:** `add_text`, `extrude_text`, `add_pattern`, `texture_surface`
 - **История шагов:** `get_history`, `edit_step`, `delete_step`, `undo`
 - **Машина: обводка по фото и детали:** `trace_car`, `trace_reference`, `name_part`
@@ -467,6 +467,15 @@ Move, scale or rotate a body — the same as the user's Move / Scale window (G,B
 | `rotate` | object |  | поля: `axis`, `angle` |
 | `pivot` | [x, y, z] |  |  |
 | `copies` | integer |  |  |
+
+### `lay_flat`
+
+Lay the model on a face — the same as K on a selected face in the editor (Lay on Face in slicers): the whole model turns so that this face points down and lies on the XY plane (the bed), its bottom at z = 0, the X/Y centre stays. Lines, points and kept measurements turn with it.
+
+| параметр | тип | нужен | описание |
+|---|---|---|---|
+| `point` | [x, y, z] | да | a point on the face, mm |
+| `normal` | [x, y, z] |  | optional face normal to choose between faces meeting at the point |
 
 ### `pattern_body`
 

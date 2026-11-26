@@ -795,6 +795,14 @@ const ZC_TOOLS = [
     }, "required": ["plane_point", "plane_normal"]}
   },
   {
+    "name": "lay_flat",
+    "description": "Lay the model on a face — the same as K on a selected face in the editor (Lay on Face in slicers): the whole model turns so that this face points down and lies on the XY plane (the bed), its bottom at z = 0, the X/Y centre stays. Lines, points and kept measurements turn with it.",
+    "inputSchema": {"type": "object", "properties": {
+      "point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "a point on the face, mm"},
+      "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "optional face normal to choose between faces meeting at the point"}
+    }, "required": ["point"]}
+  },
+  {
     "name": "transform_body",
     "description": "Move, scale or rotate a body — the same as the user's Move / Scale window (G,B) plus rotation. rotate {axis, angle (degrees)} turns it around an axis through pivot (default: the centre of the body's bounding box) — 180 around a horizontal axis turns a part upside down for printing. body_point: a point on the surface of the body; omit it for the whole model. move [dx, dy, dz] in mm, or scale (a factor, or [sx, sy, sz]) around pivot (default: the bottom centre of the body's bounding box). copies 0 (default) transforms the body itself; N keeps the original and adds N copies, each one more step further (a linear array; scale allows 1). Copies touching the rest are united with exact booleans.",
     "inputSchema": {"type": "object", "properties": {

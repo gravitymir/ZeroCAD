@@ -802,6 +802,26 @@ def ball_corner_at_a_vertex():
 
 
 @case
+def lay_flat_on_a_face():
+    # K по грани (Lay on Face): модель ложится этой гранью на стол. Плита
+    # 20 x 20 x 10 гранью y=0 вниз: высота становится 20, глубина 10, низ на z=0
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    call('cut_plane', {'point': [0, 0, 10], 'normal': [0, 0, 1]})
+    d = call('lay_flat', {'point': [10, 0, 5], 'normal': [0, -1, 0]})
+    closed(d, 'laid flat')
+    near(d['volume_mm3'], 4000, 0.01, 'volume')
+    size = [d['bbox_max'][i] - d['bbox_min'][i] for i in range(3)]
+    near(size[2], 20, 1e-3, 'height is the old Y'); near(size[1], 10, 1e-3, 'depth is the old Z')
+    near(d['bbox_min'][2], 0, 1e-4, 'on the bed')
+    try:
+        mid = [(d['bbox_min'][i] + d['bbox_max'][i]) / 2 for i in range(2)]
+        call('lay_flat', {'point': [mid[0], mid[1], 0], 'normal': [0, 0, -1]})
+        raise AssertionError('the bottom face already lies on the bed')
+    except McpError as e:
+        assert 'already' in str(e), e
+
+
+@case
 def extrude_against_a_wall_merges():
     # Полоса у стены поднята выдавкой: бок призмы встаёт вплотную к стенке.
     # Быстрый путь «сдвиг грани» оставлял между ними двойную внутреннюю
