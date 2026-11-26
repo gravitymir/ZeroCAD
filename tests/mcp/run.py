@@ -802,6 +802,38 @@ def ball_corner_at_a_vertex():
 
 
 @case
+def paint_faces_for_multicolour():
+    # покраска граней филаментом: в 3MF — paint_color (Bambu/Orca) и
+    # slic3rpe:mmu_segmentation (Prusa) у каждого треугольника грани;
+    # покраска идёт за гранью при выдавливании и при повороте на стол
+    import zipfile, re
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    assert call('get_paints', {})['paints'] == [], 'a new model starts unpainted'
+    d = call('paint_face', {'point': [10, 10, 20], 'normal': [0, 0, 1], 'filament': 2})
+    assert d['faces'][0]['triangles'] >= 2 and len(d['paints']) == 1, d
+    d = call('paint_face', {'point': [0, 10, 10], 'normal': [-1, 0, 0], 'filament': 3})
+    def painted():
+        path = call('export_3mf', {'name': 'zc_paint_test'})['path']
+        with zipfile.ZipFile(path) as z:
+            xml = z.read('3D/3dmodel.model').decode()
+        return (re.findall(r'paint_color="([0-9A-F]+)"', xml), xml.count('slic3rpe:mmu_segmentation="'))
+    codes, prusa = painted()
+    assert sorted(set(codes)) == ['0C', '8'] and codes.count('8') >= 2 and prusa == len(codes), (codes, prusa)
+    # грань выдавили — покраска осталась на ней
+    call('extrude_face', {'point': [10, 10, 20], 'normal': [0, 0, 1], 'distance': 5})
+    ps = call('get_paints', {})['paints']
+    assert not any(p['lost'] for p in ps), ps
+    assert painted()[0].count('8') >= 2
+    # модель на бок — покраска поворачивается вместе с ней
+    call('lay_flat', {'point': [0, 10, 10], 'normal': [-1, 0, 0]})
+    ps = call('get_paints', {})['paints']
+    assert not any(p['lost'] for p in ps), ps
+    # филамент 1 снимает покраску
+    d = call('paint_face', {'point': [10, 10, 0.0], 'normal': [0, 0, -1], 'filament': 1})
+    assert len(d['paints']) == 1 and d['paints'][0]['filament'] == 2, d
+
+
+@case
 def lay_flat_on_a_face():
     # K по грани (Lay on Face): модель ложится этой гранью на стол. Плита
     # 20 x 20 x 10 гранью y=0 вниз: высота становится 20, глубина 10, низ на z=0

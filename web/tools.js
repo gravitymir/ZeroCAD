@@ -795,6 +795,21 @@ const ZC_TOOLS = [
     }, "required": ["plane_point", "plane_normal"]}
   },
   {
+    "name": "paint_face",
+    "description": "Paint faces with a filament for multi-colour printing — the same as Shift+1…8 on selected faces in the editor. The whole face region under the point is painted (what a click selects: up to edges and drawn lines). filament 1 is the main one (clears the paint), 2–8 are the other filaments (AMS slots on a Bambu printer). The paint follows the face if it is extruded along its normal. export_3mf writes it per triangle as paint_color (Bambu Studio, OrcaSlicer) and slic3rpe:mmu_segmentation (PrusaSlicer).",
+    "inputSchema": {"type": "object", "properties": {
+      "point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "a point on the face, mm"},
+      "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "optional face normal to choose between faces meeting at the point"},
+      "faces": {"type": "array", "items": {"type": "object"}, "description": "several faces at once: [{point, normal}] instead of point/normal"},
+      "filament": {"type": "integer", "description": "1–8; 1 clears the paint"}
+    }, "required": ["filament"]}
+  },
+  {
+    "name": "get_paints",
+    "description": "List painted faces: point, normal, filament and lost (the face is no longer found — the paint is ignored), plus the display colours of filaments 1–8.",
+    "inputSchema": {"type": "object", "properties": {}}
+  },
+  {
     "name": "lay_flat",
     "description": "Lay the model on a face — the same as K on a selected face in the editor (Lay on Face in slicers): the whole model turns so that this face points down and lies on the XY plane (the bed), its bottom at z = 0, the X/Y centre stays. Lines, points and kept measurements turn with it.",
     "inputSchema": {"type": "object", "properties": {

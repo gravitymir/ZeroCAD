@@ -29,6 +29,7 @@ GROUPS = [
     ('Фаски, оболочка, перенос, массивы', ['bevel_edges', 'bevel_outline', 'shell_body',
                                            'mirror_body', 'transform_body', 'lay_flat', 'pattern_body']),
     ('Текст, узоры, текстуры', ['add_text', 'extrude_text', 'add_pattern', 'texture_surface']),
+    ('Цвет: многоцветная печать', ['paint_face', 'get_paints']),
     ('История шагов', ['get_history', 'edit_step', 'delete_step', 'undo']),
     ('Машина: обводка по фото и детали', ['trace_car', 'trace_reference', 'name_part']),
 ]

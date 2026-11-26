@@ -692,7 +692,110 @@ function markShallowCorners(eMap, pos){
   };
   for(const rec of info) if(!(sibling(rec, rec.P) && sibling(rec, rec.Q))) rec.ent.corner = true;
 }
+// ---------- покраска граней: филаменты для многоцветной печати ----------
+// Грань красится номером филамента (слот AMS у Bambu): 1 — основной (не
+// крашено), 2…8 — другие. Хранится не номер треугольника (после любой
+// булевой номера перемешаны), а место: точка и нормаль грани — окрашена
+// вся область, которая выделяется кликом (до рёбер и нарисованных линий).
+// Грань сдвинули (E) — находится вдоль своей нормали. В 3MF уходит атрибутом
+// paint_color (Bambu Studio, OrcaSlicer) и slic3rpe:mmu_segmentation (Prusa)
+const FILAMENTS = ['#f2f2ee', '#e53935', '#1e88e5', '#43a047', '#fdd835', '#3a3a3a', '#fb8c00', '#8e24aa'];
+let paints = [];      // [{p:[x,y,z], n:[x,y,z], f: 2…8}]
+let paintObj = null;
+function paintFaceAt(pt){
+  const P = new THREE.Vector3(pt.p[0], pt.p[1], pt.p[2]), n = new THREE.Vector3(pt.n[0], pt.n[1], pt.n[2]).normalize();
+  const t = zcFaceAt(P, n);
+  if(t >= 0) return t;
+  // грань выдавили или вдавили: ищем её вдоль нормали — луч снаружи к телу
+  raycaster.set(P.clone().addScaledVector(n, 500), n.clone().negate());
+  raycaster.far = 1000;
+  const hits = raycaster.intersectObject(mesh);
+  raycaster.far = Infinity;
+  for(const h of hits) if(h.faceIndex != null && triNormalAt(h.faceIndex).dot(n) > 0.999) return h.faceIndex;
+  return -1;
+}
+// филамент каждого треугольника (0 — не крашено); поздняя покраска сверху
+function paintResolve(){
+  if(!mesh) return null;
+  const out = new Uint8Array(mesh.geometry.attributes.position.array.length / 9);
+  for(const pt of paints){
+    const t = paintFaceAt(pt);
+    pt.lost = t < 0;
+    if(t >= 0) for(const u of facePatchAt(t).tris) out[u] = pt.f;
+  }
+  return out;
+}
+function paintRender(){
+  if(paintObj){ scene.remove(paintObj); paintObj.geometry.dispose(); paintObj = null; }
+  if(!mesh || !paints.length) return;
+  const st = paintResolve(), pos = mesh.geometry.attributes.position.array;
+  let n = 0;
+  for(const f of st) if(f > 1) n++;
+  if(!n) return;
+  const arr = new Float32Array(n * 9), col = new Float32Array(n * 9), c = new THREE.Color();
+  let o = 0;
+  for(let t=0;t<st.length;t++){
+    if(st[t] < 2) continue;
+    c.set(FILAMENTS[st[t] - 1] || '#ff00ff');
+    for(let j=0;j<9;j++) arr[o + j] = pos[t*9 + j];
+    for(let k=0;k<3;k++){ col[o + k*3] = c.r; col[o + k*3 + 1] = c.g; col[o + k*3 + 2] = c.b; }
+    o += 9;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  // ровно на грани: основная сетка отодвинута polygonOffset 1, эта — нет
+  paintObj = new THREE.Mesh(g, new THREE.MeshStandardMaterial({vertexColors: true, flatShading: true,
+    roughness: 0.85, metalness: 0}));
+  scene.add(paintObj);
+}
+// покрасить грани [{point, normal}] филаментом f (1 — снять покраску)
+function paintFaces(faces, f){
+  if(!(f >= 1 && f <= 8)) throw new Error('filament must be 1…8');
+  const res = [];
+  for(const fc of faces){
+    const t = zcFaceAt(new THREE.Vector3(fc.point[0], fc.point[1], fc.point[2]),
+                       new THREE.Vector3(fc.normal[0], fc.normal[1], fc.normal[2]).normalize());
+    if(t < 0){ res.push({lost: true}); continue; }
+    const set = new Set(facePatchAt(t).tris);
+    paints = paints.filter(pt => { const u = paintFaceAt(pt); return !(u >= 0 && set.has(u)); });
+    if(f > 1) paints.push({p: fc.point.slice(), n: fc.normal.slice(), f});
+    res.push({filament: f, triangles: set.size});
+  }
+  paintRender();
+  return res;
+}
+// выбранные мышью грани (Shift+1…8): точка — центр самого крупного треугольника области
+function paintSelectedFaces(f){
+  const pos = mesh.geometry.attributes.position.array;
+  const area = t => { const o = t*9;
+    const ux = pos[o+3]-pos[o], uy = pos[o+4]-pos[o+1], uz = pos[o+5]-pos[o+2];
+    const vx = pos[o+6]-pos[o], vy = pos[o+7]-pos[o+1], vz = pos[o+8]-pos[o+2];
+    return Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx); };
+  const faces = ppParts.map(part => {
+    let best = part.tris[0], ba = -1;
+    for(const t of part.tris){ const a = area(t); if(a > ba){ ba = a; best = t; } }
+    return {point: zcArr(zcTriCentroid(pos, best)), normal: zcArr(triNormalAt(best), 6)};
+  });
+  const snap = takeSnapshot();
+  paintFaces(faces, f);
+  pushHistory(snap);
+  if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+  zcUserStep(snap, 'paint_face', {faces, filament: f}, 0);
+  hidePatch(); ppPatch = null; ppParts = null; hideChordHint();
+  scheduleAutosave();
+}
+function paintsInfo(){
+  const st = paintResolve();
+  return paints.map(pt => ({point: pt.p, normal: pt.n, filament: pt.f, lost: !!pt.lost}));
+}
+
 function extractEdges(){
+  extractEdgesCore();
+  paintRender();
+}
+function extractEdgesCore(){
   chains = [];
   if(edgeLines){ scene.remove(edgeLines); edgeLines.geometry.dispose(); edgeLines = null; }
   setHover(null);
@@ -3123,6 +3226,11 @@ function layFlatOnFace(n){
   const TA = arr => { const q = T(new THREE.Vector3(arr[0], arr[1], arr[2])); return [q.x, q.y, q.z]; };
   for(const m of measures){ m.a = TA(m.a); m.b = TA(m.b); }
   measuresRender();
+  for(const pt of paints){
+    pt.p = TA(pt.p);
+    const d = new THREE.Vector3(pt.n[0], pt.n[1], pt.n[2]).transformDirection(M);
+    pt.n = [d.x, d.y, d.z];
+  }
   if(!modified){ modified = true; s_mod.textContent = 'yes'; }
   clearEdgeSel(); deselect(); hidePatch(); ppPatch = null; ppParts = null; hideChordHint();
   extractEdges();
@@ -7796,6 +7904,9 @@ function showFacePalette(){
     '<div><span class="key">Ctrl+I</span> — invert: the other areas of this plane</div>' +
     '<div><span class="key">B</span> — bounding edges</div>' +
     '<div><span class="key">K</span> — lay flat: this face down on the bed</div>' +
+    '<div><span class="key">Shift+1…8</span> — paint: filament ' +
+      FILAMENTS.map((c, i) => '<span style="display:inline-block;width:11px;height:11px;border-radius:2px;margin:0 2px -1px 4px;background:' + c + '"></span>' + (i + 1)).join('') +
+      ' · 1 — clear</div>' +
     '<div><span class="key">Del</span> — Delete face</div>' +
     '<div style="opacity:.55">Esc — deselect</div>');
   chordHint.style.left = Math.min(lastMX - vr.left + 44, vr.width - 380) + 'px';
@@ -12075,7 +12186,8 @@ function takeSnapshot(){
       bend: a.bend ? {pts0: a.bend.pts0.map(p=>p.clone()), t: a.bend.t.slice(), j: a.bend.j} : null})),
     guides: guides.map(g=>({a: g.a.clone(), b: g.b.clone(), noExt: g.noExt, curve: g.curve})),
     hard: hardEdges.map(h=>({a: h.a.clone(), b: h.b.clone()})),
-    sketches: JSON.parse(JSON.stringify(textSketches))
+    sketches: JSON.parse(JSON.stringify(textSketches)),
+    paints: paints.map(pt => ({p: pt.p.slice(), n: pt.n.slice(), f: pt.f}))
   };
 }
 let redoStack = [];
@@ -12093,6 +12205,7 @@ function applySnapshot(s){
   for(const sa of s.anchors){ const a = makeAnchor(sa.pos); if(sa.bend) a.bend = sa.bend; }
   restoreGuides(s.guides || []);
   textSketches = JSON.parse(JSON.stringify(s.sketches || []));
+  paints = (s.paints || []).map(pt => ({p: pt.p.slice(), n: pt.n.slice(), f: pt.f}));
   deselect(); closePopup(); tipHide(); hidePatch(); ppPatch=null;
   extractEdges();
 }
@@ -12129,13 +12242,13 @@ function snapToJSON(s){
   return JSON.stringify({pos: f32ToB64(s.pos instanceof Float32Array ? s.pos : new Float32Array(s.pos)),
     anchors: (s.anchors || []).map(a => ({pos: zcV(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(zcV), t: a.bend.t, j: a.bend.j} : null})),
     guides: (s.guides || []).map(g => ({a: zcV(g.a), b: zcV(g.b), noExt: g.noExt, curve: g.curve})),
-    hard: (s.hard || []).map(h => ({a: zcV(h.a), b: zcV(h.b)})), sketches: s.sketches || []});
+    hard: (s.hard || []).map(h => ({a: zcV(h.a), b: zcV(h.b)})), sketches: s.sketches || [], paints: s.paints || []});
 }
 function snapFromJSON(o){
   return {pos: b64ToF32(o.pos),
     anchors: o.anchors.map(a => ({pos: zcVV(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(zcVV), t: a.bend.t, j: a.bend.j} : null})),
     guides: o.guides.map(g => ({a: zcVV(g.a), b: zcVV(g.b), noExt: g.noExt, curve: g.curve})),
-    hard: o.hard.map(h => ({a: zcVV(h.a), b: zcVV(h.b)})), sketches: o.sketches};
+    hard: o.hard.map(h => ({a: zcVV(h.a), b: zcVV(h.b)})), sketches: o.sketches, paints: o.paints || []};
 }
 function undoSave(){
   try{
@@ -12590,6 +12703,7 @@ async function rebuild(){
   restoreGuides([]); curveSeq = 0; // новая модель — старые линии над ней не висят
   textSketches = [];
   hardEdges = [];
+  paints = []; // новая модель — покраска старой не переносится
   modified = false; s_mod.textContent = 'no';
   undoStack = []; // новая серверная модель — новая точка отсчёта
   extractEdges();
@@ -12662,6 +12776,7 @@ function projectData(){
     camera: {yaw, pitch, camDist, target: v3a(camTarget)},
     sketches: textSketches,
     measures: measures.map(m => ({id: m.id, a: m.a, b: m.b, c: m.c})),
+    paints: paints.map(pt => ({p: pt.p, n: pt.n, f: pt.f})),
     history: zcHistToJSON()
   };
 }
@@ -12697,6 +12812,8 @@ function loadProjectData(d, name){
   measures = (d.measures || []).map(m => ({id: m.id, a: m.a.slice(), b: m.b.slice(), c: m.c | 0}));
   measureSeq = Math.max(0, ...measures.map(m => m.id));
   measuresRender();
+  paints = (d.paints || []).map(pt => ({p: pt.p.slice(), n: pt.n.slice(), f: pt.f | 0})).filter(pt => pt.f >= 2 && pt.f <= 8);
+  paintRender();
   if(d.camera){
     yaw = d.camera.yaw; pitch = d.camera.pitch; camDist = d.camera.camDist;
     camTarget.copy(a3v(d.camera.target));
@@ -12980,7 +13097,7 @@ function importMeshArray(raw, name){
   const arr = new Float32Array(raw.length);
   for(let i=0;i<raw.length;i++) arr[i] = q(raw[i]);
   setMeshFromArray(arr);
-  restoreGuides([]); clearAnchors(); curveSeq = 0; hardEdges = [];
+  restoreGuides([]); clearAnchors(); curveSeq = 0; hardEdges = []; paints = [];
   cleanupMesh();
   tidySlivers();   // в чужих сетках щепки обычное дело
   modified = true; s_mod.textContent = 'yes';
@@ -13002,7 +13119,7 @@ function importMeshArray(raw, name){
 // --- геометрия для экспорта: вершины без дублей (ключ 0.001 мм) ---
 function indexedMesh(){
   const pos = mesh.geometry.attributes.position.array;
-  const map = new Map(), verts = [], tris = [];
+  const map = new Map(), verts = [], tris = [], src = [];
   for(let i=0;i<pos.length;i+=9){
     const f = [];
     for(let j=0;j<3;j++){
@@ -13012,9 +13129,9 @@ function indexedMesh(){
       if(id === undefined){ id = verts.length; verts.push([x, y, z]); map.set(k, id); }
       f.push(id);
     }
-    if(f[0] !== f[1] && f[1] !== f[2] && f[0] !== f[2]) tris.push(f); // без вырожденных
+    if(f[0] !== f[1] && f[1] !== f[2] && f[0] !== f[2]){ tris.push(f); src.push(i / 9); } // без вырожденных
   }
-  return {verts, tris};
+  return {verts, tris, src};
 }
 function buildSTL(){
   const pos = mesh.geometry.attributes.position.array;
@@ -13089,16 +13206,26 @@ function makeZipStore(files){ // [{name, data: Uint8Array}]
 // точки, жёсткие рёбра, параметры): слайсеры незнакомую часть пакета
 // пропускают, а ZeroCAD, открывая такой 3MF, восстанавливает модель целиком
 const ZCAD_IN_3MF = 'Metadata/zerocad.zcad';
+// покраска треугольника целиком (TriangleSelector PrusaSlicer/Bambu): состояние
+// s < 3 — полубайт s<<2 («4» — филамент 1, «8» — 2), s ≥ 3 — «C» и (s−3),
+// полубайты в строке в обратном порядке: 3 → «0C», 4 → «1C»
+const paintCode = f => f < 3 ? (f << 2).toString(16).toUpperCase() : (f - 3).toString(16).toUpperCase() + 'C';
 function build3MF(){
-  const {verts, tris} = indexedMesh();
+  const {verts, tris, src} = indexedMesh();
+  const st = paints.length ? paintResolve() : null;
   const enc = new TextEncoder();
   const xml = ['<?xml version="1.0" encoding="UTF-8"?>',
-    '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">',
+    '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"' +
+      ' xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06">',
     '<metadata name="Application">ZeroCAD ' + window.ZC_BUILD + '</metadata>',
     '<resources><object id="1" type="model"><mesh><vertices>'];
   for(const v of verts) xml.push('<vertex x="' + v[0].toFixed(4) + '" y="' + v[1].toFixed(4) + '" z="' + v[2].toFixed(4) + '"/>');
   xml.push('</vertices><triangles>');
-  for(const t of tris) xml.push('<triangle v1="' + t[0] + '" v2="' + t[1] + '" v3="' + t[2] + '"/>');
+  tris.forEach((t, k) => {
+    const f = st ? st[src[k]] : 0;
+    const paint = f > 1 ? ' paint_color="' + paintCode(f) + '" slic3rpe:mmu_segmentation="' + paintCode(f) + '"' : '';
+    xml.push('<triangle v1="' + t[0] + '" v2="' + t[1] + '" v3="' + t[2] + '"' + paint + '/>');
+  });
   xml.push('</triangles></mesh></object></resources>', '<build><item objectid="1"/></build>', '</model>');
   return makeZipStore([
     {name: '[Content_Types].xml', data: enc.encode(
@@ -14114,6 +14241,17 @@ window.addEventListener('keydown', e=>{
     e.preventDefault(); chordG = performance.now();
     showChordHint();
     return;
+  }
+  // Shift+1…8 — покрасить выбранные грани филаментом (1 — снять покраску)
+  {
+    const dm = /^Digit([1-8])$/.exec(e.code);
+    if(dm && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !activeTool && !exLive
+       && document.activeElement.tagName !== 'INPUT'){
+      if(!ppParts || !ppParts.length){ warnTip('Select a face to paint it'); return; }
+      e.preventDefault();
+      try{ paintSelectedFaces(+dm[1]); }catch(err){ warnTip(err.message); }
+      return;
+    }
   }
   // K — выбранную грань на стол (вся модель поворачивается, грань ложится на XY)
   if(e.code === 'KeyK' && !e.ctrlKey && !e.altKey && !e.metaKey && !chordG && !activeTool && !exLive
@@ -17841,7 +17979,7 @@ function zcApplySolid(tris, op, round = true){
   }
   if(!out.length) throw new Error('the result is empty');
   pushHistory(snap);
-  if(op === 'new') restoreGuides([]);
+  if(op === 'new'){ restoreGuides([]); paints = []; }
   // Т-стыки на вырожденных треугольниках — сначала сварка микрорёбер, потом
   // честный разрез соседа (resolveDegenerate); если вдруг хуже — прежний путь
   // Т-стыки на вырожденных треугольниках — сначала сварка микрорёбер, потом
@@ -19146,6 +19284,31 @@ const ZC_COMMANDS = {
       return Object.assign({boolean: lastBoolPath || 'none'}, r);
     }
   },
+  paint_face: {
+    // то же, что Shift+1…8 по выбранным граням: покраска филаментом
+    run(a){
+      const f = Math.round(+a.filament);
+      const list = Array.isArray(a.faces) ? a.faces : [{point: a.point, normal: a.normal}];
+      if(!list.length) throw new Error('give point (and normal) or faces');
+      const faces = list.map((fc, i) => {
+        const P = zcV3(fc.point, 'faces[' + i + '].point');
+        let n = fc.normal ? zcV3(fc.normal, 'faces[' + i + '].normal').normalize() : null;
+        const t = zcFaceAt(P, n);
+        if(t < 0) throw new Error('no face at faces[' + i + '].point');
+        if(!n) n = triNormalAt(t);
+        return {point: [P.x, P.y, P.z], normal: [n.x, n.y, n.z]};
+      });
+      if(activeTool) setActiveTool(null);
+      const snap = takeSnapshot();
+      const res = paintFaces(faces, f);
+      pushHistory(snap);
+      if(!modified){ modified = true; s_mod.textContent = 'yes'; }
+      return Object.assign({faces: res, paints: paintsInfo()}, zcSummary());
+    }
+  },
+  get_paints: {
+    run(){ return {paints: paintsInfo(), filament_colors: FILAMENTS}; }
+  },
   lay_flat: {
     // то же, что K по выбранной грани: модель ложится этой гранью на стол
     run(a){
@@ -19453,7 +19616,7 @@ function zcApplyView(a){
 // Шаг, который при повторе не прошёл (его грань уехала, размер не влез),
 // помечается failed и пропускается, остальные идут дальше — как красный
 // узел дерева во Fusion
-const ZC_READONLY = ['get_state', 'get_measurements', 'screenshot', 'set_view', 'export_stl', 'export_3mf', 'export_glb', 'save_file', 'get_history'];
+const ZC_READONLY = ['get_state', 'get_measurements', 'get_paints', 'screenshot', 'set_view', 'export_stl', 'export_3mf', 'export_glb', 'save_file', 'get_history'];
 const ZC_NO_RECORD = new Set([...ZC_READONLY, 'add_measurement', 'clear_measurements', 'edit_step', 'delete_step', 'undo', 'trace_car', 'trace_reference']);
 let zcHist = [];          // [{command, args, status, change}] | {command: 'base', snap, note}
 let zcHistFp = null;      // отпечаток модели после последнего шага истории
@@ -19572,7 +19735,7 @@ function zcHistToJSON(){
       pos: f32ToB64(s.snap.pos), guides: s.snap.guides.map(g => ({a: v3a(g.a), b: v3a(g.b), noExt: !!g.noExt, curve: g.curve || 0})),
       hard: s.snap.hard.map(h => ({a: v3a(h.a), b: v3a(h.b)})),
       anchors: s.snap.anchors.map(a => ({pos: v3a(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(v3a), t: a.bend.t.slice(), j: a.bend.j} : null})),
-      sketches: s.snap.sketches || []}}
+      sketches: s.snap.sketches || [], paints: s.snap.paints || []}}
     : Object.assign({command: s.command, args: s.args, status: s.status || 'ok', change: s.change == null ? null : s.change}, s.by ? {by: s.by} : {}));
 }
 function zcHistFromJSON(list){
@@ -19580,7 +19743,7 @@ function zcHistFromJSON(list){
       pos: b64ToF32(s.snap.pos), guides: (s.snap.guides || []).map(g => ({a: a3v(g.a), b: a3v(g.b), noExt: g.noExt, curve: g.curve})),
       hard: (s.snap.hard || []).map(h => ({a: a3v(h.a), b: a3v(h.b)})),
       anchors: (s.snap.anchors || []).map(a => ({pos: a3v(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(a3v), t: a.bend.t, j: a.bend.j} : null})),
-      sketches: s.snap.sketches || []}}
+      sketches: s.snap.sketches || [], paints: s.snap.paints || []}}
     : Object.assign({command: s.command, args: s.args, status: s.status, change: s.change}, s.by ? {by: s.by} : {}));
   zcHistAt = new WeakMap(); zcHistAtEmpty = null;
   if(zcHist.length) zcHistMark(); else zcHistFp = null;

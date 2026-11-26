@@ -86,7 +86,7 @@
 
 <!-- commands:begin -->
 
-## Все команды (46)
+## Все команды (48)
 
 _Сгенерировано из `web/tools.js` скриптом `assets/gen_help.py` — правьте описания там и перезапустите скрипт._
 
@@ -98,6 +98,7 @@ _Сгенерировано из `web/tools.js` скриптом `assets/gen_hel
 - **Тела из профилей:** `add_frustum`, `add_revolve`, `add_sweep`, `loft_profiles`, `revolve_profile`, `sweep_profile`
 - **Фаски, оболочка, перенос, массивы:** `bevel_edges`, `bevel_outline`, `shell_body`, `mirror_body`, `transform_body`, `lay_flat`, `pattern_body`
 - **Текст, узоры, текстуры:** `add_text`, `extrude_text`, `add_pattern`, `texture_surface`
+- **Цвет: многоцветная печать:** `paint_face`, `get_paints`
 - **История шагов:** `get_history`, `edit_step`, `delete_step`, `undo`
 - **Машина: обводка по фото и детали:** `trace_car`, `trace_reference`, `name_part`
 
@@ -572,6 +573,25 @@ Texture the surface (displacement, like texture tools in slicers): the faces are
 | `invert` | boolean |  |  |
 | `seed` | integer |  |  |
 | `max_triangles` | integer |  |  |
+
+## Цвет: многоцветная печать
+
+### `paint_face`
+
+Paint faces with a filament for multi-colour printing — the same as Shift+1…8 on selected faces in the editor. The whole face region under the point is painted (what a click selects: up to edges and drawn lines). filament 1 is the main one (clears the paint), 2–8 are the other filaments (AMS slots on a Bambu printer). The paint follows the face if it is extruded along its normal. export_3mf writes it per triangle as paint_color (Bambu Studio, OrcaSlicer) and slic3rpe:mmu_segmentation (PrusaSlicer).
+
+| параметр | тип | нужен | описание |
+|---|---|---|---|
+| `point` | [x, y, z] |  | a point on the face, mm |
+| `normal` | [x, y, z] |  | optional face normal to choose between faces meeting at the point |
+| `faces` | массив object |  | several faces at once: [{point, normal}] instead of point/normal |
+| `filament` | integer | да | 1–8; 1 clears the paint |
+
+### `get_paints`
+
+List painted faces: point, normal, filament and lost (the face is no longer found — the paint is ignored), plus the display colours of filaments 1–8.
+
+Без параметров.
 
 ## История шагов
 
