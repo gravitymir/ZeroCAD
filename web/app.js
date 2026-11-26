@@ -722,7 +722,7 @@ function extractEdges(){
   }
   markShallowCorners(eMap, pos);
   // видимые рёбра: граница или излом
-  const feats=[];
+  const feats=[], microSkipped=[];
   for(const ent of eMap.values()){
     let dt = ent.normals.length===2 ? ent.normals[0].dot(ent.normals[1]) : -1;
     // три и больше треугольника на ребре, но все в одной плоскости и смотрят
@@ -738,6 +738,28 @@ function extractEdges(){
     if((ent.normals.length!==2 && !coplanarMany) || (dt < FEATURE_COS && !micro)
        || (ent.corner && !micro)
        || (hardEdges.length && dt < 0.99999 && onHardEdge(ent.A, ent.B))){ ent.feat = true; feats.push(ent); }
+    else if(micro && (dt < FEATURE_COS || ent.corner)){ ent.dt = dt; microSkipped.push(ent); }
+    ent.dt = dt;
+  }
+  // Кусок настоящего ребра короче 0.75 мм (булева порезала край фаски у
+  // угла на 0.19, 0.46, 0.58 мм) — не рельеф: он продолжает по прямой
+  // видимое ребро с тем же изломом. Без этого линия рвалась пунктиром.
+  // Возвращаем такие куски цепочкой, от длинных рёбер к коротким
+  if(microSkipped.length){
+    const byV = new Map();
+    const addV = f => { for(const k of [f.ka, f.kb]){ if(!byV.has(k)) byV.set(k, []); byV.get(k).push(f); } };
+    const dirOf = f => new THREE.Vector3().subVectors(f.B, f.A).normalize();
+    for(const f of feats) addV(f);
+    for(let changed = true; changed;){
+      changed = false;
+      for(const ent of microSkipped){
+        if(ent.feat) continue;
+        const d = dirOf(ent);
+        const ok = [ent.ka, ent.kb].some(k => (byV.get(k) || []).some(f =>
+          f.normals.length === 2 && Math.abs(f.dt - ent.dt) < 0.02 && Math.abs(dirOf(f).dot(d)) > 0.9995));
+        if(ok){ ent.feat = true; feats.push(ent); addV(ent); changed = true; }
+      }
+    }
   }
   // Поверхности: треугольники, связанные невидимыми (гладкими) рёбрами.
   // Ребро модели — граница между одной и той же парой поверхностей, как
@@ -10829,10 +10851,21 @@ function showVertexPalette(){
       '<br><span style="color:'+AXIS_CSS.y+';font-weight:600">Y ' + p.y.toFixed(1) + '</span>' +
       '<br><span style="color:'+AXIS_CSS.z+';font-weight:600">Z ' + p.z.toFixed(1) + '</span>'
     : '');
+  // угол из трёх рёбер под 90° — подсказать скругление шариком (Ctrl+B)
+  let ball = '';
+  if(p){
+    const chs = cornerEdgeChains(p, 1e-3);
+    if(chs.length === 3){
+      const eds = chs.map(ch => analyzeBevelEdge(ch.pts));
+      if(!eds.some(ed => ed.err) && bevelCorners(eds).length)
+        ball = '<div><span class="key">Ctrl+B</span> — ball corner (' + (eds[0].concave ? 'inner, adds material' : 'outer') + ')</div>';
+    }
+  }
   const vr = view.getBoundingClientRect();
   chordHint.innerHTML = CH_GRIP +
     '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
     (!hintsChk.checked ? '' :
+    ball +
     '<div><span class="key">G,V</span> — edit X/Y/Z</div>' +
     '<div><span class="key">Alt+drag</span> — ring</div>' +
     '<div><span class="key">Shift</span> — column</div>' +
