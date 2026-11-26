@@ -733,6 +733,23 @@ def concave_edge_gets_a_cove():
     d = call('bevel_edges', {'points': [[10, 5, 10]], 'size': 2, 'segments': 8})
     closed(d, 'floor cove into the corner cove')
     assert d['volume_change_mm3'] > 7.5, ('the floor cove must reach the wall through the corner cove', d)
+    # Косой торец: нижняя ступень срезана наискось у конца ребра (крышка
+    # коробки с косым краем). Выкружка не должна торчать за косую грань —
+    # раньше торчала, с плёнкой 0.05 мм поверх, и срез E+Ctrl по плёнке рвал
+    # сетку. Срез той же плоскостью после скругления ничего не снимает
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    b = lambda z: [[10, -1, z], [21, -1, z], [21, 21, z], [10, 21, z]]
+    call('loft_profiles', {'profile_a': b(10), 'profile_b': b(21), 'operation': 'cut'})
+    nn = [26 / math.hypot(26, 63), 63 / math.hypot(26, 63), 0]
+    call('cut_plane', {'point': [10, 20, 5], 'normal': nn})
+    d = call('bevel_edges', {'points': [[10, 10, 10]], 'size': 2, 'segments': 8})
+    closed(d, 'cove at a slanted end')
+    v = d['volume_mm3']
+    try:
+        d = call('cut_plane', {'point': [10, 20, 5], 'normal': nn})
+        assert v - d['volume_mm3'] < 0.01, ('the cove must not stick out past the slanted end face', v, d['volume_mm3'])
+    except McpError as e:
+        assert 'does not cut' in str(e), e   # плоскость ничего не срезает — так и надо
 
 
 @case
@@ -759,6 +776,17 @@ def ball_corner_at_a_vertex():
     want = 3 * seg(2) * 8 + 8 - math.pi * 8 / 6
     near(d['volume_change_mm3'], want, want * 0.03, 'inner corner volume')
     assert d['bbox_max'][2] == 20, ('nothing sticks out of the pocket', d)
+    # стакан: четыре угла дна разом — дно и стойки скругляются, углы шарами.
+    # По одному нельзя: первый шарик скругляет ребро дна целиком, и у
+    # соседнего угла уже нет трёх острых рёбер
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    call('loft_profiles', {'profile_a': b(10), 'profile_b': b(21), 'operation': 'cut'})
+    d = call('bevel_edges', {'vertices': [[5, 5, 10], [15, 5, 10], [15, 15, 10], [5, 15, 10]], 'size': 2, 'segments': 8})
+    closed(d, 'cup bottom')
+    assert d['ball_corners'] == 4 and len(d['edges']) == 8, d
+    assert d['folded_edges'] == 0, d
+    want = seg(2) * (4 * 6 + 4 * 8) + 4 * (8 - math.pi * 8 / 6)
+    near(d['volume_change_mm3'], want, want * 0.03, 'cup bottom volume')
 
 
 @case

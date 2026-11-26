@@ -500,7 +500,10 @@ function onHardEdge(P, Q){
       const t = new THREE.Vector3().subVectors(X, h.a).dot(d) / L2;
       if(t < -1e-4 || t > 1 + 1e-4){ ok = false; break; }
       const F = h.a.clone().addScaledVector(d, t);
-      if(F.distanceToSquared(X) > 0.003*0.003){ ok = false; break; }
+      // 0.01: вершина на стыке двух выкружек (косой срез цилиндров) отстоит
+      // от линии касания на 0.004 — ребро от неё не рисовалось, линия на
+      // стенке обрывалась посередине (в 0.003 не влезало)
+      if(F.distanceToSquared(X) > 0.01*0.01){ ok = false; break; }
     }
     if(ok) return true;
   }
@@ -674,8 +677,11 @@ function markShallowCorners(eMap, pos){
     for(let i=0;i<list.length && i<64;i++){
       const o = list[i];
       if(o === rec || o.sense !== rec.sense) continue;
-      const r = o.ang / rec.ang;
-      if(r < 0.5 || r > 2) continue;
+      // мелкий излом (до 10°) — грань шара: у сетки восьмушки шара излом по
+      // диагонали квадрата (4°) вдвое мельче, чем по его сторонам (8°), и
+      // граница «×2» рисовала по шару ломаные линии. Тут допуск ×3
+      const r = o.ang / rec.ang, lim = rec.ang < 10 * Math.PI / 180 ? 3 : 2;
+      if(r < 1 / lim || r > lim) continue;
       // тот же отрезок прямой (ребро, разрезанное точкой) — не сосед
       tmp.subVectors(o.ent.A, rec.ent.A);
       const off = tmp.clone().sub(rec.dir.clone().multiplyScalar(tmp.dot(rec.dir))).length();
@@ -5126,7 +5132,23 @@ function analyzeBevelEdge(pts){
     var probe = new THREE.Mesh(g, new THREE.MeshBasicMaterial({side: THREE.DoubleSide}));
     probe.updateMatrixWorld(true);
   }
+  // Торцы конца вогнутого ребра: грани у его вершины, смотрящие наружу за
+  // конец (торец стенки, косой край крышки). Выкружка их не переходит —
+  // иначе у косого края она торчала за крышку и оставляла плёнку 0.05 мм
+  // (запас союза в материал, а материала там уже нет): срез E+Ctrl по такой
+  // плёнке рвал сетку. Как во Fusion: скругление обрезано гранями торца
+  const endPlanes = (P, out) => {
+    const res = [];
+    if(!concave) return res;
+    for(const ti of (vertTris.get(keyOf(P.x, P.y, P.z)) || [])){
+      const n = triNormalAt(ti);
+      if(n.dot(out) < 0.3 || res.some(r => r.n.dot(n) > 0.9999)) continue;
+      res.push({n: n.clone(), P: P.clone()});
+    }
+    return res;
+  };
   return {A: A.clone(), B: B.clone(), e, L, t1: s1.t, n1: s1.n, t2: s2.t, n2: s2.n, alpha, concave, probe,
+          planesA: endPlanes(A, e.clone().negate()), planesB: endPlanes(B, e),
           openA: openEnd(A, e.clone().negate()), openB: openEnd(B, e)};
 }
 // рёбра тела, сходящиеся в вершине P (концы цепочек в пределах tol)
@@ -5240,7 +5262,39 @@ function bevelPrism(ed, size, segs){
   }
   if(nw.dot(ed.e) < 0) loop = loop.reverse();
   if(ed.L + mA + mB < 0.1) throw new Error('size is too big for a ball corner on this edge');
-  return buildPrismTris(loop, ed.e, ed.L + mA + mB, 0);
+  const L = ed.L + mA + mB;
+  // вогнутое: каждая точка профиля идёт вдоль ребра до ближайшей плоскости
+  // торца (косой край крышки) — торец добавки косой, за грань не торчит.
+  // Строим сразу так: срез готовой призмы плоскостью через вершину ребра
+  // оставлял в ней дыру
+  const plA = ed.concave && !ed.cornerA ? (ed.planesA || []) : [];
+  const plB = ed.concave && !ed.cornerB ? (ed.planesB || []) : [];
+  if(!plA.length && !plB.length) return buildPrismTris(loop, ed.e, L, 0);
+  // косой торец — на 0.02 мм внутрь: совпадающую с гранью крышки косую
+  // плоскость BSP резал неточно (дыры, грань крышки рассечена вдоль);
+  // торец поперёк ребра (стенка y=70) совпадает точно — его не сдвигаем
+  const tAt = (q, pl) => {
+    const en = ed.e.dot(pl.n), inset = Math.abs(en) < 0.999 ? 0.02 : 0;
+    return (new THREE.Vector3().subVectors(pl.P, q).dot(pl.n) - inset) / en;
+  };
+  const bot = [], top = [];
+  for(const q of loop){
+    let t0 = 0, t1 = L;
+    for(const pl of plA) if(ed.e.dot(pl.n) < -1e-6) t0 = Math.max(t0, tAt(q, pl));
+    for(const pl of plB) if(ed.e.dot(pl.n) > 1e-6) t1 = Math.min(t1, tAt(q, pl));
+    if(t1 < t0 + 0.01) t1 = t0 + 0.01;
+    bot.push(q.clone().addScaledVector(ed.e, t0));
+    top.push(q.clone().addScaledVector(ed.e, t1));
+  }
+  const out = [];
+  for(const t of earClip(top)) out.push(t);
+  for(const t of earClip([...bot].reverse())) out.push(t);
+  for(let i=0;i<loop.length;i++){
+    const j = (i+1) % loop.length;
+    out.push([bot[i], bot[j], top[j]]);
+    out.push([bot[i], top[j], top[i]]);
+  }
+  return out;
 }
 
 // ---------- Скругление вершины «шариком» ----------
@@ -5332,6 +5386,15 @@ const bevelTool = {
     bevPopup.hidden = false;
     bev_hint.hidden = !hintsChk.checked;
     this.snap = takeSnapshot(); this.shown = null; this.committed = false;
+    // углы и форма исходной модели: по ним клик добавляет углы, пока
+    // предпросмотр меняет сетку (скруглённое ребро съело соседний угол)
+    this.snapCorners = corners.map(c => ({pos: c.pos.clone()}));
+    {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(this.snap.pos.slice(), 3));
+      this.snapMesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({side: THREE.DoubleSide}));
+      this.snapMesh.updateMatrixWorld(true);
+    }
     bev_loops.hidden = this.face < 0;
     this.paintLoops();
     this.selKeys = edgeSel.map(es=>es.key); // вернуть выбор, если отменят
@@ -5342,7 +5405,7 @@ const bevelTool = {
   },
   off(){
     clearTimeout(this.timer);
-    bevPopup.hidden = true; releaseToolInput(); tipHide();
+    bevPopup.hidden = true; releaseToolInput(); tipHide(); vGhost.visible = false; vGhost.material.depthTest = true;
     if(!this.committed && this.snap){ // отмена: исходная сетка и прежний выбор
       if(this.shown || this.face >= 0){
         setMeshFromArray(this.snap.pos);
@@ -5353,6 +5416,7 @@ const bevelTool = {
       }
       for(const es of edgeSel) es.line.visible = true;
     }
+    if(this.snapMesh){ this.snapMesh.geometry.dispose(); this.snapMesh = null; }
     this.snap = null; this.shown = null; this.face = -1;
   },
   paintLoops(){
@@ -5363,7 +5427,55 @@ const bevelTool = {
     return {size: Math.max(0.1, snapMM(+bev_d.value || 0.1)),
             segs: Math.max(1, Math.min(32, Math.round(+bev_s.value || 1)))};
   },
-  down(){}, move(){},
+  // Пока окно открыто, клик по углу модели добавляет три его ребра — угол
+  // шариком; повторный клик убирает. Так в одной операции сразу все углы
+  // (стакан: четыре угла дна — дно и стойки скругляются разом, углы —
+  // шарами), как один Fillet со многими рёбрами во Fusion. По одному углу
+  // нельзя: первый шарик скругляет ребро целиком, и у второго угла уже нет
+  // трёх острых рёбер
+  down(e, q){
+    if(e.button !== 0 || this.face >= 0 || !q || !q.inside) return;
+    const c = pickCorner(q, null, this.snapCorners, this.snapMesh);
+    if(c) this.toggleCorner(c.pos);
+  },
+  move(e, q){
+    if(this.face >= 0) return;
+    const c = q && q.inside ? pickCorner(q, null, this.snapCorners, this.snapMesh) : null;
+    vGhost.visible = !!c;
+    vGhost.material.depthTest = false; // угол бывает внутри выкружки предпросмотра
+    if(c) vGhost.position.copy(c.pos);
+  },
+  toggleCorner(P){
+    // рёбра разбираем по исходной сетке, не по предпросмотру
+    setMeshFromArray(this.snap.pos);
+    hardEdges = this.snap.hard.map(h=>({a: h.a.clone(), b: h.b.clone()}));
+    extractEdges();
+    this.shown = null;
+    const chs = cornerEdgeChains(P, 1e-3);
+    const same = (ed, ch) => { const a = ch.pts[0], b = ch.pts[ch.pts.length-1];
+      return (ed.A.distanceTo(a) < 1e-3 && ed.B.distanceTo(b) < 1e-3) || (ed.A.distanceTo(b) < 1e-3 && ed.B.distanceTo(a) < 1e-3); };
+    let msg = '';
+    if(chs.length !== 3) msg = 'A ball corner needs exactly three edges at the point (here ' + chs.length + ')';
+    else {
+      const eds = chs.map(ch => analyzeBevelEdge(ch.pts));
+      const bad = eds.find(ed => ed.err);
+      if(bad) msg = bad.err;
+      else if(!bevelCorners(eds).length) msg = 'The three edges must meet at right angles, all outer or all inner';
+      else {
+        const have = chs.map(ch => this.edges.findIndex(ed => same(ed, ch)));
+        if(have.every(i => i >= 0)){
+          // снять угол: убираем его рёбра, кроме тех, что нужны другим
+          // шарикам (ребро дна между двумя углами стакана остаётся)
+          const others = bevelCorners(this.edges).filter(c => c.V.distanceTo(P) > 1e-3);
+          const needed = ed => others.some(c => c.V.distanceTo(ed.A) < 1e-3 || c.V.distanceTo(ed.B) < 1e-3);
+          const keep = this.edges.filter((ed, i) => !have.includes(i) || needed(ed));
+          if(keep.length) this.edges = keep;
+        } else chs.forEach((ch, k) => { if(have[k] < 0) this.edges.push(eds[k]); });
+      }
+    }
+    this.preview(true);
+    if(msg) warnTip(msg);
+  },
   key(e){ if(e.key === 'Enter'){ this.commit(); e.preventDefault(); return true; } return false; },
   preview(now){
     const {size, segs} = this.params();
@@ -10812,7 +10924,46 @@ function updateVPanel(){
   vy.value = p.y.toFixed(1);
   vz.value = p.z.toFixed(1);
 }
+// Ctrl+клик по вершинам — несколько точек разом (как рёбра Ctrl+кликом):
+// зелёные метки; последняя — sel (координаты в палитре). Ctrl+B по ним —
+// все углы шариком одной операцией
+let vertSel = [];
+function clearVertSel(){ for(const v of vertSel) scene.remove(v.m); vertSel = []; }
+function addVertSelMark(pos){
+  const m = addOutline(new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({color: C_SEL})));
+  m.position.copy(pos); scene.add(m);
+  vertSel.push({pos: pos.clone(), m});
+}
+function toggleVertSel(pos){
+  if(!vertSel.length && sel && !sel.ring) addVertSelMark(sel.pos); // одиночный выбор — первый в списке
+  const i = vertSel.findIndex(v => v.pos.distanceTo(pos) < 1e-3);
+  if(i >= 0){ scene.remove(vertSel[i].m); vertSel.splice(i, 1); }
+  else addVertSelMark(pos);
+  selAnchor = null; clearEdgeSel(); hidePatch(); ppPatch = null; clearRingMarkers();
+  sel = vertSel.length ? {pos: vertSel[vertSel.length-1].pos.clone()} : null;
+  selMarker.visible = false;
+  if(sel){ updateVPanel(); showVertexPalette(); } else { deselect(); hideChordHint(); }
+}
+// рёбра шарика по выбранным вершинам: {eds, corners} или {err}
+function ballCornerEdges(points){
+  const chs = [];
+  for(const P of points){
+    const list = cornerEdgeChains(P, 1e-3);
+    if(list.length !== 3) return {err: 'A ball corner needs exactly three edges at each point (here ' + list.length + ')'};
+    for(const ch of list) if(!chs.includes(ch)) chs.push(ch);
+  }
+  const eds = [];
+  for(const ch of chs){
+    const ed = analyzeBevelEdge(ch.pts);
+    if(ed.err) return {err: ed.err};
+    eds.push(ed);
+  }
+  const n = bevelCorners(eds).length;
+  if(n < points.length) return {err: 'Every point needs three edges at right angles, all outer or all inner'};
+  return {eds, corners: n};
+}
 function selectVertex(pos){
+  clearVertSel();
   selAnchor = null;
   clearEdgeSel(); // выбор взаимоисключающий
   hidePatch(); ppPatch = null;
@@ -10851,21 +11002,25 @@ function showVertexPalette(){
       '<br><span style="color:'+AXIS_CSS.y+';font-weight:600">Y ' + p.y.toFixed(1) + '</span>' +
       '<br><span style="color:'+AXIS_CSS.z+';font-weight:600">Z ' + p.z.toFixed(1) + '</span>'
     : '');
-  // угол из трёх рёбер под 90° — подсказать скругление шариком (Ctrl+B)
+  // углы из трёх рёбер под 90° — подсказать скругление шариком (Ctrl+B)
   let ball = '';
-  if(p){
-    const chs = cornerEdgeChains(p, 1e-3);
-    if(chs.length === 3){
-      const eds = chs.map(ch => analyzeBevelEdge(ch.pts));
-      if(!eds.some(ed => ed.err) && bevelCorners(eds).length)
-        ball = '<div><span class="key">Ctrl+B</span> — ball corner (' + (eds[0].concave ? 'inner, adds material' : 'outer') + ')</div>';
-    }
+  const pts = vertSel.length ? vertSel.map(v => v.pos) : (p ? [p] : []);
+  if(pts.length){
+    const r = ballCornerEdges(pts);
+    if(!r.err){
+      const inner = r.eds[0].concave;
+      ball = '<div><span class="key">Ctrl+B</span> — ' + (pts.length === 1 ? 'ball corner' : pts.length + ' ball corners') +
+             ' (' + (inner ? 'inner, adds material' : 'outer') + ')</div>';
+    } else if(pts.length > 1)
+      ball = '<div style="color:#ff9b6b">Ctrl+B — not all points are ball corners</div>';
   }
+  const multi = vertSel.length > 1;
   const vr = view.getBoundingClientRect();
   chordHint.innerHTML = CH_GRIP +
-    '<div style="color:var(--text);font-weight:600">' + info + '</div>' +
+    '<div style="color:var(--text);font-weight:600">' + (multi ? vertSel.length + ' vertices' : info) + '</div>' +
     (!hintsChk.checked ? '' :
     ball +
+    '<div><span class="key">Ctrl+click</span> — add / remove vertex</div>' +
     '<div><span class="key">G,V</span> — edit X/Y/Z</div>' +
     '<div><span class="key">Alt+drag</span> — ring</div>' +
     '<div><span class="key">Shift</span> — column</div>' +
@@ -11745,6 +11900,7 @@ function deleteSelAnchor(){
   deselect(); hideChordHint();
 }
 function deselect(){
+  clearVertSel();
   sel = null; selAnchor = null; selMarker.visible = false;
   for(const a of anchors) if(a.marker) a.marker.visible = true;
   vpanel.hidden = true; clearRingMarkers();
@@ -13041,10 +13197,10 @@ function projToQuad(v, cam, w, h, out){
 // Рёбра и вершины за телом не видны — магнитить и подсвечивать их нельзя
 // (курсор над верхней гранью ловил заднее вертикальное ребро на той же
 // экранной линии). Допуск — чтобы ребро на самой грани оставалось видимым
-function isOccluded(q, P){
+function isOccluded(q, P, obj){
   const o = projToQuad(P, q.cam, q.w, q.h, {x:0,y:0,z:0});
   raycaster.setFromCamera({x: o.x/q.w*2-1, y: -(o.y/q.h*2-1)}, q.cam);
-  const hits = raycaster.intersectObject(mesh);
+  const hits = raycaster.intersectObject(obj || mesh);
   if(!hits.length) return false;
   const t = new THREE.Vector3().subVectors(P, raycaster.ray.origin).dot(raycaster.ray.direction);
   return hits[0].distance < t - (0.02 + t*0.002);
@@ -13091,15 +13247,17 @@ function anchorAt(q){
   return null;
 }
 // ближайшая вершина модели (жёлтая привязка)
-function pickCorner(q, excl){
+// list/obj: углы и тело, по которым искать (окно Ctrl+B ищет по исходной
+// модели — предпросмотр уже скруглил соседний угол)
+function pickCorner(q, excl, list, obj){
   const P={x:0,y:0,z:0};
   let best=null, bestD=10;
-  for(const c of corners){
+  for(const c of (list || corners)){
     if(excl && c.pos.distanceTo(excl)<1e-3) continue;
     projToQuad(c.pos, q.cam, q.w, q.h, P);
     if(P.z>1||P.z<-1) continue;
     const d=Math.hypot(P.x-q.mx, P.y-q.my);
-    if(d<bestD && !isOccluded(q, c.pos)){ bestD=d; best=c; }
+    if(d<bestD && !isOccluded(q, c.pos, obj)){ bestD=d; best=c; }
   }
   return best;
 }
@@ -13652,18 +13810,11 @@ window.addEventListener('keydown', e=>{
       setActiveTool(bevelTool);
       return;
     }
-    if(!mesheEdges.length && sel){ // вершина: три её ребра и угол шариком
-      const chs = cornerEdgeChains(sel.pos, 1e-3);
-      if(chs.length !== 3){ warnTip('A ball corner needs exactly three edges at the point (here ' + chs.length + ')'); return; }
-      const eds = [];
-      for(const ch of chs){
-        const ed = analyzeBevelEdge(ch.pts);
-        if(ed.err){ warnTip(ed.err); return; }
-        eds.push(ed);
-      }
-      if(!bevelCorners(eds).length){ warnTip('The three edges must meet at right angles, all outer or all inner'); return; }
+    if(!mesheEdges.length && (sel || vertSel.length)){ // вершины: их рёбра и углы шариком
+      const r = ballCornerEdges(vertSel.length ? vertSel.map(v => v.pos) : [sel.pos]);
+      if(r.err){ warnTip(r.err); return; }
       hideChordHint(); deselect();
-      bevelTool.edges = eds; bevelTool.face = -1; setActiveTool(bevelTool);
+      bevelTool.edges = r.eds; bevelTool.face = -1; setActiveTool(bevelTool);
       return;
     }
     if(!mesheEdges.length){ warnTip('Select an edge of the body, a corner point or a face to bevel'); return; }
@@ -14305,6 +14456,13 @@ canvas.addEventListener('pointerdown', e=>{
     const c = a ? null : pickCorner(q);
     // точки тянутся сразу; вершины — только с модификатором (кольцо/колонна),
     // обычный клик по вершине лишь выбирает, а драг остаётся камерой
+    // Ctrl на вершине: клик — добавить/убрать из выбора, движение — камера
+    if(c && e.ctrlKey && !e.altKey && !e.shiftKey && !a){
+      if(exLive) closeExtrude();
+      pendingVertex = {pos: c.pos.clone(), x: e.clientX, y: e.clientY, ctrl: {c, q, id: e.pointerId}};
+      try{ canvas.setPointerCapture(e.pointerId); }catch(_){}
+      return;
+    }
     if(a || (c && (e.altKey || e.ctrlKey || e.shiftKey))){
       if(exLive) closeExtrude(); // взялся за другой объект — окно закрывается
       beginDrag(a, c, q, e.altKey, e.pointerId, e.ctrlKey, e.shiftKey);
@@ -14385,8 +14543,8 @@ canvas.addEventListener('pointerup', e=>{
     // без движения — клик по вершине: зелёный выбор + панель X/Y/Z
     const pv = pendingVertex; pendingVertex = null;
     if(exLive) closeExtrude();
-    selectVertex(pv.pos);
-    showVertexPalette();
+    if(pv.ctrl) toggleVertSel(pv.pos);
+    else { selectVertex(pv.pos); showVertexPalette(); }
   }
   if(drag && drag.click && !pointMode && !lineMode && !circleMode && !textMode && !divCtx && !activeTool
      && Math.hypot(e.clientX-drag.click.x, e.clientY-drag.click.y) < 3){
@@ -14485,6 +14643,7 @@ canvas.addEventListener('pointermove', e=>{
   if(pendingVertex){
     if(Math.hypot(e.clientX-pendingVertex.x, e.clientY-pendingVertex.y) > 4){
       // потащили с вершины — это камера, геометрию двигают инструменты
+      // (и с Ctrl: Ctrl — выбор нескольких вершин, кольцо — Alt)
       const pv = pendingVertex; pendingVertex = null;
       vGhost.visible = false; tipHide();
       if(!drag) drag = {x: pv.x, y: pv.y, b: 0};
@@ -15114,6 +15273,7 @@ function loop(t){
   if(txCenterDot) dot(txCenterDot, 0.0035); // центр грани (салатовый)
   dot(selEndA); dot(selEndB);
   for(const m of selCenterDots) dot(m, 0.0035);
+  for(const v of vertSel) dot(v.m);
   // билборды масштабируются от реального расстояния до камеры —
   // постоянный экранный размер при любом зуме
   for(const sp of axisLabels){
