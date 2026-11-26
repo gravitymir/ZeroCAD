@@ -733,6 +733,16 @@ def concave_edge_gets_a_cove():
     d = call('bevel_edges', {'points': [[10, 5, 10]], 'size': 2, 'segments': 8})
     closed(d, 'floor cove into the corner cove')
     assert d['volume_change_mm3'] > 7.5, ('the floor cove must reach the wall through the corner cove', d)
+    # Наружное ребро стойки упирается в пол: вырез кончается ровно в полу.
+    # Раньше заходил в него на 0.02 мм — в полу у основания скругления
+    # оставалась канавка (тонкий прямоугольник). Объём — ровно сечение × длина
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    b = lambda z: [[10, -1, z], [21, -1, z], [21, 21, z], [10, 21, z]]
+    call('loft_profiles', {'profile_a': b(10), 'profile_b': b(21), 'operation': 'cut'})
+    d = call('bevel_edges', {'points': [[10, 0, 15]], 'size': 2, 'segments': 8})
+    closed(d, 'post on a floor')
+    near(d['volume_change_mm3'], -(4 - 0.5 * 4 * 8 * math.sin(math.pi / 16)) * 10, 0.02, 'no groove in the floor')
+    assert d['bbox_min'][2] == 0 and d['folded_edges'] == 0, d
     # Косой торец: нижняя ступень срезана наискось у конца ребра (крышка
     # коробки с косым краем). Выкружка не должна торчать за косую грань —
     # раньше торчала, с плёнкой 0.05 мм поверх, и срез E+Ctrl по плёнке рвал

@@ -5137,12 +5137,16 @@ function analyzeBevelEdge(pts){
   // иначе у косого края она торчала за крышку и оставляла плёнку 0.05 мм
   // (запас союза в материал, а материала там уже нет): срез E+Ctrl по такой
   // плёнке рвал сетку. Как во Fusion: скругление обрезано гранями торца
+  // Наружное ребро, упёршееся в грань (стойка в пол): вырез кончается ровно
+  // в плоскости этой грани. Раньше заходил в неё на 0.02 — и весь профиль
+  // выреза (с запасом 0.5 в воздух) выбирал в полу канавку 0.02 мм:
+  // тонкий прямоугольник у основания скругления. Берём грани у вершины,
+  // смотрящие назад, на ребро
   const endPlanes = (P, out) => {
     const res = [];
-    if(!concave) return res;
     for(const ti of (vertTris.get(keyOf(P.x, P.y, P.z)) || [])){
       const n = triNormalAt(ti);
-      if(n.dot(out) < 0.3 || res.some(r => r.n.dot(n) > 0.9999)) continue;
+      if((concave ? n.dot(out) < 0.3 : n.dot(out) > -0.3) || res.some(r => r.n.dot(n) > 0.9999)) continue;
       res.push({n: n.clone(), P: P.clone()});
     }
     return res;
@@ -5267,8 +5271,8 @@ function bevelPrism(ed, size, segs){
   // торца (косой край крышки) — торец добавки косой, за грань не торчит.
   // Строим сразу так: срез готовой призмы плоскостью через вершину ребра
   // оставлял в ней дыру
-  const plA = ed.concave && !ed.cornerA ? (ed.planesA || []) : [];
-  const plB = ed.concave && !ed.cornerB ? (ed.planesB || []) : [];
+  const plA = !ed.cornerA && (ed.concave || !ed.openA) ? (ed.planesA || []) : [];
+  const plB = !ed.cornerB && (ed.concave || !ed.openB) ? (ed.planesB || []) : [];
   if(!plA.length && !plB.length) return buildPrismTris(loop, ed.e, L, 0);
   // косой торец — на 0.02 мм внутрь: совпадающую с гранью крышки косую
   // плоскость BSP резал неточно (дыры, грань крышки рассечена вдоль);
@@ -5277,11 +5281,26 @@ function bevelPrism(ed, size, segs){
     const en = ed.e.dot(pl.n), inset = Math.abs(en) < 0.999 ? 0.02 : 0;
     return (new THREE.Vector3().subVectors(pl.P, q).dot(pl.n) - inset) / en;
   };
+  // наружное: точка на плоскости торца; косой — сдвиг 0.02 к ребру
+  const tAtIn = (q, pl) => {
+    const en = ed.e.dot(pl.n), inset = Math.abs(en) < 0.999 ? -0.02 : 0;
+    return (new THREE.Vector3().subVectors(pl.P, q).dot(pl.n) - inset) / en;
+  };
   const bot = [], top = [];
   for(const q of loop){
     let t0 = 0, t1 = L;
-    for(const pl of plA) if(ed.e.dot(pl.n) < -1e-6) t0 = Math.max(t0, tAt(q, pl));
-    for(const pl of plB) if(ed.e.dot(pl.n) > 1e-6) t1 = Math.min(t1, tAt(q, pl));
+    if(ed.concave){
+      for(const pl of plA) if(ed.e.dot(pl.n) < -1e-6) t0 = Math.max(t0, tAt(q, pl));
+      for(const pl of plB) if(ed.e.dot(pl.n) > 1e-6) t1 = Math.min(t1, tAt(q, pl));
+    } else {
+      // наружное: торец грани смотрит на ребро; ближайшая плоскость — конец
+      // выреза (косая — на 0.02 не доходя: лучше нитка, чем канавка)
+      let a = -Infinity, b = Infinity;
+      for(const pl of plA) if(ed.e.dot(pl.n) > 1e-6) a = Math.max(a, tAtIn(q, pl));
+      for(const pl of plB) if(ed.e.dot(pl.n) < -1e-6) b = Math.min(b, tAtIn(q, pl));
+      if(a > -Infinity) t0 = a;
+      if(b < Infinity) t1 = b;
+    }
     if(t1 < t0 + 0.01) t1 = t0 + 0.01;
     bot.push(q.clone().addScaledVector(ed.e, t0));
     top.push(q.clone().addScaledVector(ed.e, t1));
