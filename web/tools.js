@@ -447,7 +447,7 @@ const ZC_TOOLS = [
   },
   {
     "name": "bevel_edges",
-    "description": "Chamfer (segments = 1) or round/fillet (segments ≥ 2) straight edges of the body — the same tool as Ctrl+B. A convex (outer) edge is cut away; a concave (inner) edge gets material added — a cove between the two faces. Each edge is given by a point on it (not at a corner). size is the setback along each face from the edge; on a 90° edge the fillet radius equals size. Ball corner: where three of the edges meet at right angles (all outer or all inner) the corner becomes a piece of a sphere of radius size instead of a crease — pass the corner in vertices to take all three of its edges at once (an inner corner gets material, which strengthens it).",
+    "description": "Chamfer (segments = 1) or round/fillet (segments ≥ 2) straight edges of the body — the same tool as Ctrl+B. A convex (outer) edge is cut away; a concave (inner) edge gets material added — a cove between the two faces. Each edge is given by a point on it (not at a corner). size is the setback along each face from the edge; on a 90° edge the fillet radius equals size. Ball corner: where three of the edges meet at right angles (all outer or all inner) the corner becomes a piece of a sphere of radius size instead of a crease — pass corner points in vertices to take all edges meeting there at once (an inner corner gets material, which strengthens it); points that are not such corners just get their edges rounded. A size that would break the body is refused and the error names the largest working size for these edges.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -473,7 +473,7 @@ const ZC_TOOLS = [
             "minItems": 3,
             "maxItems": 3
           },
-          "description": "corner points where three edges meet at 90°: all three edges are rounded and the corner becomes a ball, mm"
+          "description": "points whose edges are all rounded; where three edges meet at 90° the corner becomes a ball, mm"
         },
         "size": {
           "type": "number",

@@ -710,8 +710,21 @@ let paintObj = null;
 // стенка рядом (касается скругления по линии) не входит — её вершины не на
 // поверхности. Хранится в проекте; у старых моделей — покраска по области
 let curvedSurfs = []; // [{k:'cyl', c, e, r, t0, t1, sag} | {k:'sph', c, r, sag}]
+// расстояние от точки до оси/центра поверхности (для тора — до средней
+// окружности трубки): на поверхности оно равно радиусу r
+function surfDist(S, x, y, z){
+  if(S.k === 'sph') return Math.hypot(x - S.c[0], y - S.c[1], z - S.c[2]);
+  const wx = x - S.c[0], wy = y - S.c[1], wz = z - S.c[2], t = wx*S.e[0] + wy*S.e[1] + wz*S.e[2];
+  const rho = Math.hypot(wx - t*S.e[0], wy - t*S.e[1], wz - t*S.e[2]);
+  if(S.k === 'tor') return Math.hypot(rho - S.R, t - S.h);
+  return rho;
+}
 function surfHas(S, x, y, z){
   const tol = 0.01;
+  if(S.k === 'tor'){
+    const d = surfDist(S, x, y, z);
+    return d < S.r + tol && d > S.r - S.sag - tol;
+  }
   if(S.k === 'sph'){
     const d = Math.hypot(x - S.c[0], y - S.c[1], z - S.c[2]);
     return d < S.r + tol && d > S.r - S.sag - tol;
@@ -722,27 +735,100 @@ function surfHas(S, x, y, z){
   const d = Math.hypot(wx - t*S.e[0], wy - t*S.e[1], wz - t*S.e[2]);
   return d < S.r + tol && d > S.r - S.sag - tol;
 }
+// Скругления, сделанные до того, как Ctrl+B стал записывать поверхности:
+// узнаём их по жёстким линиям полос. Линии одного скругления параллельны и
+// в сечении лежат на одной окружности — тройка соседних даёт центр и радиус,
+// совпавшие тройки — цилиндр. Где оси трёх выкружек одного радиуса под 90°
+// сходятся в точку — там шар угла. Кэш — по набору жёстких линий
+let inferredCache = {hard: null, n: -1, list: []};
+function inferredSurfs(){
+  if(inferredCache.hard === hardEdges && inferredCache.n === hardEdges.length) return inferredCache.list;
+  const list = [];
+  const lines = hardEdges.map(h => {
+    const d = new THREE.Vector3().subVectors(h.b, h.a), L = d.length();
+    return L > 1e-6 ? {a: h.a, b: h.b, e: d.multiplyScalar(1 / L)} : null;
+  }).filter(Boolean);
+  const groups = [];
+  for(const l of lines){
+    let g = groups.find(g => Math.abs(g.e.dot(l.e)) > 0.99999);
+    if(!g){ g = {e: l.e.clone(), items: []}; groups.push(g); }
+    g.items.push(l);
+  }
+  for(const g of groups){
+    if(g.items.length < 3) continue;
+    const e = g.e, u = (Math.abs(e.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0)).cross(e).normalize(), v = e.clone().cross(u);
+    const O = g.items[0].a;
+    const q = g.items.map(l => { const w = new THREE.Vector3().subVectors(l.a, O); return [w.dot(u), w.dot(v)]; });
+    const cands = [];
+    for(let i=0;i<q.length;i++){
+      // два ближайших соседа в сечении (той же полосы скругления)
+      const nb = q.map((p, j) => [j, Math.hypot(p[0] - q[i][0], p[1] - q[i][1])]).filter(x => x[0] !== i && x[1] > 1e-4)
+        .sort((x, y) => x[1] - y[1]).slice(0, 2);
+      if(nb.length < 2) continue;
+      const [A, B, C] = [q[i], q[nb[0][0]], q[nb[1][0]]];
+      const D = 2 * (A[0]*(B[1]-C[1]) + B[0]*(C[1]-A[1]) + C[0]*(A[1]-B[1]));
+      if(Math.abs(D) < 1e-9) continue;
+      const a2 = A[0]*A[0] + A[1]*A[1], b2 = B[0]*B[0] + B[1]*B[1], c2 = C[0]*C[0] + C[1]*C[1];
+      const cx = (a2*(B[1]-C[1]) + b2*(C[1]-A[1]) + c2*(A[1]-B[1])) / D, cy = (a2*(C[0]-B[0]) + b2*(A[0]-C[0]) + c2*(B[0]-A[0])) / D;
+      const r = Math.hypot(A[0] - cx, A[1] - cy);
+      // хорда одной полосы — до ближайшего соседа (второй у крайней линии
+      // через полосу: прогиб выходил вчетверо больше, и центры узких
+      // треугольников полосы не проходили проверку «внутри»)
+      if(r > 0.2 && r < 100) cands.push({cx, cy, r, i, chord: nb[0][1]});
+    }
+    const used = new Set();
+    for(const c of cands){
+      if(used.has(c)) continue;
+      const same = cands.filter(o => !used.has(o) && Math.hypot(o.cx - c.cx, o.cy - c.cy) < 0.02 && Math.abs(o.r - c.r) < 0.02);
+      for(const o of same) used.add(o);
+      const members = new Set(same.map(o => o.i));
+      if(members.size < 3) continue;
+      const C3 = O.clone().addScaledVector(u, c.cx).addScaledVector(v, c.cy);
+      let t0 = Infinity, t1 = -Infinity, chord = 0;
+      for(const o of same) chord = Math.max(chord, o.chord);
+      for(const i of members) for(const P of [g.items[i].a, g.items[i].b]){
+        const t = new THREE.Vector3().subVectors(P, C3).dot(e); t0 = Math.min(t0, t); t1 = Math.max(t1, t);
+      }
+      const half = Math.asin(Math.min(1, chord / (2 * c.r)));
+      // линии полос обрываются у шара угла (в 0.05 от его края) — цилиндр
+      // продлеваем на радиус, как у записанных: стык с шаром не выпадает
+      list.push({k: 'cyl', c: [C3.x, C3.y, C3.z], e: [e.x, e.y, e.z], r: c.r, t0: t0 - c.r, t1: t1 + c.r,
+                 sag: c.r * (1 - Math.cos(half)) * 1.2});
+    }
+  }
+  // шары углов: оси двух выкружек одного радиуса под 90° пересекаются
+  const cyl = list.slice();
+  for(let i=0;i<cyl.length;i++) for(let j=i+1;j<cyl.length;j++){
+    const A = cyl[i], B = cyl[j];
+    if(Math.abs(A.r - B.r) > 0.02) continue;
+    const ea = new THREE.Vector3(...A.e), eb = new THREE.Vector3(...B.e);
+    if(Math.abs(ea.dot(eb)) > 0.05) continue;
+    const pa = new THREE.Vector3(...A.c), pb = new THREE.Vector3(...B.c);
+    const w = new THREE.Vector3().subVectors(pa, pb), b = ea.dot(eb), d = ea.dot(w), e2 = eb.dot(w), den = 1 - b*b;
+    const sA = (b*e2 - d) / den, sB = (e2 - b*d) / den;
+    const XA = pa.clone().addScaledVector(ea, sA), XB = pb.clone().addScaledVector(eb, sB);
+    if(XA.distanceTo(XB) > 0.02) continue;
+    const X = XA.add(XB).multiplyScalar(0.5);
+    if(list.some(S => S.k === 'sph' && Math.hypot(S.c[0] - X.x, S.c[1] - X.y, S.c[2] - X.z) < 0.02)) continue;
+    list.push({k: 'sph', c: [X.x, X.y, X.z], r: A.r, sag: Math.max(A.sag, B.sag) * 1.5});
+  }
+  inferredCache = {hard: hardEdges, n: hardEdges.length, list};
+  return list;
+}
 // треугольники на скруглениях: связная область вокруг t (null — t не на них)
 function curvedRegionAt(t){
-  if(!curvedSurfs.length || !mesh) return null;
+  const surfs = curvedSurfs.concat(inferredSurfs());
+  if(!surfs.length || !mesh) return null;
   const pos = mesh.geometry.attributes.position.array, nT = pos.length / 9;
   const on = new Uint8Array(nT);
   // вершины на поверхности, а центр — строго внутри (грань скругления — хорда).
   // Плоская стенка касается цилиндра: её узкие треугольники у линии касания
   // проходили по допуску вершин, но их центр снаружи или ровно на поверхности
-  const inside = (S, x, y, z) => {
-    let d;
-    if(S.k === 'sph') d = Math.hypot(x - S.c[0], y - S.c[1], z - S.c[2]);
-    else {
-      const wx = x - S.c[0], wy = y - S.c[1], wz = z - S.c[2], t = wx*S.e[0] + wy*S.e[1] + wz*S.e[2];
-      d = Math.hypot(wx - t*S.e[0], wy - t*S.e[1], wz - t*S.e[2]);
-    }
-    return d < S.r - 0.15 * S.sag;
-  };
+  const inside = (S, x, y, z) => surfDist(S, x, y, z) < S.r - 0.15 * S.sag;
   const triOn = u => {
     const o = u*9;
     const cx = (pos[o]+pos[o+3]+pos[o+6])/3, cy = (pos[o+1]+pos[o+4]+pos[o+7])/3, cz = (pos[o+2]+pos[o+5]+pos[o+8])/3;
-    for(const S of curvedSurfs)
+    for(const S of surfs)
       if(surfHas(S, pos[o], pos[o+1], pos[o+2]) && surfHas(S, pos[o+3], pos[o+4], pos[o+5]) && surfHas(S, pos[o+6], pos[o+7], pos[o+8])
          && inside(S, cx, cy, cz)) return true;
     return false;
@@ -794,6 +880,12 @@ function rememberBevelSurfs(edges, size, segs){
       t0: -size - 0.05, t1: ed.L + size + 0.05, sag: r * (1 - Math.cos(phi / segs / 2))});
   }
   for(const c of bevelCorners(edges)){
+    if(c.mixed){ // тор у стойки: ось скругления торца, трубка — выкружка пола
+      const A0 = c.V.clone().addScaledVector(c.d1, size).addScaledVector(c.d2, size);
+      push({k: 'tor', c: [A0.x, A0.y, A0.z], e: [c.dc.x, c.dc.y, c.dc.z], R: 2 * size, h: size, r: size,
+            sag: size * (1 - Math.cos(Math.PI / 4 / segs)) * 1.5});
+      continue;
+    }
     const C = c.V.clone().addScaledVector(c.d[0], size).addScaledVector(c.d[1], size).addScaledVector(c.d[2], size);
     push({k: 'sph', c: [C.x, C.y, C.z], r: size, sag: size * (1 - Math.cos(Math.PI / 4 / segs)) * 1.5});
   }
@@ -3388,6 +3480,44 @@ function applyBodyTransform(tris, mats, keep){
   };
   const newGuides = moveSegs(guides, (g, A, B) => ({a: A, b: B, noExt: g.noExt, curve: g.curve}));
   const newHard = moveSegs(hardEdges, (h, A, B) => ({a: A, b: B}));
+  // покраска и поверхности скруглений тела переезжают вместе с ним (копии —
+  // тоже): раньше перенос, поворот, зеркало теряли покраску — точка грани
+  // оставалась на старом месте. Решаем по старой сетке, пока она на месте
+  const newPaints = [], newSurfs = [];
+  const uni = M => { // равномерный масштаб: длины столбцов матрицы равны
+    const e = M.elements, a = Math.hypot(e[0], e[1], e[2]), b = Math.hypot(e[4], e[5], e[6]), c = Math.hypot(e[8], e[9], e[10]);
+    return Math.abs(a - b) < 1e-6 && Math.abs(a - c) < 1e-6 ? a : 0;
+  };
+  for(const pt of paints){
+    const u = paintFaceAt(pt), mine = u >= 0 && !!inBody[u];
+    if(!mine || keep) newPaints.push(pt);
+    if(mine) for(const M of (keep ? mats : mats.slice(0, 1))){
+      const P = new THREE.Vector3(pt.p[0], pt.p[1], pt.p[2]).applyMatrix4(M);
+      const N = new THREE.Vector3(pt.n[0], pt.n[1], pt.n[2]).applyMatrix3(new THREE.Matrix3().getNormalMatrix(M)).normalize();
+      newPaints.push({p: [P.x, P.y, P.z], n: [N.x, N.y, N.z], f: pt.f});
+    }
+  }
+  for(const S of curvedSurfs){
+    let mine = false;
+    for(const t of body){
+      const q = t*9;
+      if(surfHas(S, pos[q], pos[q+1], pos[q+2]) && surfHas(S, pos[q+3], pos[q+4], pos[q+5]) && surfHas(S, pos[q+6], pos[q+7], pos[q+8])){ mine = true; break; }
+    }
+    if(!mine || keep) newSurfs.push(S);
+    if(mine) for(const M of (keep ? mats : mats.slice(0, 1))){
+      const k = uni(M);
+      if(!k) continue; // растянули неравномерно — уже не цилиндр
+      const C = new THREE.Vector3(S.c[0], S.c[1], S.c[2]).applyMatrix4(M);
+      const T = Object.assign({}, S, {c: [C.x, C.y, C.z], r: S.r * k, sag: S.sag * k});
+      if(S.e){
+        const E = new THREE.Vector3(S.e[0], S.e[1], S.e[2]).transformDirection(M);
+        T.e = [E.x, E.y, E.z];
+        if(S.k === 'cyl'){ T.t0 = S.t0 * k; T.t1 = S.t1 * k; }
+        if(S.k === 'tor'){ T.R = S.R * k; T.h = S.h * k; }
+      }
+      newSurfs.push(T);
+    }
+  }
   const arr = new Float32Array(cur.length * 9);
   let o = 0;
   for(const t of cur) for(const p of t){ arr[o++] = p.x; arr[o++] = p.y; arr[o++] = p.z; }
@@ -3396,6 +3526,7 @@ function applyBodyTransform(tris, mats, keep){
   cleanupMesh();
   if(openEdgeCount() > 0) healAll();
   hardEdges = newHard;
+  paints = newPaints; curvedSurfs = newSurfs;
   restoreGuides(newGuides);
   lastBoolPath = usedBool ? 'exact' : '';
   if(!modified){ modified = true; s_mod.textContent = 'yes'; }
@@ -5525,11 +5656,11 @@ function bevelPrism(ed, size, segs){
   const plA = !ed.cornerA && (ed.concave || !ed.openA) ? (ed.planesA || []) : [];
   const plB = !ed.cornerB && (ed.concave || !ed.openB) ? (ed.planesB || []) : [];
   if(!plA.length && !plB.length) return buildPrismTris(loop, ed.e, L, 0);
-  // косой торец — на 0.02 мм внутрь: совпадающую с гранью крышки косую
+  // косой торец — на 0.1 мм внутрь (0.02 мало: в паре со скруглением соседнего угла торец у косого верха стенки рвался): совпадающую с гранью крышки косую
   // плоскость BSP резал неточно (дыры, грань крышки рассечена вдоль);
   // торец поперёк ребра (стенка y=70) совпадает точно — его не сдвигаем
   const tAt = (q, pl) => {
-    const en = ed.e.dot(pl.n), inset = Math.abs(en) < 0.999 ? 0.02 : 0;
+    const en = ed.e.dot(pl.n), inset = Math.abs(en) < 0.999 ? 0.1 : 0;
     return (new THREE.Vector3().subVectors(pl.P, q).dot(pl.n) - inset) / en;
   };
   // наружное: точка на плоскости торца; косой — сдвиг 0.02 к ребру
@@ -5587,13 +5718,71 @@ function bevelCorners(edges){
   }
   const out = [];
   for(const g of groups.values()){
-    if(g.length !== 3 || g.some(x => x.ed.concave !== g[0].ed.concave)) continue;
+    if(g.length !== 3) continue;
     const d = g.map(x => x.end === 'A' ? x.ed.e.clone() : x.ed.e.clone().negate());
     if(Math.abs(d[0].dot(d[1])) > 0.035 || Math.abs(d[0].dot(d[2])) > 0.035 || Math.abs(d[1].dot(d[2])) > 0.035) continue;
-    for(const x of g) x.ed['corner' + x.end] = true;
-    out.push({V: g[0].ed[g[0].end].clone(), d, concave: g[0].ed.concave});
+    if(g.every(x => x.ed.concave === g[0].ed.concave)){
+      for(const x of g) x.ed['corner' + x.end] = true;
+      out.push({V: g[0].ed[g[0].end].clone(), d, concave: g[0].ed.concave});
+      continue;
+    }
+    // Стойка на полу (торец стенки): одно наружное ребро вверх, два
+    // внутренних по полу вдоль её стенок. Скруглённый торец — цилиндр, и
+    // выкружка пола огибает его куском тора (как Fillet во Fusion вокруг
+    // скруглённой стойки); выкружки рёбер кончаются у начала скругления торца
+    const cv = g.filter(x => !x.ed.concave), cc = g.filter(x => x.ed.concave);
+    if(cv.length !== 1 || cc.length !== 2) continue;
+    const dc = d[g.indexOf(cv[0])], d1 = d[g.indexOf(cc[0])], d2 = d[g.indexOf(cc[1])];
+    const has = (ed, a, b) => { const ns = [ed.n1, ed.n2];
+      return ns.some(n => n.dot(a) > 0.999) && ns.some(n => n.dot(b) > 0.999); };
+    // пол смотрит вдоль наружного ребра, стенка у ребра d1 — против d2 и наоборот
+    if(!has(cc[0].ed, dc, d2.clone().negate()) || !has(cc[1].ed, dc, d1.clone().negate())) continue;
+    for(const x of cc) x.ed['corner' + x.end] = true;
+    out.push({V: g[0].ed[g[0].end].clone(), mixed: true, dc, d1, d2});
   }
   return out;
+}
+// кусок тора у стойки: профиль выкружки (пол — стенка стойки) в радиальной
+// плоскости, повёрнутый на 90° вокруг оси скругления торца. Ось — в size
+// от вершины по обоим внутренним рёбрам; радиус скругления торца и выкружки
+// — size. В материал (стойка, пол) заходит на 0.05, как выкружка ребра
+function cornerTorusTris(c, size, segs){
+  const n = Math.max(1, segs), Rc = size, r = size, e = 0.05;
+  const A0 = c.V.clone().addScaledVector(c.d1, Rc).addScaledVector(c.d2, Rc);
+  const u = c.d2.clone().negate(), v = c.d1.clone().negate(), up = c.dc;
+  const loop = [[Rc + r, -e]];
+  for(let k=0;k<=n;k++){
+    const f = k / n * Math.PI / 2;
+    loop.push([Rc + r - r * Math.sin(f), r - r * Math.cos(f)]);
+  }
+  loop.push([Rc - e, r], [Rc - e, -e]);
+  // контур против часовой в плоскости (ρ, h): наружу от ребра a→b — (dh, −dρ)
+  let area2 = 0;
+  for(let i=0;i<loop.length;i++){ const a = loop[i], b = loop[(i+1) % loop.length]; area2 += a[0]*b[1] - b[0]*a[1]; }
+  if(area2 < 0) loop.reverse();
+  const radial = th => u.clone().multiplyScalar(Math.cos(th)).addScaledVector(v, Math.sin(th));
+  const at = (rho, h, th) => A0.clone().addScaledVector(up, h).addScaledVector(radial(th), rho);
+  const tris = [];
+  const add = (a, b, q, out) => {
+    const nn = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(q, a));
+    if(nn.lengthSq() < 1e-14) return;
+    tris.push(nn.dot(out) >= 0 ? [a, b, q] : [a, q, b]);
+  };
+  const rings = [];
+  for(let k=0;k<=n;k++) rings.push(loop.map(([rho, h]) => at(rho, h, k / n * Math.PI / 2)));
+  for(let k=0;k<n;k++){
+    const thm = (k + 0.5) / n * Math.PI / 2, A = rings[k], B = rings[k+1];
+    for(let i=0;i<loop.length;i++){
+      const j = (i + 1) % loop.length;
+      const dr = loop[j][0] - loop[i][0], dh = loop[j][1] - loop[i][1];
+      const out = radial(thm).multiplyScalar(dh).addScaledVector(up, -dr);
+      add(A[i], A[j], B[j], out); add(A[i], B[j], B[i], out);
+    }
+  }
+  // торцы: при θ=0 наружу — против хода (−v), при θ=90° — по ходу (−u)
+  for(const t of earClip(rings[0])) add(t[0], t[1], t[2], v.clone().negate());
+  for(const t of earClip(rings[n])) add(t[0], t[1], t[2], u.clone().negate());
+  return tris;
 }
 function cornerBallTris(c, size, segs){
   const n = Math.max(1, segs), r = size, e = 0.05;
@@ -5639,6 +5828,39 @@ function cornerBallTris(c, size, segs){
   }
   return tris;
 }
+// Сколько помещается: на сколько можно отойти от ребра в глубь каждой его
+// грани (луч на грань в трёх точках ребра) и длина рёбер между шариками
+// (каждый шарик съедает size с конца ребра). Больше — скругление вылезет за
+// грань или съест стенку целиком (торец стенки 2.2 мм не берёт R4)
+function bevelFitMax(edges){
+  if(!edges.length) return Infinity;
+  bevelCorners(edges);
+  const onFace = (P, n) => {
+    raycaster.set(P.clone().addScaledVector(n, 0.02), n.clone().negate());
+    raycaster.far = 0.05;
+    const h = raycaster.intersectObject(mesh)[0];
+    raycaster.far = Infinity;
+    return !!h && h.faceIndex != null && triNormalAt(h.faceIndex).dot(n) > 0.99;
+  };
+  let max = Infinity;
+  for(const ed of edges){
+    const ends = (ed.cornerA ? 1 : 0) + (ed.cornerB ? 1 : 0);
+    if(ends) max = Math.min(max, (ed.L - 0.1) / ends + 0.05);
+    for(const f of [0.2, 0.5, 0.8]){
+      const M = ed.A.clone().addScaledVector(ed.e, ed.L * f);
+      for(const [t, n] of [[ed.t1, ed.n1], [ed.t2, ed.n2]]){
+        let lo = 0, hi = Math.min(max, 100);
+        if(onFace(M.clone().addScaledVector(t, hi), n)) continue;
+        for(let k=0;k<16;k++){
+          const mid = (lo + hi) / 2;
+          if(onFace(M.clone().addScaledVector(t, mid), n)) lo = mid; else hi = mid;
+        }
+        max = Math.min(max, lo);
+      }
+    }
+  }
+  return Math.floor(max * 10 + 1e-6) / 10;
+}
 // Предпросмотр — сам результат на модели, как Bevel в Blender и Fillet во
 // Fusion: тело живьём срезается при каждом изменении окна (с короткой
 // задержкой, чтобы ввод не тормозил), новые рёбра видны обычными рёбрами.
@@ -5655,7 +5877,9 @@ const bevelTool = {
     bevPopup.style.top  = Math.min(lastMY - vr.top + 12, vr.height - 320) + 'px';
     bevPopup.hidden = false;
     bev_hint.hidden = !hintsChk.checked;
-    this.snap = takeSnapshot(); this.shown = null; this.committed = false;
+    this.snap = takeSnapshot(); this.shown = null; this.committed = false; this.broken = '';
+    this.fitMax = this.face >= 0 ? Infinity : bevelFitMax(this.edges); this.searching = false;
+    bev_findrow.hidden = true;
     // углы и форма исходной модели: по ним клик добавляет углы, пока
     // предпросмотр меняет сетку (скруглённое ребро съело соседний угол)
     this.snapCorners = corners.map(c => ({pos: c.pos.clone()}));
@@ -5760,7 +5984,19 @@ const bevelTool = {
         : 'R ' + (size * Math.tan(alpha / 2)).toFixed(2) + ' mm · ' + segs + ' segments';
       const nc = bevelCorners(this.edges).length;
       if(nc) bev_info.textContent += ' · ' + (nc === 1 ? 'ball corner' : nc + ' ball corners');
+      if(isFinite(this.fitMax)) bev_info.textContent += ' · fits up to ' + this.fitMax + ' mm';
+      if(size > this.fitMax + 1e-6){ // не помещается — булеву не считаем
+        clearTimeout(this.timer);
+        if(this.shown){ setMeshFromArray(this.snap.pos); restoreGuides(this.snap.guides);
+          hardEdges = this.snap.hard.map(h=>({a: h.a.clone(), b: h.b.clone()})); extractEdges(); }
+        this.shown = null; this.broken = 'too big';
+        bev_info.style.color = '#ff6b6b';
+        bev_info.textContent = 'Too big: these faces take up to ' + this.fitMax + ' mm';
+        bev_ok.disabled = true; bev_findrow.hidden = false;
+        return;
+      }
     }
+    if(!this.searching) bev_findrow.hidden = true;
     clearTimeout(this.timer);
     if(now) this.apply();
     else this.timer = setTimeout(()=>{ if(activeTool === this) this.apply(); }, 120);
@@ -5769,55 +6005,83 @@ const bevelTool = {
   apply(){
     const {size, segs} = this.params();
     const sig = size + '|' + segs + '|' + (this.face >= 0 ? this.loops : '');
-    if(this.shown === sig) return true;
+    if(this.shown === sig){
+      if(this.broken){ // предпросмотр с теми же числами: надпись о поломке не затирать
+        bev_info.style.color = '#ff6b6b';
+        bev_info.textContent = 'This would break the body (' + this.broken + ') — fewer edges or another size';
+      }
+      return !this.broken;
+    }
     const base = this.snap.pos;
     if(this.face >= 0) return this.applyFace(size, segs, sig);
+    if(size > this.fitMax + 1e-6){ this.broken = 'too big'; return false; } // не помещается на гранях
     try{
-      let body = [];
-      for(let i=0;i<base.length;i+=9)
-        body.push([new THREE.Vector3(base[i],base[i+1],base[i+2]),
-                   new THREE.Vector3(base[i+3],base[i+4],base[i+5]),
-                   new THREE.Vector3(base[i+6],base[i+7],base[i+8])]);
-      const corners = bevelCorners(this.edges);
-      for(const ed of this.edges){
-        body = ed.concave ? csgUnion(body, bevelPrism(ed, size, segs))
-                          : csgSubtract(body, bevelPrism(ed, size, segs));
-        body = body.filter(t => new THREE.Vector3().subVectors(t[1],t[0])
-          .cross(new THREE.Vector3().subVectors(t[2],t[0])).length() > 1e-6);
-      }
-      for(const c of corners){ // вершины, где сошлись три выбранных ребра, — шариком
-        const tool = cornerBallTris(c, size, segs);
-        body = c.concave ? csgUnion(body, tool) : csgSubtract(body, tool);
-        body = body.filter(t => new THREE.Vector3().subVectors(t[1],t[0])
-          .cross(new THREE.Vector3().subVectors(t[2],t[0])).length() > 1e-6);
-      }
-      this.corners = corners.length;
-      const q = x => Math.round(x*1000)/1000;
-      const arr = [];
-      for(const t of body) for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
-      setMeshFromArray(new Float32Array(arr));
-      healAfterBool();
-      // стык нескольких скруглений: убрать вершины-разрезы на прямых и
-      // заново сшить Т-стыки, иначе грани расползаются на треугольники.
-      // Уборка — косметика, и она не вправе портить тело: на коробке с
-      // крюками она выкидывала 454 вершины и съедала кусок ребра крюка
-      // далеко от скругления (−58 мм³, дыры). Испортила (дыры, рёбра на три
-      // грани, объём) — возвращаем сетку как была после булевой
-      {
-        const pre = mesh.geometry.attributes.position.array.slice();
-        const bad = pos => ({open: openEdgeCount(), nm: zcSummary().nonmanifold_edges, vol: meshVolumeOf(pos)});
-        const b0 = bad(pre);
-        if(collapseCollinearVertices()){
-          for(let i=0;i<40;i++){
-            const len0 = mesh.geometry.attributes.position.array.length;
-            cleanupMesh(); healTJunctions();
-            if(mesh.geometry.attributes.position.array.length === len0) break;
-          }
-          removeInvertedShells();
-          const b1 = bad(mesh.geometry.attributes.position.array);
-          if(b1.open > b0.open || b1.nm > b0.nm || Math.abs(b1.vol - b0.vol) > Math.max(0.05, Math.abs(b0.vol) * 1e-5))
-            setMeshFromArray(pre);
+      // Порядок булевых важен: три угла полки в одном порядке рвали тело (дыры
+      // у косого верха стенки), в обратном — ни одной складки. Вышло битым —
+      // пробуем другие порядки рёбер и берём первый целый
+      const conc = this.edges.filter(ed => ed.concave), conv = this.edges.filter(ed => !ed.concave);
+      // поиск рабочего размера пробует много размеров — там два порядка, не четыре
+      const orders = this.searching ? [this.edges, this.edges.slice().reverse()]
+        : [this.edges, this.edges.slice().reverse(), conc.concat(conv), conv.concat(conc)];
+      const h0 = meshHealthOf(this.snap.pos);
+      for(let oi=0; oi<orders.length; oi++){
+        const edges = orders[oi];
+        let body = [];
+        for(let i=0;i<base.length;i+=9)
+          body.push([new THREE.Vector3(base[i],base[i+1],base[i+2]),
+                     new THREE.Vector3(base[i+3],base[i+4],base[i+5]),
+                     new THREE.Vector3(base[i+6],base[i+7],base[i+8])]);
+        const corners = bevelCorners(edges);
+        for(const ed of edges){
+          body = ed.concave ? csgUnion(body, bevelPrism(ed, size, segs))
+                            : csgSubtract(body, bevelPrism(ed, size, segs));
+          body = body.filter(t => new THREE.Vector3().subVectors(t[1],t[0])
+            .cross(new THREE.Vector3().subVectors(t[2],t[0])).length() > 1e-6);
         }
+        for(const c of corners){ // вершины, где сошлись три выбранных ребра, — шариком или тором
+          const tool = c.mixed ? cornerTorusTris(c, size, segs) : cornerBallTris(c, size, segs);
+          body = c.mixed || c.concave ? csgUnion(body, tool) : csgSubtract(body, tool);
+          body = body.filter(t => new THREE.Vector3().subVectors(t[1],t[0])
+            .cross(new THREE.Vector3().subVectors(t[2],t[0])).length() > 1e-6);
+        }
+        this.corners = corners.length;
+        const q = x => Math.round(x*1000)/1000;
+        const arr = [];
+        for(const t of body) for(const v of t) arr.push(q(v.x), q(v.y), q(v.z));
+        setMeshFromArray(new Float32Array(arr));
+        healAfterBool();
+        // стык нескольких скруглений: убрать вершины-разрезы на прямых и
+        // заново сшить Т-стыки, иначе грани расползаются на треугольники.
+        // Уборка — косметика, и она не вправе портить тело: на коробке с
+        // крюками она выкидывала 454 вершины и съедала кусок ребра крюка
+        // далеко от скругления (−58 мм³, дыры). Испортила (дыры, рёбра на три
+        // грани, объём) — возвращаем сетку как была после булевой
+        {
+          const pre = mesh.geometry.attributes.position.array.slice();
+          const bad = pos => ({open: openEdgeCount(), nm: zcSummary().nonmanifold_edges, vol: meshVolumeOf(pos)});
+          const b0 = bad(pre);
+          if(collapseCollinearVertices()){
+            for(let i=0;i<40;i++){
+              const len0 = mesh.geometry.attributes.position.array.length;
+              cleanupMesh(); healTJunctions();
+              if(mesh.geometry.attributes.position.array.length === len0) break;
+            }
+            removeInvertedShells();
+            const b1 = bad(mesh.geometry.attributes.position.array);
+            if(b1.open > b0.open || b1.nm > b0.nm || Math.abs(b1.vol - b0.vol) > Math.max(0.05, Math.abs(b0.vol) * 1e-5))
+              setMeshFromArray(pre);
+          }
+        }
+        // Скругление не вправе рвать тело: много рёбер разом (17 по углам
+        // полки) давали дыры, а окно молча показывало и принимало результат —
+        // выкружки выходили обрывками. Стало хуже, чем до, — OK закрыт
+        {
+          const h1 = meshHealthOf(mesh.geometry.attributes.position.array);
+          this.broken = (h1.open > h0.open || h1.nm > h0.nm)
+            ? [h1.open > h0.open ? (h1.open - h0.open) + ' open edges' : '', h1.nm > h0.nm ? (h1.nm - h0.nm) + ' edges on three faces' : ''].filter(Boolean).join(', ')
+            : '';
+        }
+        if(!this.broken){ this.edges = edges; break; }
       }
       // рёбра между гранями скругления — жёсткие: видны и выбираются при
       // любом числе сегментов. Отрезки с запасом за концы, как у выреза
@@ -5830,7 +6094,13 @@ const bevelTool = {
       }
       extractEdges();
       this.shown = sig;
-      bev_ok.disabled = false;
+      bev_ok.disabled = !!this.broken;
+      if(this.broken){
+        bev_info.style.color = '#ff6b6b';
+        bev_info.textContent = 'This would break the body (' + this.broken + ') — fewer edges or another size';
+        bev_findrow.hidden = false;
+        return false;
+      }
       return true;
     }catch(err){
       console.warn('bevel failed', err);
@@ -5872,6 +6142,46 @@ const bevelTool = {
       bev_ok.disabled = true;
       return false;
     }
+  },
+  // Самый большой размер, который не ломает тело: заранее этого не узнать
+  // (булева на сочетании рёбер), поэтому пробуем — делением пополам по
+  // сетке 0.5 мм (0.1 у малых) от предела граней вниз. Подставляет найденный
+  async findWorkingSize(quiet){
+    if(this.searching || this.face >= 0) return null;
+    this.searching = true; bev_find.disabled = true;
+    const {size} = this.params();
+    const step = size > 2 ? 0.5 : 0.1, grid = x => Math.floor(x / step + 1e-6) * step;
+    const test = s => { bev_d.value = +s.toFixed(2); this.shown = null; return s <= this.fitMax + 1e-6 && this.apply(); };
+    const tick = () => new Promise(r => setTimeout(r, 20));
+    let lo = 0, hi = size, best = 0;
+    // сначала самый малый: ломается и он — дело не в размере, а в сочетании
+    // рёбер, дальше искать незачем (на 8 углах полки поиск шёл 7 минут впустую)
+    bev_info.style.color = ''; bev_info.textContent = 'Trying ' + step + ' mm…'; await tick();
+    if(!test(step)) hi = 0;
+    else { best = lo = step; }
+    const first = hi > 0 ? grid(Math.min(this.fitMax, size - step)) : 0;
+    if(first > 0){
+      bev_info.style.color = ''; bev_info.textContent = 'Trying ' + first + ' mm…'; await tick();
+      if(test(first)){ best = lo = first; } else hi = first;
+    }
+    while(hi - lo > step + 1e-9){
+      const mid = grid((lo + hi) / 2);
+      if(mid <= lo + 1e-9) break;
+      bev_info.style.color = ''; bev_info.textContent = 'Trying ' + mid + ' mm…'; await tick();
+      if(test(mid)){ best = lo = mid; } else hi = mid;
+    }
+    this.searching = false; bev_find.disabled = false;
+    if(best > 0){
+      bev_d.value = +best.toFixed(2); this.shown = null; this.preview(true);
+      if(!quiet){ bev_info.textContent += ' · ' + size + ' mm breaks the body'; }
+      bev_findrow.hidden = true;
+    } else {
+      bev_d.value = size; this.shown = null;
+      bev_info.style.color = '#ff6b6b';
+      bev_info.textContent = 'No size works for all these edges at once — select fewer points and round in parts';
+      bev_ok.disabled = true;
+    }
+    return best || null;
   },
   commit(){
     clearTimeout(this.timer);
@@ -7018,6 +7328,7 @@ for(const inp of [bev_d, bev_s]){
   });
 }
 bev_ok.addEventListener('click', ()=>{ if(activeTool === bevelTool) bevelTool.commit(); });
+bev_find.addEventListener('click', ()=>{ if(activeTool === bevelTool) bevelTool.findWorkingSize(); });
 const bev_loops = document.getElementById('bev_loops');
 const cylPopup = document.getElementById('cylPopup'), cyl_d = document.getElementById('cyl_d'), cyl_h = document.getElementById('cyl_h'),
       cyl_t = document.getElementById('cyl_t'), cyl_s = document.getElementById('cyl_s'), cyl_state = document.getElementById('cyl_state'),
@@ -11283,22 +11594,28 @@ function toggleVertSel(pos){
   if(sel){ updateVPanel(); showVertexPalette(); } else { deselect(); hideChordHint(); }
 }
 // рёбра шарика по выбранным вершинам: {eds, corners} или {err}
+// Рёбра выбранных точек, как один Fillet со многими рёбрами во Fusion: все
+// прямые рёбра, сходящиеся в точках; угол из трёх рёбер под 90° (все
+// внутренние или все наружные) — шариком, остальные рёбра — обычным
+// скруглением. Раньше любая «неправильная» точка (ступенька стенки — рёбра
+// внутренние и наружные вперемешку, косая стенка — не 90°) запрещала Ctrl+B
+// для всего выбора. Рёбра, которые скруглить нельзя (кривые), пропускаются
 function ballCornerEdges(points){
   const chs = [];
   for(const P of points){
     const list = cornerEdgeChains(P, 1e-3);
-    if(list.length !== 3) return {err: 'A ball corner needs exactly three edges at each point (here ' + list.length + ')'};
+    if(!list.length) return {err: 'No edges of the body at a selected point'};
     for(const ch of list) if(!chs.includes(ch)) chs.push(ch);
   }
   const eds = [];
+  let skipped = 0, firstErr = '';
   for(const ch of chs){
     const ed = analyzeBevelEdge(ch.pts);
-    if(ed.err) return {err: ed.err};
+    if(ed.err){ skipped++; firstErr = firstErr || ed.err; continue; }
     eds.push(ed);
   }
-  const n = bevelCorners(eds).length;
-  if(n < points.length) return {err: 'Every point needs three edges at right angles, all outer or all inner'};
-  return {eds, corners: n};
+  if(!eds.length) return {err: firstErr || 'Nothing to round at these points'};
+  return {eds, corners: bevelCorners(eds).length, skipped};
 }
 function selectVertex(pos){
   clearVertSel();
@@ -11345,12 +11662,16 @@ function showVertexPalette(){
   const pts = vertSel.length ? vertSel.map(v => v.pos) : (p ? [p] : []);
   if(pts.length){
     const r = ballCornerEdges(pts);
-    if(!r.err){
+    if(!r.err && r.corners === pts.length && !r.skipped){
       const inner = r.eds[0].concave;
       ball = '<div><span class="key">Ctrl+B</span> — ' + (pts.length === 1 ? 'ball corner' : pts.length + ' ball corners') +
              ' (' + (inner ? 'inner, adds material' : 'outer') + ')</div>';
-    } else if(pts.length > 1)
-      ball = '<div style="color:#ff9b6b">Ctrl+B — not all points are ball corners</div>';
+    } else if(!r.err)
+      ball = '<div><span class="key">Ctrl+B</span> — round ' + r.eds.length + (r.eds.length === 1 ? ' edge' : ' edges') +
+             (r.corners ? ' · ' + r.corners + (r.corners === 1 ? ' ball corner' : ' ball corners') : '') +
+             (r.skipped ? ' <span style="color:#ff9b6b">· ' + r.skipped + ' curved skipped</span>' : '') + '</div>';
+    else if(pts.length > 1)
+      ball = '<div style="color:#ff9b6b">Ctrl+B — ' + r.err + '</div>';
   }
   const multi = vertSel.length > 1;
   const vr = view.getBoundingClientRect();
@@ -19176,7 +19497,7 @@ const ZC_COMMANDS = {
     }
   },
   bevel_edges: {
-    run(a){
+    async run(a){
       const vs = Array.isArray(a.vertices) ? a.vertices : [];
       if((!Array.isArray(a.points) || !a.points.length) && !vs.length)
         throw new Error('points must list at least one point on an edge (or vertices — corner points)');
@@ -19202,7 +19523,7 @@ const ZC_COMMANDS = {
       vs.forEach((pt, i) => {
         const P = zcV3(pt, 'vertices[' + i + ']');
         const chs = cornerEdgeChains(P, 0.05);
-        if(chs.length !== 3) throw new Error('vertices[' + i + ']: a ball corner needs exactly three edges at the point, found ' + chs.length);
+        if(!chs.length) throw new Error('vertices[' + i + ']: no edges of the body at the point');
         for(const ch of chs) take(ch, 'vertices[' + i + ']');
       });
       (a.points || []).forEach((pt, i) => {
@@ -19240,7 +19561,6 @@ const ZC_COMMANDS = {
           : {edge_length_mm: +ed.L.toFixed(3), angle_deg: +deg.toFixed(2), radius_mm: +(size * Math.tan(ed.alpha / 2)).toFixed(3)});
       });
       const nc = bevelCorners(found.map(f => f.ed)).length;
-      if(vs.length && nc < vs.length) throw new Error('vertices: the three edges must meet at right angles, all outer or all inner');
       if(activeTool) setActiveTool(null);
       clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
       const v0 = meshVolumeOf(mesh.geometry.attributes.position.array), u0 = undoStack.length;
@@ -19248,7 +19568,13 @@ const ZC_COMMANDS = {
       bev_d.value = size; bev_s.value = segs;
       setActiveTool(bevelTool);  // on(): снимок и предпросмотр по полям окна
       bevelTool.commit();         // одна запись истории на все рёбра
-      if(activeTool === bevelTool){ setActiveTool(null); throw new Error('bevel failed with these values (too big for the faces?)'); }
+      if(activeTool === bevelTool){
+        // не вышло — найти самый большой рабочий размер и сказать агенту
+        const best = await bevelTool.findWorkingSize(true);
+        setActiveTool(null);
+        throw new Error('bevel would break the body at ' + size + ' mm' +
+          (best ? '; the largest working size for these edges is ' + best + ' mm' : '; no size works for all these edges — use fewer'));
+      }
       if(undoStack.length === u0) throw new Error('bevel did not change the body');
       return Object.assign({kind: segs === 1 ? 'chamfer' : 'round', edges: info, ball_corners: nc,
         volume_change_mm3: +(meshVolumeOf(mesh.geometry.attributes.position.array) - v0).toFixed(3)}, zcSummary());

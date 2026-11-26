@@ -861,6 +861,104 @@ def paint_a_whole_fillet():
 
 
 @case
+def post_corner_gets_a_torus():
+    # Стойка на полу: наружное ребро вверх, внутренние — по полу вдоль её
+    # стенок. Ctrl+B по нижней точке ребра: торец скруглён, выкружки пола
+    # огибают его куском тора (раньше обрывались, оставляя щель). Объём:
+    # −срез ребра стойки (15 мм) + две выкружки по 8 мм + четверть тора
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    call('loft_profiles', {'profile_a': [[10, -1, 5], [21, -1, 5], [21, 21, 5], [10, 21, 5]],
+                           'profile_b': [[10, -1, 21], [21, -1, 21], [21, 21, 21], [10, 21, 21]], 'operation': 'cut'})
+    call('loft_profiles', {'profile_a': [[-1, 10, 5], [10, 10, 5], [10, 21, 5], [-1, 21, 5]],
+                           'profile_b': [[-1, 10, 21], [10, 10, 21], [10, 21, 21], [-1, 21, 21]], 'operation': 'cut'})
+    d = call('bevel_edges', {'vertices': [[10, 10, 5]], 'size': 2, 'segments': 8})
+    closed(d, 'post corner')
+    assert len(d['edges']) == 3, d
+    seg = 4 - 0.5 * 4 * 8 * math.sin(math.pi / 16)
+    torus = (math.pi / 2) * seg * (2 + 2 * (10 - 3 * math.pi) / (3 * (4 - math.pi)))
+    near(d['volume_change_mm3'], -seg * 15 + 2 * seg * 8 + torus, 0.3, 'post corner volume')
+
+
+@case
+def bevel_suggests_a_working_size():
+    # слишком большое скругление: Ctrl+B не принимает его, а агенту называет
+    # самый большой рабочий размер (стакан 10 мм: шарики с двух концов ребра
+    # дна съедают по size — больше 5 мм не помещается)
+    import re
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    b = lambda z: [[5, 5, z], [15, 5, z], [15, 15, z], [5, 15, z]]
+    call('loft_profiles', {'profile_a': b(10), 'profile_b': b(21), 'operation': 'cut'})
+    v0 = call('get_state', {})['volume_mm3']
+    try:
+        call('bevel_edges', {'vertices': [[5, 5, 10], [15, 5, 10], [15, 15, 10], [5, 15, 10]], 'size': 9, 'segments': 4})
+        raise AssertionError('size 9 must not fit a 10 mm pocket')
+    except McpError as e:
+        m = re.search(r'largest working size for these edges is ([0-9.]+) mm', str(e))
+        assert m and 0 < float(m.group(1)) <= 5, e
+        best = float(m.group(1))
+    assert abs(call('get_state', {})['volume_mm3'] - v0) < 1e-6, 'the model is untouched'
+    d = call('bevel_edges', {'vertices': [[5, 5, 10], [15, 5, 10], [15, 15, 10], [5, 15, 10]], 'size': best, 'segments': 4})
+    closed(d, 'suggested size works')
+
+
+def painted_codes(name):
+    import zipfile, re
+    path = call('export_3mf', {'name': name})['path']
+    with zipfile.ZipFile(path) as z:
+        return re.findall(r'paint_color="([0-9A-F]+)"', z.read('3D/3dmodel.model').decode())
+
+
+@case
+def paint_follows_body_transforms():
+    # перенос, поворот, зеркало тела (G,B, G,I) несут покраску с собой;
+    # раньше точка грани оставалась на старом месте и покраска терялась
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    call('paint_face', {'point': [10, 10, 20], 'normal': [0, 0, 1], 'filament': 2})
+    call('paint_face', {'point': [20, 10, 10], 'normal': [1, 0, 0], 'filament': 3})
+    n0 = len(painted_codes('zc_paint_xf0'))
+    call('transform_body', {'move': [30, 0, 0]})
+    ps = call('get_paints', {})['paints']
+    assert len(ps) == 2 and not any(p['lost'] for p in ps), ps
+    assert len(painted_codes('zc_paint_xf1')) == n0
+    call('transform_body', {'rotate': {'axis': [0, 0, 1], 'angle': 90}})
+    ps = call('get_paints', {})['paints']
+    assert not any(p['lost'] for p in ps), ps
+    assert len(painted_codes('zc_paint_xf2')) == n0
+    # зеркальная копия рядом: покраска у обеих
+    d = call('get_state', {})
+    call('mirror_body', {'plane_point': [d['bbox_min'][0] - 5, 0, 0], 'plane_normal': [1, 0, 0], 'mode': 'join'})
+    ps = call('get_paints', {})['paints']
+    assert len(ps) == 4 and not any(p['lost'] for p in ps), ps
+    assert len(painted_codes('zc_paint_xf3')) == 2 * n0
+
+
+@case
+def paint_an_old_fillet():
+    # скругление из старой модели (поверхности не записаны): узнаётся по
+    # жёстким линиям полос — красится целиком, как новое
+    import json
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    b = lambda z: [[5, 5, z], [15, 5, z], [15, 15, z], [5, 15, z]]
+    call('loft_profiles', {'profile_a': b(10), 'profile_b': b(21), 'operation': 'cut'})
+    call('bevel_edges', {'vertices': [[5, 5, 10], [15, 5, 10], [15, 15, 10], [5, 15, 10]], 'size': 3, 'segments': 8})
+    a = math.pi / 4
+    P = [10, 8 - 3 * math.cos(a), 13 - 3 * math.sin(a)]
+    n_new = call('paint_face', {'point': P, 'filament': 2})['faces'][0]['triangles']
+    path = call('save_file', {'name': 'zc_old_fillet', 'format': 'zcad'})['path']
+    d = json.load(open(path, encoding='utf-8'))
+    d.pop('surfs', None); d['paints'] = []; d['history'] = None
+    old = path.replace('zc_old_fillet', 'zc_old_fillet_nosurfs')
+    json.dump(d, open(old, 'w', encoding='utf-8'))
+    CREATED.add(old)
+    # обе — на сетке, открытой из файла (открытие подчищает сетку)
+    call('open_project', {'path': path})
+    n_new = call('paint_face', {'point': P, 'filament': 2})['faces'][0]['triangles']
+    call('open_project', {'path': old})
+    n_old = call('paint_face', {'point': P, 'filament': 2})['faces'][0]['triangles']
+    assert n_old == n_new and n_old > 100, (n_old, n_new)
+
+
+@case
 def lay_flat_on_a_face():
     # K по грани (Lay on Face): модель ложится этой гранью на стол. Плита
     # 20 x 20 x 10 гранью y=0 вниз: высота становится 20, глубина 10, низ на z=0
