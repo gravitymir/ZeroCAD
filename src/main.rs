@@ -11,6 +11,7 @@
 //!                               открытая вкладка: GET /agent/events (SSE),
 //!                               POST /agent/hello, /agent/result, /agent/lead,
 //!                               /agent/ack (команду получила), /agent/bye
+//!   GET  /api/role           -> "test" у тестового сервера (ZEROCAD_TEST=1), иначе "main"
 //!   GET/POST /api/session    -> общий рабочий сеанс: последний проект любой
 //!                               вкладки; ?seq=1 — только «номер вкладка»
 //!
@@ -44,10 +45,19 @@ struct Session {
     data: Vec<u8>,
 }
 static SESSION: std::sync::Mutex<Option<Session>> = std::sync::Mutex::new(None);
-const SESSION_FILE: &str = "exports/_session.zcad";
+/// Тестовый сервер (ZEROCAD_TEST=1): свой файл сеанса, и /api/role отвечает
+/// "test". Прогон тестов шёл через основной сервер и общую вкладку —
+/// тесты заменяли модель пользователя тестовым кубом. Теперь tests/mcp/run.py
+/// требует тестовый сервер, сеанс пользователя тесты не видят
+fn test_mode() -> bool {
+    std::env::var("ZEROCAD_TEST").map_or(false, |v| !v.is_empty() && v != "0")
+}
+fn session_file() -> &'static str {
+    if test_mode() { "exports/_session_test.zcad" } else { "exports/_session.zcad" }
+}
 
 fn session_load() {
-    if let Ok(data) = std::fs::read(SESSION_FILE) {
+    if let Ok(data) = std::fs::read(session_file()) {
         if !data.is_empty() {
             *SESSION.lock().unwrap() = Some(Session { seq: 1, tab: String::new(), data });
         }
@@ -71,7 +81,7 @@ fn session_route(stream: &mut TcpStream, post: bool, query: &str, body: Vec<u8>)
         }
         let seq = s.as_ref().map_or(0, |x| x.seq) + 1;
         let _ = std::fs::create_dir_all("exports");
-        let _ = std::fs::write(SESSION_FILE, &body);
+        let _ = std::fs::write(session_file(), &body);
         *s = Some(Session { seq, tab, data: body });
         respond(stream, "200 OK", "text/plain; charset=utf-8", &[], seq.to_string().as_bytes());
         return;
@@ -189,6 +199,13 @@ fn handle(stream: TcpStream) {
             }
         }
         "/api/session" => session_route(&mut stream, request_line.starts_with("POST "), query, body),
+        "/api/role" => respond(
+            &mut stream,
+            "200 OK",
+            "text/plain; charset=utf-8",
+            &[],
+            if test_mode() { b"test" } else { b"main" },
+        ),
         "/" | "/index.html" => {
             let page = INDEX_HTML.replace("__BUILD__", BUILD);
             respond(

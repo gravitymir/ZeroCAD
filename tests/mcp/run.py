@@ -2,11 +2,13 @@
 """Интеграционные тесты ZeroCAD через MCP: команды агента и инструменты мыши
 (выдавливание, карман, фаска, текст) на настоящем редакторе в браузере.
 
-Нужны запущенный сервер (cargo run) и открытая вкладка редактора: команды
-выполняет она. ВНИМАНИЕ: тесты заменяют модель во вкладке — сохраните работу.
+Нужны тестовый сервер и открытая вкладка его редактора: команды выполняет
+она. Тестовый сервер (ZEROCAD_TEST=1) держит свой сеанс — модель в общем
+сеансе пользователя тесты не трогают; против обычного сервера run.py не
+запускается (--allow-main — если очень надо).
 
-    python tests/mcp/run.py --yes                     # сервер на :9000
-    python tests/mcp/run.py --yes --url http://127.0.0.1:9001/mcp
+    ZEROCAD_TEST=1 PORT=9012 cargo run               # и открыть http://127.0.0.1:9012
+    python tests/mcp/run.py --yes --url http://127.0.0.1:9012/mcp
     python tests/mcp/run.py --yes -k bevel            # только тесты с «bevel»
 
 Файлы, которые тесты экспортируют в exports/, после прогона удаляются.
@@ -1228,10 +1230,23 @@ def main():
     ap.add_argument('--url', default=URL, help='MCP endpoint, default ' + URL)
     ap.add_argument('--yes', action='store_true', help='confirm that the model in the open tab may be replaced')
     ap.add_argument('-k', default='', help='run only tests whose name contains this text')
+    ap.add_argument('--allow-main', action='store_true',
+                    help='run against a normal (non-test) server — replaces the shared session model of the user')
     a = ap.parse_args()
     URL = a.url
     if not a.yes:
         print('These tests replace the model in the open ZeroCAD tab. Re-run with --yes.')
+        return 2
+    # тесты — только на тестовом сервере (ZEROCAD_TEST=1): у основного общий
+    # сеанс пользователя, и тесты заменяли его модель тестовым кубом
+    base = URL.rsplit('/mcp', 1)[0]
+    try:
+        role = urllib.request.urlopen(base + '/api/role', timeout=10).read().decode().strip()
+    except Exception:
+        role = 'main'   # старый сервер без /api/role — считаем основным
+    if role != 'test' and not a.allow_main:
+        print(f'{base} is not a test server (role: {role}). Start one with ZEROCAD_TEST=1 on its own port, '
+              f'open its page in a browser tab and pass --url; --allow-main skips this check.')
         return 2
     try:
         call('get_state')

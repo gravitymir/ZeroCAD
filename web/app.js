@@ -5074,8 +5074,9 @@ const sliceTool = {
     this.killVisuals();
     try{
       setMeshFromArray(this.snap.pos);
-      applySlice(P, n, this.snap);
+      const dv = applySlice(P, n, this.snap);
       this.committed = true;
+      zcUserStep(this.snap, 'cut_plane', {point: zcArr(P), normal: zcArr(n, 6)}, dv);
     }catch(err){
       this.restore(); warnTip(err.message); return;
     }
@@ -5627,6 +5628,16 @@ const bevelTool = {
     if(!this.apply()){ warnTip('Bevel failed on this edge'); return; }
     pushHistory(this.snap); // одна запись: Ctrl+Z вернёт тело до фаски
     this.committed = true;
+    {
+      const {size, segs} = this.params(), sp = this.snap.pos;
+      const dv = meshVolumeOf(mesh.geometry.attributes.position.array) - meshVolumeOf(sp);
+      if(this.face >= 0)
+        zcUserStep(this.snap, 'bevel_outline', {point: zcArr(zcTriCentroid(sp, this.face)), normal: zcArr(zcTriNormal(sp, this.face), 6),
+          size, segments: segs, outlines: this.loops}, dv);
+      else
+        zcUserStep(this.snap, 'bevel_edges', {points: this.edges.map(ed => zcArr(ed.A.clone().lerp(ed.B, 0.5))),
+          size, segments: segs}, dv);
+    }
     if(!modified){ modified = true; s_mod.textContent = 'yes'; }
     clearEdgeSel(); hideChordHint();
     setActiveTool(null);
@@ -10337,6 +10348,22 @@ function releaseToolInput(){ // фокус обратно на сцену
   if(el && el.tagName === 'INPUT') el.blur();
 }
 function commitExtrude(){
+  // шаг истории: грань одна (не мультивыбор), не лист — как extrude_face
+  let args = null, top0 = null;
+  if(exLive && ppPatch && !(ppParts && ppParts.length > 1) && !exLive.sheet && !zcCmdDepth && !zcReplaying){
+    top0 = undoStack[undoStack.length - 1];
+    if(top0){
+      const t = ppPatch.tris[0];
+      args = {point: zcArr(zcTriCentroid(top0.pos, t)), normal: zcArr(exLive.n, 6),
+              distance: snapMM(+ex_val.value || 0), operation: exOp()};
+      if(exLive.taper && Math.abs(exLive.taper - 1) > 1e-6) args.end_scale = exLive.taper;
+    }
+  }
+  commitExtrudeRun();
+  if(args && !exLive && mesh)
+    zcUserStep(top0, 'extrude_face', args, meshVolumeOf(mesh.geometry.attributes.position.array) - meshVolumeOf(top0.pos));
+}
+function commitExtrudeRun(){
   const noop = exNoOp();
   if(noop){ // бессмысленно — окно остаётся, пользователь поправит
     warnTip(noop === 'cut' ? 'Nothing to cut here' : 'Nothing to add here');
@@ -12047,6 +12074,67 @@ function redo(){
   s_mod.textContent = 'yes';
 }
 
+// ---------- отмена переживает перезагрузку вкладки ----------
+// Пересборка сервера перезагружает вкладку, и Ctrl+Z пустел — нельзя было
+// шагнуть назад по своим правкам. Перед уходом со страницы стеки отмены и
+// повтора пишутся в sessionStorage этой вкладки (что не влезло — старые
+// отбрасываются), после загрузки возвращаются, если общий сеанс с тех пор
+// никто не менял (последней писала эта же вкладка или номер версии тот же)
+const UNDO_KEY = 'zc_undo_v1';
+const zcV = v => [v.x, v.y, v.z], zcVV = a => new THREE.Vector3(a[0], a[1], a[2]);
+function snapToJSON(s){
+  return JSON.stringify({pos: f32ToB64(s.pos instanceof Float32Array ? s.pos : new Float32Array(s.pos)),
+    anchors: (s.anchors || []).map(a => ({pos: zcV(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(zcV), t: a.bend.t, j: a.bend.j} : null})),
+    guides: (s.guides || []).map(g => ({a: zcV(g.a), b: zcV(g.b), noExt: g.noExt, curve: g.curve})),
+    hard: (s.hard || []).map(h => ({a: zcV(h.a), b: zcV(h.b)})), sketches: s.sketches || []});
+}
+function snapFromJSON(o){
+  return {pos: b64ToF32(o.pos),
+    anchors: o.anchors.map(a => ({pos: zcVV(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(zcVV), t: a.bend.t, j: a.bend.j} : null})),
+    guides: o.guides.map(g => ({a: zcVV(g.a), b: zcVV(g.b), noExt: g.noExt, curve: g.curve})),
+    hard: o.hard.map(h => ({a: zcVV(h.a), b: zcVV(h.b)})), sketches: o.sketches};
+}
+function undoSave(){
+  try{
+    if(!HAS_SERVER || !mesh) return;
+    const memo = new Map(), js = s => { if(!memo.has(s)) memo.set(s, snapToJSON(s)); return memo.get(s); };
+    const u = undoStack.slice(), r = redoStack.slice();
+    for(;;){
+      const data = '{"seq":' + sessionSeq + ',"tab":' + JSON.stringify(SESSION_TAB) +
+        ',"undo":[' + u.map(js).join(',') + '],"redo":[' + r.map(js).join(',') + ']}';
+      try{ sessionStorage.setItem(UNDO_KEY, data); return; }
+      catch(e){
+        if(!u.length && !r.length){ sessionStorage.removeItem(UNDO_KEY); return; }
+        if(r.length && r.length >= u.length) r.shift(); else u.shift(); // старые — первыми
+      }
+    }
+  }catch(_){}
+}
+function undoRestore(seq, tab){
+  try{
+    const raw = sessionStorage.getItem(UNDO_KEY);
+    if(!raw) return false;
+    sessionStorage.removeItem(UNDO_KEY);
+    const d = JSON.parse(raw);
+    if(!(tab === d.tab || seq === d.seq)) return false; // сеанс менял кто-то другой
+    undoStack = d.undo.map(snapFromJSON); redoStack = d.redo.map(snapFromJSON);
+    modified = undoStack.length > 0; s_mod.textContent = modified ? 'yes' : 'no';
+    // история проекта загружена при пустом стеке — привязать её к новому верху,
+    // иначе следующая правка мышью свернула бы её в base
+    if(typeof zcHist !== 'undefined' && zcHist.length) zcHistMark();
+    return true;
+  }catch(_){ return false; }
+}
+window.addEventListener('pagehide', () => {
+  undoSave();
+  // правка ещё не ушла в общий сеанс (задержка 0.6 с) — дослать, иначе после
+  // перезагрузки сеанс был бы старее стека отмены
+  if(HAS_SERVER && sessionPending && mesh) try{
+    navigator.sendBeacon('/api/session?tab=' + SESSION_TAB,
+      new Blob([JSON.stringify(Object.assign(projectData(), {name: projectName}))], {type: 'text/plain'}));
+  }catch(_){}
+});
+
 // ---------- подсветка наведённой цепочки ----------
 function setHover(h, isMid){
   hover = h;
@@ -12645,7 +12733,9 @@ async function sessionRestore(){
   try{
     const r = await fetch('/api/session');
     if(r.status !== 200) return false;
-    sessionApply(await r.json(), +r.headers.get('X-Session-Seq') || 0, false);
+    const seq = +r.headers.get('X-Session-Seq') || 0;
+    sessionApply(await r.json(), seq, false);
+    undoRestore(seq, r.headers.get('X-Session-Tab') || '');
     return true;
   }catch(err){ console.warn('session not restored', err); return false; }
 }
@@ -19336,10 +19426,40 @@ function zcHistSync(note){
   zcHist = [{command: 'base', snap: takeSnapshot(), note: note || (zcHist.length ? 'edits outside the history' : 'model without a recipe')}];
   zcHistMark();
 }
+// Правка мышью — тоже шаг истории, как та же команда агента (E по грани —
+// extrude_face, Ctrl+B — bevel_edges / bevel_outline, срез G,S — cut_plane).
+// Раньше первая же правка мышью сворачивала историю в base: шагнуть назад по
+// своим действиям, поменять размер скругления было нельзя. top0 — снимок до
+// правки (верх стека отмены после неё): история согласована с ним — шаг
+// дописывается; нет — история начинается с него как с base
+let zcCmdDepth = 0; // идёт команда агента: её запишет zcRun, не мышь
+function zcUserStep(top0, command, args, change){
+  if(zcReplaying || zcCmdDepth || !top0) return;
+  const u = undoStack.length;
+  if(undoStack[u - 1] !== top0) return; // правка откатилась
+  const before = undoStack[u - 2] || null;
+  const synced = zcHist.length && zcHistFp && zcHistFp.top === before;
+  if(!synced) zcHist = [{command: 'base', snap: top0, note: zcHist.length ? 'edits outside the history' : 'model without a recipe'}];
+  zcHist.push({command, args: JSON.parse(JSON.stringify(args)), status: 'ok', by: 'mouse',
+               change: change == null || !isFinite(change) ? null : +(+change).toFixed(3)});
+  zcHistMark();
+}
+const zcR = (v, d) => +(+v).toFixed(d == null ? 4 : d);
+const zcArr = (v, d) => [zcR(v.x, d), zcR(v.y, d), zcR(v.z, d)];
+function zcTriCentroid(pos, t){
+  return new THREE.Vector3((pos[t*9]+pos[t*9+3]+pos[t*9+6])/3, (pos[t*9+1]+pos[t*9+4]+pos[t*9+7])/3, (pos[t*9+2]+pos[t*9+5]+pos[t*9+8])/3);
+}
+function zcTriNormal(pos, t){
+  const a = new THREE.Vector3(pos[t*9], pos[t*9+1], pos[t*9+2]);
+  const b = new THREE.Vector3(pos[t*9+3], pos[t*9+4], pos[t*9+5]).sub(a);
+  const c = new THREE.Vector3(pos[t*9+6], pos[t*9+7], pos[t*9+8]).sub(a);
+  return b.cross(c).normalize();
+}
 function zcStepInfo(s, i){
   if(s.command === 'base')
     return {index: i, command: 'base', note: s.note, triangles: s.snap.pos.length / 9, status: 'ok'};
   const o = {index: i, command: s.command, args: s.args, status: s.status || 'ok'};
+  if(s.by) o.by = s.by;
   if(s.change != null) o.volume_change_mm3 = s.change;
   return o;
 }
@@ -19383,7 +19503,7 @@ function zcHistToJSON(){
       hard: s.snap.hard.map(h => ({a: v3a(h.a), b: v3a(h.b)})),
       anchors: s.snap.anchors.map(a => ({pos: v3a(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(v3a), t: a.bend.t.slice(), j: a.bend.j} : null})),
       sketches: s.snap.sketches || []}}
-    : {command: s.command, args: s.args, status: s.status || 'ok', change: s.change == null ? null : s.change});
+    : Object.assign({command: s.command, args: s.args, status: s.status || 'ok', change: s.change == null ? null : s.change}, s.by ? {by: s.by} : {}));
 }
 function zcHistFromJSON(list){
   zcHist = (list || []).map(s => s.command === 'base' ? {command: 'base', note: s.note, snap: {
@@ -19391,7 +19511,7 @@ function zcHistFromJSON(list){
       hard: (s.snap.hard || []).map(h => ({a: a3v(h.a), b: a3v(h.b)})),
       anchors: (s.snap.anchors || []).map(a => ({pos: a3v(a.pos), bend: a.bend ? {pts0: a.bend.pts0.map(a3v), t: a.bend.t, j: a.bend.j} : null})),
       sketches: s.snap.sketches || []}}
-    : {command: s.command, args: s.args, status: s.status, change: s.change});
+    : Object.assign({command: s.command, args: s.args, status: s.status, change: s.change}, s.by ? {by: s.by} : {}));
   zcHistAt = new WeakMap(); zcHistAtEmpty = null;
   if(zcHist.length) zcHistMark(); else zcHistFp = null;
 }
@@ -19406,7 +19526,9 @@ async function zcRun(name, args){
   const a = args || {};
   const rec = !zcReplaying && !ZC_NO_RECORD.has(name);
   if(rec && name !== 'new_shape') zcHistSync();
-  const res = await zcExec(name, a);
+  let res;
+  zcCmdDepth++;
+  try{ res = await zcExec(name, a); } finally{ zcCmdDepth--; }
   // отмена агента: история возвращается к шагу, на который вернулась модель
   if(name === 'undo' && !zcReplaying) zcHistSync();
   if(rec){
