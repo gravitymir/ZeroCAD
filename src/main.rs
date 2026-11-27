@@ -3,7 +3,9 @@
 //! браузера); сервер отдаёт его и держит резервный движок csgrs.
 //!
 //!   GET /                    -> страница (web/index.html, вшита в бинарник)
-//!   GET /app.js              -> редактор: ядро, команды, интерфейс
+//!   GET /app.js              -> редактор: команды, интерфейс
+//!   GET /geom.js             -> ядро геометрии: булевы, починка сетки
+//!   GET /geom-worker.js      -> фоновый поток с тем же ядром
 //!   GET /tools.js            -> схема команд для агента (её же вшивает сервер)
 //!   GET /vendor/three.min.js -> three.js r128 (локально: расширениям CDN нельзя)
 //!   GET /api/wheel.stl?...   -> бинарный STL с параметрами из query
@@ -28,6 +30,8 @@ use std::net::{TcpListener, TcpStream};
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
+const GEOM_JS: &str = include_str!("../web/geom.js");
+const GEOM_WORKER_JS: &str = include_str!("../web/geom-worker.js");
 /// Схема команд для агента: тот же файл, что грузит вкладка. Сервер разбирает
 /// его в `agent::embedded_tools()`, чтобы отвечать на `tools/list` без вкладки.
 pub const TOOLS_JS: &str = include_str!("../web/tools.js");
@@ -222,6 +226,20 @@ fn handle(stream: TcpStream) {
             "text/javascript; charset=utf-8",
             &[],
             APP_JS.as_bytes(),
+        ),
+        "/geom.js" => respond(
+            &mut stream,
+            "200 OK",
+            "text/javascript; charset=utf-8",
+            &[],
+            GEOM_JS.as_bytes(),
+        ),
+        "/geom-worker.js" => respond(
+            &mut stream,
+            "200 OK",
+            "text/javascript; charset=utf-8",
+            &[],
+            GEOM_WORKER_JS.as_bytes(),
         ),
         "/tools.js" => respond(
             &mut stream,
