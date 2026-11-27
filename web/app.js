@@ -579,7 +579,7 @@ const snapMM = v => Math.round(v/SNAP)*SNAP;
 // Грани — плоские куски, склеенные изломами мельче 4° (шум и 180 сегментов
 // обода сливаются в одну); кусок того же ребра на той же прямой соседом не
 // считается. Помечает ent.corner
-function markShallowCorners(eMap, pos){
+function markShallowCorners(eMap, pos, ctx){
   const nT = pos.length / 9, par = new Int32Array(nT);
   for(let i=0;i<nT;i++) par[i] = i;
   const root = i => { while(par[i] !== i){ par[i] = par[par[i]]; i = par[i]; } return i; };
@@ -597,9 +597,9 @@ function markShallowCorners(eMap, pos){
     H[t] = L > 0 ? a2 / L : 0; // высота над длинной стороной
     N[t] = a2 > 1e-12 ? n.divideScalar(a2) : n;
     C[t] = P[0].clone().add(P[1]).add(P[2]).multiplyScalar(1/3);
-    keys[t] = P.map(v => keyOf(v.x, v.y, v.z));
+    keys[t] = [ctx.ck[t*3], ctx.ck[t*3+1], ctx.ck[t*3+2]];
   }
-  const edgeOf = (k1, k2) => eMap.get(k1 < k2 ? k1 + '|' + k2 : k2 + '|' + k1);
+  const edgeOf = ctx.edgeOf;
   // грань за иглой t, если смотреть через ребро ent: сосед по самой длинной
   // из двух других сторон; сам игла — нет ответа
   const behind = (t, ent) => {
@@ -608,7 +608,7 @@ function markShallowCorners(eMap, pos){
       const k1 = keys[t][j], k2 = keys[t][(j+1)%3];
       const e = edgeOf(k1, k2);
       if(!e || e === ent || e.tris.length !== 2) continue;
-      const L = e.A.distanceTo(e.B);
+      const L = e.len;
       if(L > bl){ bl = L; best = e.tris[0] === t ? e.tris[1] : e.tris[0]; }
     }
     return best >= 0 && !needle[best] ? best : -1;
@@ -639,7 +639,7 @@ function markShallowCorners(eMap, pos){
   };
   const cand = [];
   for(const ent of eMap.values()){
-    if(ent.normals.length !== 2 || ent.tris.length !== 2) continue;
+    if(ent.tris.length !== 2) continue;
     const [t0, t1] = ent.tris;
     const n0 = effN[t0], n1 = effN[t1];
     if(n0 && n1 && n0.dot(n1) > foldCos(t0, t1)){ const r1 = root(t0), r2 = root(t1); if(r1 !== r2) par[r1] = r2; continue; }
@@ -648,13 +648,13 @@ function markShallowCorners(eMap, pos){
   const V = new THREE.Vector3();
   const byPatch = new Map(), info = [];
   for(const ent of cand){
-    const L = ent.A.distanceTo(ent.B);
+    const L = ent.len;
     if(!(L > 0.2)) continue;
     let [t0, t1] = ent.tris;
     // у иглы две стороны лежат на линии угла — рисуем одну, самую длинную
     const longest = t => {
       let bl = 0;
-      for(let j=0;j<3;j++){ const e = edgeOf(keys[t][j], keys[t][(j+1)%3]); if(e) bl = Math.max(bl, e.A.distanceTo(e.B)); }
+      for(let j=0;j<3;j++){ const e = edgeOf(keys[t][j], keys[t][(j+1)%3]); if(e) bl = Math.max(bl, e.len); }
       return L >= bl - 1e-6;
     };
     if((needle[t0] && !longest(t0)) || (needle[t1] && !longest(t1))) continue;
@@ -989,50 +989,83 @@ function extractEdgesCore(){
   setHover(null);
   if(!mesh) return;
   const pos = mesh.geometry.attributes.position.array;
-  const eMap = new Map(); // "ka|kb" -> {ka,kb,A,B,normals:[]}
+  const nT = pos.length / 9;
+  // Плоские массивы вместо объектов: прежний разбор создавал Vector3 на
+  // каждую нормаль треугольника и по клону концов и нормалей на каждое
+  // ребро (на 17 тысячах треугольников ~120 тысяч объектов). Теперь нормали
+  // лежат в triN, вершины — номерами (ключ вершины считается раз на угол
+  // треугольника, а не дважды), ребро — запись с номером треугольника и
+  // стороны; концы A/B читаются из сетки, только когда нужны (видимых рёбер —
+  // единицы процентов)
+  const ck = new Array(nT * 3), cv = new Int32Array(nT * 3);
+  const vId = new Map();
+  let nV = 0;
+  for(let c=0;c<nT*3;c++){
+    const o = c * 3, k = keyOf(pos[o], pos[o+1], pos[o+2]);
+    let id = vId.get(k);
+    if(id === undefined){ id = nV++; vId.set(k, id); }
+    ck[c] = k; cv[c] = id;
+  }
+  const triN = new Float64Array(nT * 3);
+  class Edge {
+    constructor(ka, kb, t, e){ this.ka = ka; this.kb = kb; this.t = t; this.e = e; this.tris = []; this._A = null; this._B = null; }
+    get A(){ return this._A || (this._A = new THREE.Vector3().fromArray(pos, this.t*9 + this.e*3)); }
+    get B(){ return this._B || (this._B = new THREE.Vector3().fromArray(pos, this.t*9 + ((this.e+1)%3)*3)); }
+    get len(){
+      const o = this.t*9 + this.e*3, q = this.t*9 + ((this.e+1)%3)*3;
+      const dx = pos[q]-pos[o], dy = pos[q+1]-pos[o+1], dz = pos[q+2]-pos[o+2];
+      return Math.sqrt(dx*dx + dy*dy + dz*dz);
+    }
+  }
+  const eMap = new Map(); // номер пары вершин -> Edge
   vertTris = new Map();
-  const a=new THREE.Vector3(), b=new THREE.Vector3(), c=new THREE.Vector3(),
-        ab=new THREE.Vector3(), ac=new THREE.Vector3();
-  for(let i=0;i<pos.length;i+=9){
-    a.fromArray(pos,i); b.fromArray(pos,i+3); c.fromArray(pos,i+6);
-    ab.subVectors(b,a); ac.subVectors(c,a);
-    const n = new THREE.Vector3().crossVectors(ab,ac);
+  for(let t=0;t<nT;t++){
+    const i = t * 9;
+    const abx = pos[i+3]-pos[i], aby = pos[i+4]-pos[i+1], abz = pos[i+5]-pos[i+2];
+    const acx = pos[i+6]-pos[i], acy = pos[i+7]-pos[i+1], acz = pos[i+8]-pos[i+2];
+    const nx = aby*acz - abz*acy, ny = abz*acx - abx*acz, nz = abx*acy - aby*acx;
+    const nl = Math.sqrt(nx*nx + ny*ny + nz*nz);
     // вырожденный треугольник (две вершины совпали после врезки хорды) —
     // не грань: его «нормаль» добавляла ребру третью грань, и посреди
     // круга рисовалось лишнее режущее ребро
-    if(n.length() < 1e-6) continue;
-    n.normalize();
-    const vs=[a,b,c];
+    if(nl < 1e-6) continue;
+    triN[t*3] = nx / nl; triN[t*3+1] = ny / nl; triN[t*3+2] = nz / nl;
     for(let e=0;e<3;e++){
-      const P=vs[e], Q=vs[(e+1)%3];
-      const kp=keyOf(P.x,P.y,P.z), kq=keyOf(Q.x,Q.y,Q.z);
+      const cp = t*3 + e, cq = t*3 + (e+1)%3;
+      const kp = ck[cp];
       let vt = vertTris.get(kp);
       if(!vt){ vt=[]; vertTris.set(kp, vt); }
-      vt.push(i/9);
-      if(kp===kq) continue;
-      const ek = kp<kq ? kp+'|'+kq : kq+'|'+kp;
+      vt.push(t);
+      const ip = cv[cp], iq = cv[cq];
+      if(ip === iq) continue;
+      const ek = ip < iq ? ip * nV + iq : iq * nV + ip;
       let ent = eMap.get(ek);
-      if(!ent){ ent={ka:kp,kb:kq,A:P.clone(),B:Q.clone(),normals:[],tris:[]}; eMap.set(ek,ent); }
-      ent.normals.push(n.clone());
-      ent.tris.push(i/9);
+      if(!ent){ ent = new Edge(kp, ck[cq], t, e); eMap.set(ek, ent); }
+      ent.tris.push(t);
     }
   }
-  markShallowCorners(eMap, pos);
+  const nDot = (t0, t1) => triN[t0*3]*triN[t1*3] + triN[t0*3+1]*triN[t1*3+1] + triN[t0*3+2]*triN[t1*3+2];
+  const edgeOf = (k1, k2) => {
+    const a = vId.get(k1), b = vId.get(k2);
+    return a === undefined || b === undefined ? undefined : eMap.get(a < b ? a * nV + b : b * nV + a);
+  };
+  markShallowCorners(eMap, pos, {ck, edgeOf});
   // видимые рёбра: граница или излом
   const feats=[], microSkipped=[];
   for(const ent of eMap.values()){
-    let dt = ent.normals.length===2 ? ent.normals[0].dot(ent.normals[1]) : -1;
+    const tr = ent.tris, nn = tr.length;
+    let dt = nn===2 ? nDot(tr[0], tr[1]) : -1;
     // три и больше треугольника на ребре, но все в одной плоскости и смотрят
     // в одну сторону (перекрывающиеся осколки врезки) — складки нет, ребро
     // не видимое; стык листа с гранью (разные плоскости) остаётся ребром
-    if(ent.normals.length >= 3 && ent.normals.every(nn => nn.dot(ent.normals[0]) > 0.9999)) dt = 1;
-    const coplanarMany = ent.normals.length >= 3 && dt === 1;
+    if(nn >= 3 && tr.every(t => nDot(t, tr[0]) > 0.9999)) dt = 1;
+    const coplanarMany = nn >= 3 && dt === 1;
     // микро-излом рельефа (текстура по поверхности, накатка): ребро короче
     // 0.75 мм с изломом мельче 60° — не ребро детали, а шаг рельефа; рисовать
     // их — тёмная сетка по всей поверхности. Настоящие рёбра (угол куба 90°,
     // стенки букв и узоров) остаются
-    const micro = ent.normals.length === 2 && dt > MICRO_COS && ent.A.distanceTo(ent.B) < 0.75;
-    if((ent.normals.length!==2 && !coplanarMany) || (dt < FEATURE_COS && !micro)
+    const micro = nn === 2 && dt > MICRO_COS && ent.len < 0.75;
+    if((nn!==2 && !coplanarMany) || (dt < FEATURE_COS && !micro)
        || (ent.corner && !micro)
        || (hardEdges.length && dt < 0.99999 && onHardEdge(ent.A, ent.B))){ ent.feat = true; feats.push(ent); }
     else if(micro && (dt < FEATURE_COS || ent.corner)){ ent.dt = dt; microSkipped.push(ent); }
@@ -1053,7 +1086,7 @@ function extractEdgesCore(){
         if(ent.feat) continue;
         const d = dirOf(ent);
         const ok = [ent.ka, ent.kb].some(k => (byV.get(k) || []).some(f =>
-          f.normals.length === 2 && Math.abs(f.dt - ent.dt) < 0.02 && Math.abs(dirOf(f).dot(d)) > 0.9995));
+          f.tris.length === 2 && Math.abs(f.dt - ent.dt) < 0.02 && Math.abs(dirOf(f).dot(d)) > 0.9995));
         if(ok){ ent.feat = true; feats.push(ent); addV(ent); changed = true; }
       }
     }
