@@ -8428,7 +8428,7 @@ function showFacePalette(){
   tipHide(); // информация объекта — в шапке палитры
   // точки центров при простом выборе грани не показываем (только в
   // инструментах, где центр — снап-цель: линия, точка, окружность, текст)
-  // информация в столбик: тип, сторона (у квадрата), площадь
+  // информация в столбик: тип, стороны, площадь
   const areaStr = ppPatch && ppPatch.area
     ? (Math.round(ppPatch.area*10)/10) + ' mm²' : null;
   let info = 'Face' + (areaStr ? '<br>' + areaStr : '');
@@ -8437,9 +8437,11 @@ function showFacePalette(){
   else if(ppPatch && ppPatch.rectDims){
     const [a, b] = ppPatch.rectDims;
     const area = (Math.round(a*b*10)/10).toString();
+    // одной площади мало: по 246 mm² не скажешь, это 123 × 2 или 41 × 6
+    const sides = Math.max(a, b).toFixed(1) + ' × ' + Math.min(a, b).toFixed(1) + ' mm';
     info = Math.abs(a - b) < 0.05
       ? 'Square<br>side ' + a.toFixed(1) + ' mm<br>' + area + ' mm²'
-      : 'Rectangle<br>' + area + ' mm²';
+      : 'Rectangle<br>' + sides + '<br>' + area + ' mm²';
   }
   const vr = view.getBoundingClientRect();
   // размеры — данные, видны всегда; команды — подсказка, гасится флагом
