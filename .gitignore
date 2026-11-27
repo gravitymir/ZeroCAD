@@ -22,3 +22,4 @@ debug
 
 # STL, выгруженные агентом через MCP (export_stl)
 /exports
+/target_test

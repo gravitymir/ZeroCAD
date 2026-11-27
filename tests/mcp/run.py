@@ -880,6 +880,24 @@ def post_corner_gets_a_torus():
 
 
 @case
+def corner_rounds_the_whole_edge():
+    # Ребро пола разрезано вершиной (линия по дну от стенки до стенки):
+    # скругление угла брало кусок до этой вершины — из углов торчали
+    # «корешки». Теперь куски по прямой между теми же гранями склеены —
+    # объём как у стакана без линии
+    seg = lambda r: r * r - 0.5 * r * r * 8 * math.sin(math.pi / 16)
+    call('new_shape', {'shape': 'cube', 'size': 20})
+    b = lambda z: [[5, 5, z], [15, 5, z], [15, 15, z], [5, 15, z]]
+    call('loft_profiles', {'profile_a': b(10), 'profile_b': b(21), 'operation': 'cut'})
+    call('draw_line', {'from': [10, 5, 10], 'to': [10, 15, 10]})
+    d = call('bevel_edges', {'vertices': [[5, 5, 10], [15, 5, 10], [15, 15, 10], [5, 15, 10]], 'size': 2, 'segments': 8})
+    closed(d, 'cup with a line on the floor')
+    assert len(d['edges']) == 8 and all(e['edge_length_mm'] in (10, 10.0) for e in d['edges'][:4] if e['edge_length_mm'] < 11), d['edges']
+    want = seg(2) * (4 * 6 + 4 * 8) + 4 * (8 - math.pi * 8 / 6)
+    near(d['volume_change_mm3'], want, want * 0.03, 'whole floor edges rounded')
+
+
+@case
 def bevel_suggests_a_working_size():
     # слишком большое скругление: Ctrl+B не принимает его, а агенту называет
     # самый большой рабочий размер (стакан 10 мм: шарики с двух концов ребра
