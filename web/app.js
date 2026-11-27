@@ -9601,17 +9601,31 @@ function tidySlivers(maxLen = 0.05){
     base = mesh.geometry.attributes.position.array;
   }
   // 2) схлопывание коротких рёбер и переворот щепок — эти правки объём
-  // менять не должны
-  const v0 = meshVolumeOf(base), baseKeep = base.slice();
-  const out = flipNeedles(collapseShortEdges(base, maxLen));
-  if(out !== base){
+  // менять не должны. Одного прохода мало: щепки стоят цепочками, и соседняя
+  // становится схлопываемой только после того, как ушла первая — на плитке со
+  // скруглёнными углами и надписью 14288 -> 3526 -> 408 -> 6
+  const v0 = meshVolumeOf(base);
+  // допуск по объёму — доля от размера детали. Схлопывание двигает вершину не
+  // дальше maxLen, но объём меняют не убранные щепки (они плоские), а соседние
+  // настоящие треугольники, так что ни число щепок, ни их площадь сдвиг не
+  // ограничивают — ограничивает размер детали. Замеры: плитка 213×23×0.8 с
+  // надписью — 0.34 мм³ на 5188 (0.007 %), она же толщиной 5 — 2.13 на 25703
+  // (0.008 %). Прежние 1e-6 откатывали чистку целиком; 5e-4 их пропускает и
+  // всё ещё ловит потерю канавки (565 мм³ на колесе Ø140 против порога 70)
+  const tol = Math.max(0.05, Math.abs(v0) * 5e-4);
+  let lastGood = base.slice();
+  for(let pass = 0; pass < 6; pass++){
+    const cur = mesh.geometry.attributes.position.array;
+    const out = flipNeedles(collapseShortEdges(cur, maxLen));
+    if(out === cur) break;
     setMeshFromArray(out);
     cleanupMesh();
-    // допуск по объёму — от размера детали: у колеса Ø140 это 0.14 мм³ при
-    // канавке в 565 мм³, то есть заметное изменение всё равно откатится
-    const tol = Math.max(0.05, Math.abs(v0) * 1e-6);
-    if(worse() || Math.abs(meshVolumeOf(mesh.geometry.attributes.position.array) - v0) > tol)
-      setMeshFromArray(baseKeep);
+    const now = mesh.geometry.attributes.position.array;
+    if(worse() || Math.abs(meshVolumeOf(now) - v0) > tol){
+      setMeshFromArray(lastGood);
+      break;
+    }
+    lastGood = now.slice();
   }
   const pos = mesh.geometry.attributes.position.array;
   return pos.length === nBefore ? 0 : Math.max(1, (nBefore - pos.length) / 9);

@@ -1408,6 +1408,39 @@ def long_text_keeps_the_mesh_clean():
 
 
 @case
+def text_on_a_rounded_plate_is_cleaned_too():
+    # Та же надпись на плитке со СКРУГЛЁННЫМИ углами оставляла 14288 щепок:
+    # чистку откатывал допуск по объёму (честные 0.34 мм³ на детали в 5188),
+    # и одного прохода всё равно не хватало — щепки стоят цепочками
+    import math
+
+    def rounded(cx, cy, w, h, r, n=10):
+        pts = []
+        x0, x1, y0, y1 = cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2
+        for ccx, ccy, a0 in [(x1 - r, y1 - r, 0), (x0 + r, y1 - r, 90),
+                             (x0 + r, y0 + r, 180), (x1 - r, y0 + r, 270)]:
+            for i in range(n + 1):
+                a = math.radians(a0 + 90 * i / n)
+                pts.append([round(ccx + r * math.cos(a), 3),
+                            round(ccy + r * math.sin(a), 3), 0.0])
+        out = [pts[0]]
+        for q in pts[1:]:
+            if abs(q[0] - out[-1][0]) > 1e-6 or abs(q[1] - out[-1][1]) > 1e-6:
+                out.append(q)
+        return out
+
+    for thick in (0.8, 5.0):
+        call('new_shape', {'shape': 'cube', 'size': 20})
+        call('sweep_profile', {'profile': rounded(106.5, 11.5, 213, 23, 4),
+                               'path': [[0, 0, 0], [0, 0, thick]], 'operation': 'new'})
+        d = call('add_text', {'center': [106.5, 11.5, thick], 'normal': [0, 0, 1],
+                              'text': 'CLIFFORDS BAR', 'height': 19, 'depth': 0.4})
+        closed(d, 'rounded plate %g' % thick)
+        assert d['slivers'] < 100, (thick, d['slivers'])
+        assert d['triangles'] < 15000, (thick, d['triangles'])
+
+
+@case
 def export_glb_for_three_js():
     # GLB: метры вместо миллиметров, Y вверх; имена узлов — контракт с IEGarage
     call('new_shape', {'shape': 'cube', 'size': 400})
