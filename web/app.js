@@ -10026,55 +10026,125 @@ function healCoplanarOverlaps(){
 
 // Т-стыки после подрезки: цельное ребро с одной стороны против двух кусков
 // с другой. Делим ребро по чужой вершине, пока сетка не сойдётся.
+// За вызов — не больше 16 делений, порядок тот же, что у прежнего перебора:
+// первое граничное ребро по порядку треугольников, на нём — вершина,
+// встретившаяся в сетке раньше всех. Прежде каждое деление заново строило
+// карты всей сетки, сверяло граничное ребро со ВСЕМИ вершинами и
+// пересобирало геометрию (нормали): на фаске полки 0.7 с на вызов, а
+// вызовов десятки. Теперь карты строятся раз, вершины ищутся по сетке
+// корзин, а после деления перебор продолжается с того же треугольника:
+// раньше по порядку нового граничного ребра не появляется (деление лишь
+// убирает разделённое ребро и добавляет два куска на этом месте), а
+// вершины не добавляются. Геометрия собирается один раз в конце
 function healTJunctions(){
-  for(let guard=0; guard<16; guard++){
-    const pos = mesh.geometry.attributes.position.array;
-    const nT = pos.length/9;
-    const verts = new Map();
-    for(let i=0;i<pos.length;i+=3)
-      verts.set(keyOf(pos[i],pos[i+1],pos[i+2]), [pos[i],pos[i+1],pos[i+2]]);
-    const cnt = new Map();
-    for(let t=0;t<nT;t++) for(let e=0;e<3;e++){
-      const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
-      const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
-      const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
-      cnt.set(ek,(cnt.get(ek)||0)+1);
-    }
-    let split = null; // {t, e, v}
-    outer:
-    for(let t=0;t<nT;t++){
-      for(let e=0;e<3;e++){
-        const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
-        const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
-        const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
-        if(cnt.get(ek) !== 1) continue; // только граничные
-        const A=[pos[o1],pos[o1+1],pos[o1+2]], B=[pos[o2],pos[o2+1],pos[o2+2]];
-        const ab=[B[0]-A[0],B[1]-A[1],B[2]-A[2]];
-        const L2 = ab[0]*ab[0]+ab[1]*ab[1]+ab[2]*ab[2];
-        if(L2 < 1e-9) continue;
-        for(const [k, v] of verts){
-          if(k===k1 || k===k2) continue;
-          const tp = ((v[0]-A[0])*ab[0]+(v[1]-A[1])*ab[1]+(v[2]-A[2])*ab[2])/L2;
-          if(tp <= 1e-3 || tp >= 1-1e-3) continue;
-          const qx=A[0]+ab[0]*tp, qy=A[1]+ab[1]*tp, qz=A[2]+ab[2]*tp;
-          if(Math.hypot(v[0]-qx, v[1]-qy, v[2]-qz) > 0.01) continue;
-          split = {t, e, v};
-          break outer;
-        }
+  const pos = mesh.geometry.attributes.position.array;
+  const nT0 = pos.length / 9;
+  // треугольники — смещения в буфере: исходные на своих местах, новые в хвосте
+  const buf = new Float32Array(pos.length + 16 * 18);
+  buf.set(pos);
+  let bufLen = pos.length;
+  const tris = new Array(nT0);
+  for(let t=0;t<nT0;t++) tris[t] = t * 9;
+  const vId = new Map(), vLast = [], vFirst = [];
+  const cid = new Int32Array(buf.length / 3);
+  for(let c=0;c<nT0*3;c++){
+    const o = c * 3, k = keyOf(buf[o], buf[o+1], buf[o+2]);
+    let id = vId.get(k);
+    if(id === undefined){ id = vLast.length; vId.set(k, id); vLast.push(o); vFirst.push(c); }
+    else vLast[id] = o;
+    cid[c] = id;
+  }
+  const nV = vLast.length;
+  const VX = new Float64Array(nV * 3); // координаты вершины — по последнему вхождению
+  for(let i=0;i<nV;i++){ VX[i*3] = buf[vLast[i]]; VX[i*3+1] = buf[vLast[i]+1]; VX[i*3+2] = buf[vLast[i]+2]; }
+  const ek = (i, j) => i < j ? i * nV + j : j * nV + i;
+  const cnt = new Map();
+  for(let t=0;t<nT0;t++) for(let e=0;e<3;e++){
+    const k = ek(cid[t*3+e], cid[t*3+(e+1)%3]);
+    cnt.set(k, (cnt.get(k) || 0) + 1);
+  }
+  // корзины вершин
+  const H = 1, grid = new Map(), gk = (x, y, z) => (x * 73856093) ^ (y * 19349663) ^ (z * 83492791);
+  for(let i=0;i<nV;i++){
+    const k = gk(Math.floor(VX[i*3] / H), Math.floor(VX[i*3+1] / H), Math.floor(VX[i*3+2] / H));
+    let l = grid.get(k); if(!l) grid.set(k, l = []); l.push(i);
+  }
+  const candOn = (A, B, i1, i2) => {
+    const abx = B[0]-A[0], aby = B[1]-A[1], abz = B[2]-A[2];
+    const L2 = abx*abx + aby*aby + abz*abz;
+    if(L2 < 1e-9) return -1;
+    const R = 0.011;
+    const x0 = Math.floor((Math.min(A[0], B[0]) - R) / H), x1 = Math.floor((Math.max(A[0], B[0]) + R) / H);
+    const y0 = Math.floor((Math.min(A[1], B[1]) - R) / H), y1 = Math.floor((Math.max(A[1], B[1]) + R) / H);
+    const z0 = Math.floor((Math.min(A[2], B[2]) - R) / H), z1 = Math.floor((Math.max(A[2], B[2]) + R) / H);
+    const test = i => {
+      if(i === i1 || i === i2) return false;
+      const vx = VX[i*3], vy = VX[i*3+1], vz = VX[i*3+2];
+      const tp = ((vx-A[0])*abx + (vy-A[1])*aby + (vz-A[2])*abz) / L2;
+      if(tp <= 1e-3 || tp >= 1-1e-3) return false;
+      const qx = A[0]+abx*tp, qy = A[1]+aby*tp, qz = A[2]+abz*tp;
+      return Math.hypot(vx-qx, vy-qy, vz-qz) <= 0.01;
+    };
+    let best = -1;
+    const take = i => { if(test(i) && (best < 0 || vFirst[i] < vFirst[best])) best = i; };
+    if((x1-x0+1) * (y1-y0+1) * (z1-z0+1) > 4096){ for(let i=0;i<nV;i++) take(i); }
+    else {
+      const seen = new Set();
+      for(let x=x0;x<=x1;x++) for(let y=y0;y<=y1;y++) for(let z=z0;z<=z1;z++){
+        const l = grid.get(gk(x, y, z));
+        if(l) for(const i of l){ if(!seen.has(i)){ seen.add(i); take(i); } }
       }
     }
-    if(!split) break;
+    return best;
+  };
+  // первое вхождение вершин в новом порядке: деление вставляет углы на место
+  // треугольника, и вершина могла впервые встретиться раньше
+  const refreshFirst = () => {
+    vFirst.fill(Infinity);
+    let c = 0;
+    for(const o of tris){ for(let j=0;j<3;j++, c++){ const i = cid[o/3 + j]; if(c < vFirst[i]) vFirst[i] = c; } }
+  };
+  let splits = 0, t = 0;
+  const A = [0, 0, 0], B = [0, 0, 0];
+  while(splits < 16 && t < tris.length){
+    let hit = null;
+    for(; t < tris.length && !hit; t++){
+      const o = tris[t], c0 = o / 3;
+      for(let e=0;e<3;e++){
+        const i1 = cid[c0+e], i2 = cid[c0+(e+1)%3];
+        if(cnt.get(ek(i1, i2)) !== 1) continue; // только граничные
+        const o1 = o + e*3, o2 = o + ((e+1)%3)*3;
+        A[0] = buf[o1]; A[1] = buf[o1+1]; A[2] = buf[o1+2];
+        B[0] = buf[o2]; B[1] = buf[o2+1]; B[2] = buf[o2+2];
+        const v = candOn(A, B, i1, i2);
+        if(v >= 0){ hit = {e, v}; break; }
+      }
+      if(hit) break;
+    }
+    if(!hit) break;
     // делим треугольник по точке на ребре
-    const {t, e, v} = split;
-    const o = t*9;
-    const V = [[pos[o],pos[o+1],pos[o+2]],[pos[o+3],pos[o+4],pos[o+5]],[pos[o+6],pos[o+7],pos[o+8]]];
+    const o = tris[t], c0 = o / 3, {e, v} = hit;
     const a = e, b = (e+1)%3, c = (e+2)%3;
-    const out = new Float32Array(pos.length + 9);
-    out.set(pos.subarray(0, o));
-    out.set([...V[a], ...v, ...V[c],  ...v, ...V[b], ...V[c]], o);
-    out.set(pos.subarray(o+9), o+18);
-    setMeshFromArray(out);
+    const ia = cid[c0+a], ib = cid[c0+b], ic = cid[c0+c];
+    const Vc = k => [buf[o+k*3], buf[o+k*3+1], buf[o+k*3+2]];
+    const vv = [VX[v*3], VX[v*3+1], VX[v*3+2]];
+    const n1 = bufLen, n2 = bufLen + 9;
+    buf.set([...Vc(a), ...vv, ...Vc(c), ...vv, ...Vc(b), ...Vc(c)], bufLen);
+    bufLen += 18;
+    cid[n1/3] = ia; cid[n1/3+1] = v; cid[n1/3+2] = ic;
+    cid[n2/3] = v; cid[n2/3+1] = ib; cid[n2/3+2] = ic;
+    for(const [x, y, d] of [[ia, ib, -1], [ib, ic, -1], [ic, ia, -1], [ia, v, 1], [v, ic, 1], [ic, ia, 1], [v, ib, 1], [ib, ic, 1], [ic, v, 1]]){
+      const k = ek(x, y), n = (cnt.get(k) || 0) + d;
+      if(n) cnt.set(k, n); else cnt.delete(k);
+    }
+    tris.splice(t, 1, n1, n2);
+    splits++;
+    refreshFirst();
   }
+  if(!splits) return;
+  const out = new Float32Array(tris.length * 9);
+  for(let i=0;i<tris.length;i++) out.set(buf.subarray(tris[i], tris[i] + 9), i * 9);
+  setMeshFromArray(out);
 }
 
 // «Антиматерия»: выдавливание, прошедшее сквозь тело в пустоту, оставляет
@@ -11518,6 +11588,23 @@ function collapseCollinearVertices(){
   const protectedPts = [];
   for(const g of guides) protectedPts.push(g.a, g.b);
   for(const a of anchors) protectedPts.push(a.pos);
+  // концы линий — по корзинам 0.02 мм: перебор всех концов на каждую вершину
+  // (260 линий полки × 7 тысяч вершин) занимал почти всю чистку после фаски
+  const PC = 0.02, pGrid = new Map(), pk = (x, y, z) => x + ',' + y + ',' + z;
+  for(const P of protectedPts){
+    const k = pk(Math.floor(P.x / PC), Math.floor(P.y / PC), Math.floor(P.z / PC));
+    let l = pGrid.get(k); if(!l) pGrid.set(k, l = []); l.push(P);
+  }
+  const isProtected = v => {
+    const x0 = Math.floor((v.x - 0.01) / PC), x1 = Math.floor((v.x + 0.01) / PC);
+    const y0 = Math.floor((v.y - 0.01) / PC), y1 = Math.floor((v.y + 0.01) / PC);
+    const z0 = Math.floor((v.z - 0.01) / PC), z1 = Math.floor((v.z + 0.01) / PC);
+    for(let x=x0;x<=x1;x++) for(let y=y0;y<=y1;y++) for(let z=z0;z<=z1;z++){
+      const l = pGrid.get(pk(x, y, z));
+      if(l && l.some(P => P.distanceToSquared(v) < 1e-4)) return true;
+    }
+    return false;
+  };
   const V = (arr, o) => new THREE.Vector3(arr[o], arr[o+1], arr[o+2]);
   let total = 0;
   for(let pass=0; pass<20; pass++){
@@ -11536,7 +11623,7 @@ function collapseCollinearVertices(){
     for(const [vk, ve] of verts){
       if(ve.tris.some(r => touched[r.t])) continue;
       const v = ve.p;
-      if(protectedPts.some(P => P.distanceToSquared(v) < 1e-4)) continue;
+      if(isProtected(v)) continue;
       // соседи
       const nb = new Map();
       for(const r of ve.tris) for(let j=0;j<3;j++){
