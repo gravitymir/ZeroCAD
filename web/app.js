@@ -8058,6 +8058,33 @@ function segCross2(a,b,c,d){
 // связная копланарная грань вокруг треугольника.
 // Заливка идёт по общим РЁБРАМ и не пересекает направляющие («Линия»),
 // лежащие в плоскости грани, — хорда режет грань на области, как в SketchUp.
+// Карта «ребро -> треугольники» по всей сетке. Строится 20 мс на 17 тысячах
+// треугольников и не зависит от того, какую грань спросили, а facePatchAt
+// строил её заново на каждый вызов. paintResolve зовёт facePatchAt по разу
+// на каждую покрашенную область: 262 краски давали 262 перестроя и 3.9 с на
+// КАЖДУЮ команду (extractEdges идёт после любой правки сетки).
+// Кэш сбрасывается сам: подмена геометрии даёт новый атрибут, а правка
+// массива на месте поднимает version (все пять таких мест ставят needsUpdate).
+let edgeAdjCache = {attr: null, ver: -1, map: null};
+function edgeAdjacency(pos){
+  const attr = mesh && mesh.geometry.attributes.position;
+  const live = attr && attr.array === pos;
+  if(live && edgeAdjCache.attr === attr && edgeAdjCache.ver === attr.version)
+    return edgeAdjCache.map;
+  const map = new Map();
+  for(let t = 0, n = pos.length/9; t < n; t++){
+    for(let e = 0; e < 3; e++){
+      const o1 = t*9+e*3, o2 = t*9+((e+1)%3)*3;
+      const k1 = keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2 = keyOf(pos[o2],pos[o2+1],pos[o2+2]);
+      const ek = k1 < k2 ? k1+'|'+k2 : k2+'|'+k1;
+      let arr = map.get(ek);
+      if(!arr){ arr = []; map.set(ek, arr); }
+      arr.push(t);
+    }
+  }
+  edgeAdjCache = live ? {attr, ver: attr.version, map} : {attr: null, ver: -1, map: null};
+  return map;
+}
 function facePatchAt(triIdx, reseeded, plane){
   const pos = mesh.geometry.attributes.position.array;
   // клик пришёлся в осколок-иглу: его нормаль неточна, и плоскость грани от
@@ -8123,17 +8150,9 @@ function facePatchAt(triIdx, reseeded, plane){
     const eLen = tB - tA;
     return Math.min(tB, L) - Math.max(tA, 0) > Math.min(0.04, eLen*0.45);
   };
-  // смежность по рёбрам
-  const eAdj = new Map();
+  // смежность по рёбрам — одна на всю сетку, от спрошенной грани не зависит
+  const eAdj = edgeAdjacency(pos);
   const triCount = pos.length/9;
-  for(let t=0;t<triCount;t++){
-    for(let e=0;e<3;e++){
-      const o1=t*9+e*3, o2=t*9+((e+1)%3)*3;
-      const k1=keyOf(pos[o1],pos[o1+1],pos[o1+2]), k2=keyOf(pos[o2],pos[o2+1],pos[o2+2]);
-      const ek = k1<k2 ? k1+'|'+k2 : k2+'|'+k1;
-      let arr=eAdj.get(ek); if(!arr){arr=[];eAdj.set(ek,arr);} arr.push(t);
-    }
-  }
   const cent2 = t => {
     const o=t*9;
     return to2((pos[o]+pos[o+3]+pos[o+6])/3, (pos[o+1]+pos[o+4]+pos[o+7])/3, (pos[o+2]+pos[o+5]+pos[o+8])/3);
