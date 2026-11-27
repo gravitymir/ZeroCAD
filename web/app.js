@@ -14049,24 +14049,94 @@ function buildSTEP(){
     "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));",
     'ENDSEC;', 'DATA;', ...L, 'ENDSEC;', 'END-ISO-10303-21;', ''].join('\n');
 }
-function exportAs(kind){
-  if(!mesh) return;
-  if(kind === 'stl') downloadBlob(new Blob([buildSTL()], {type: 'model/stl'}), projectName + '.stl');
-  if(kind === 'obj') downloadBlob(new Blob([buildOBJ()], {type: 'text/plain'}), projectName + '.obj');
-  if(kind === '3mf') downloadBlob(new Blob([build3MF()], {type: 'model/3mf'}), projectName + '.3mf');
+// Все форматы, в которые программа пишет, — одним списком: кнопки Export и
+// окно Ctrl+Shift+S берут его отсюда
+const SAVE_FORMATS = [
+  {kind: 'zcad', ext: '.zcad', mime: 'application/json', desc: 'ZeroCAD project (.zcad)'},
+  {kind: '3mf', ext: '.3mf', mime: 'model/3mf', desc: '3MF — slicers, with colours and the project inside'},
+  {kind: 'stl', ext: '.stl', mime: 'model/stl', desc: 'STL — binary, millimetres'},
+  {kind: 'step', ext: '.step', mime: 'application/step', desc: 'STEP — faceted solid'},
+  {kind: 'obj', ext: '.obj', mime: 'text/plain', desc: 'OBJ — Wavefront'},
+  {kind: 'glb', ext: '.glb', mime: 'model/gltf-binary', desc: 'GLB — glTF 2.0'},
+];
+// данные файла формата kind; null — нельзя (причину уже показали)
+function exportBlob(kind){
+  if(!mesh) return null;
+  const f = SAVE_FORMATS.find(f => f.kind === kind);
+  if(kind === 'zcad') return new Blob([JSON.stringify(projectData())], {type: f.mime});
+  if(kind === 'stl') return new Blob([buildSTL()], {type: f.mime});
+  if(kind === 'obj') return new Blob([buildOBJ()], {type: f.mime});
+  if(kind === '3mf') return new Blob([build3MF()], {type: f.mime});
   if(kind === 'glb'){
-    try{ downloadBlob(new Blob([exportGLB()], {type: 'model/gltf-binary'}), projectName + '.glb'); }
-    catch(err){ warnTip('GLB: ' + err.message); }
+    try{ return new Blob([exportGLB()], {type: f.mime}); }
+    catch(err){ warnTip('GLB: ' + err.message); return null; }
   }
   if(kind === 'step'){
     // гранёный STEP описывает ТВЁРДОЕ тело: с дырой в оболочке он был бы
     // некорректным файлом, а не «почти» моделью
     if(countBoundaryEdges() !== 0){
       alert('STEP needs a closed solid. The model has holes — close them (F) and export again.');
-      return;
+      return null;
     }
-    downloadBlob(new Blob([buildSTEP()], {type: 'application/step'}), projectName + '.step');
+    return new Blob([buildSTEP()], {type: f.mime});
   }
+  return null;
+}
+function exportAs(kind){
+  const blob = exportBlob(kind);
+  if(blob) downloadBlob(blob, projectName + '.' + kind);
+}
+// Ctrl+Shift+S: окно «Сохранить как» с выбором формата — проект .zcad или
+// любой экспорт. Выбран .zcad — дальше Ctrl+S пишет в этот файл; экспорт
+// файл проекта не подменяет. Браузер без окна выбора файла (Firefox) —
+// свой список форматов, файл уходит в Загрузки
+async function saveAsAny(){
+  if(!mesh) return;
+  if(!window.showSaveFilePicker){ saveAsMenu(); return; }
+  let h;
+  try{
+    h = await window.showSaveFilePicker({
+      suggestedName: projectName + '.zcad', excludeAcceptAllOption: true,
+      types: SAVE_FORMATS.map(f => ({description: f.desc, accept: {[f.mime]: [f.ext]}}))});
+  }catch(err){
+    if(err && err.name === 'AbortError') return;
+    saveAsMenu(); return;
+  }
+  const ext = (h.name.match(/\.[^.]+$/) || [''])[0].toLowerCase();
+  const f = SAVE_FORMATS.find(f => f.ext === ext || (f.kind === 'step' && ext === '.stp'));
+  if(!f){ warnTip('Unknown format: ' + h.name); return; }
+  const blob = exportBlob(f.kind);
+  if(!blob) return;
+  try{
+    const wr = await h.createWritable();
+    await wr.write(blob); await wr.close();
+  }catch(err){ warnTip('Could not write ' + h.name + ' (' + (err && err.name || 'error') + ')'); return; }
+  if(f.kind === 'zcad'){
+    projectHandle = h;
+    projectName = h.name.replace(/\.zcad$/i, '');
+    setProjectDirty(false);
+  }
+  warnTip('Saved: ' + h.name);
+}
+function saveAsMenu(){
+  let box = document.getElementById('saveAsMenu');
+  if(box){ box.remove(); return; }
+  box = document.createElement('div');
+  box.id = 'saveAsMenu';
+  box.style.cssText = 'position:fixed;left:50%;top:30%;transform:translateX(-50%);z-index:1000;' +
+    'background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;' +
+    'display:flex;flex-direction:column;gap:6px;min-width:260px;box-shadow:0 8px 30px #0008';
+  box.innerHTML = '<b style="margin-bottom:4px">Save as…</b>';
+  for(const f of SAVE_FORMATS){
+    const b = document.createElement('button');
+    b.textContent = f.desc;
+    b.style.textAlign = 'left';
+    b.onclick = () => { box.remove(); f.kind === 'zcad' ? saveProject(true) : exportAs(f.kind); };
+    box.appendChild(b);
+  }
+  const close = e => { if(e.key === 'Escape'){ box.remove(); removeEventListener('keydown', close, true); } };
+  addEventListener('keydown', close, true);
+  document.body.appendChild(box);
 }
 function downloadSTL(){ exportAs('stl'); }
 
@@ -16311,11 +16381,11 @@ f_file.addEventListener('change', async ()=>{
   const file = f_file.files && f_file.files[0];
   if(file) await openFileAny(file, null);
 });
-// Ctrl+S / Ctrl+Shift+S / Ctrl+O — как во всех редакторах; по e.code, чтобы
+// Ctrl+S / Ctrl+Shift+S (сохранить как — любой формат) / Ctrl+O — как во всех редакторах; по e.code, чтобы
 // работало и в русской раскладке, и прямо из полей ввода
 window.addEventListener('keydown', e=>{
   if(!(e.ctrlKey || e.metaKey) || e.altKey) return;
-  if(e.code === 'KeyS'){ e.preventDefault(); e.stopPropagation(); saveProject(e.shiftKey); }
+  if(e.code === 'KeyS'){ e.preventDefault(); e.stopPropagation(); e.shiftKey ? saveAsAny() : saveProject(false); }
   else if(e.code === 'KeyO'){ e.preventDefault(); e.stopPropagation(); openProject(); }
 }, true);
 // несохранённые правки в открытом файле: браузер спросит перед закрытием
