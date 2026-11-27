@@ -902,14 +902,138 @@ function paintFaceAt(pt){
   for(const h of hits) if(h.faceIndex != null && triNormalAt(h.faceIndex).dot(n) > 0.999) return h.faceIndex;
   return -1;
 }
+// Частичный пересчёт красок. Область краски (facePatchAt / curvedRegionAt)
+// зависит только от своих треугольников, соседей по рёбрам и Т-стыкам (они
+// касаются её края), треугольника под точкой краски (не дальше 0.05 мм) и
+// линий / поверхностей скруглений. Поэтому после правки сетки область
+// пересчитывается, только если изменённый или удалённый треугольник попал
+// в её габарит с запасом; остальные переносятся по новым номерам
+// треугольников (булева их перемешивает). Треугольник узнаётся по своим
+// девяти координатам, бит в бит. Прежде 262 краски пересчитывались целиком
+// при каждой команде. Линия режет область, только проходя рядом (хорда
+// продлена на 1 мм за концы), поэтому добавленная или снятая линия тоже
+// пересчитывает лишь области у себя
+let paintCache = null; // {pos, ver, attr, ctx, gsig, hash, regions: Map ключ краски -> {t, tris, box}}
+const PAINT_REACH = 0.12; // запас габарита: Т-стык 0.003, точка краски 0.05 от грани
+const pcV = v => v.x.toFixed(5) + ',' + v.y.toFixed(5) + ',' + v.z.toFixed(5);
+function paintCtxSig(){
+  return hardEdges.map(h => pcV(h.a) + ';' + pcV(h.b)).join('|') + '#' + JSON.stringify(curvedSurfs);
+}
+function paintGuideSigs(){
+  return guides.map(g => pcV(g.a) + ';' + pcV(g.b) + (g.noExt ? 'n' : '') + (g.curve ? 'c' + g.curve : ''));
+}
+// габариты линий, которых нет в одном из двух списков (с запасом на продление)
+function paintGuideBoxes(oldS, newS){
+  const cnt = new Map();
+  for(const k of oldS) cnt.set(k, (cnt.get(k) || 0) + 1);
+  for(const k of newS) cnt.set(k, (cnt.get(k) || 0) - 1);
+  const out = [];
+  for(const [k, c] of cnt){
+    if(!c) continue;
+    const [a, b] = k.replace(/[nc].*$/, '').split(';').map(t => t.split(',').map(Number));
+    const E = 1.1;
+    out.push([Math.min(a[0], b[0]) - E, Math.min(a[1], b[1]) - E, Math.min(a[2], b[2]) - E,
+              Math.max(a[0], b[0]) + E, Math.max(a[1], b[1]) + E, Math.max(a[2], b[2]) + E]);
+  }
+  return out;
+}
+function triHashes(pos){
+  const n = pos.length / 9, u = new Uint32Array(pos.buffer, pos.byteOffset, pos.length), h = new Float64Array(n);
+  for(let t=0;t<n;t++){
+    let a = 0x811c9dc5, b = 0x01000193;
+    for(let j=0;j<9;j++){ const x = u[t*9+j]; a = Math.imul(a ^ x, 0x01000193); b = Math.imul(b + x, 0x5bd1e995) ^ (b >>> 13); }
+    h[t] = (a >>> 0) * 2097152 + ((b >>> 0) & 0x1fffff);
+  }
+  return h;
+}
+// новые номера старых треугольников (-1 — треугольника больше нет) и
+// габариты изменённых; null — сетка другая почти целиком
+function paintRemap(c, pos){
+  const nO = c.pos.length / 9, nN = pos.length / 9;
+  const hN = triHashes(pos), byH = new Map();
+  for(let i=0;i<nO;i++) byH.set(c.hash[i], byH.has(c.hash[i]) ? -2 : i);
+  const newOf = new Int32Array(nO).fill(-1), boxes = [];
+  const addBox = (arr, t) => {
+    const o = t*9;
+    boxes.push([Math.min(arr[o], arr[o+3], arr[o+6]), Math.min(arr[o+1], arr[o+4], arr[o+7]), Math.min(arr[o+2], arr[o+5], arr[o+8]),
+                Math.max(arr[o], arr[o+3], arr[o+6]), Math.max(arr[o+1], arr[o+4], arr[o+7]), Math.max(arr[o+2], arr[o+5], arr[o+8])]);
+  };
+  for(let j=0;j<nN;j++){
+    const i = byH.get(hN[j]);
+    let same = i !== undefined && i >= 0 && newOf[i] < 0;
+    for(let k=0;same && k<9;k++) if(c.pos[i*9+k] !== pos[j*9+k]) same = false;
+    if(same) newOf[i] = j; else addBox(pos, j);
+    if(boxes.length > nN / 2) return null;
+  }
+  for(let i=0;i<nO;i++) if(newOf[i] < 0){ addBox(c.pos, i); if(boxes.length > nN / 2) return null; }
+  return {newOf, boxes, hash: hN};
+}
 // филамент каждого треугольника (0 — не крашено); поздняя покраска сверху
 function paintResolve(){
   if(!mesh) return null;
-  const out = new Uint8Array(mesh.geometry.attributes.position.array.length / 9);
+  const attr = mesh.geometry.attributes.position, pos = attr.array;
+  const out = new Uint8Array(pos.length / 9);
+  if(!paints.length){ paintCache = null; return out; }
+  const cacheable = pos instanceof Float32Array;
+  const ctx = cacheable ? paintCtxSig() : '', gsig = cacheable ? paintGuideSigs() : null;
+  let map = null, hash = null; // map: {newOf, boxes} — перенос старых областей
+  const c = paintCache;
+  if(c && cacheable && c.ctx === ctx){
+    const gb = paintGuideBoxes(c.gsig, gsig);
+    if(c.attr === attr && c.ver === attr.version && c.pos.length === pos.length){
+      hash = c.hash;
+      map = gb.length ? {newOf: Int32Array.from({length: c.pos.length / 9}, (_, i) => i), boxes: gb} : 'same';
+    }
+    else { const r = paintRemap(c, pos); if(r){ map = r; hash = r.hash; r.boxes.push(...gb); } }
+  }
+  const regions = new Map();
   for(const pt of paints){
-    const t = paintFaceAt(pt);
+    const key = pt.p.join(',') + '|' + pt.n.join(',');
+    let t = -1, tris = null, box = null;
+    const e = map && c.regions.get(key);
+    if(e){
+      if(map === 'same'){ t = e.t; tris = e.tris; box = e.box; }
+      else {
+        const b = e.box, R = PAINT_REACH;
+        let ok = map.newOf[e.t] >= 0;
+        for(let i=0; ok && i<map.boxes.length; i++){
+          const q = map.boxes[i];
+          if(q[0] <= b[3] + R && q[3] >= b[0] - R && q[1] <= b[4] + R && q[4] >= b[1] - R && q[2] <= b[5] + R && q[5] >= b[2] - R) ok = false;
+        }
+        if(ok){
+          const nt = new Int32Array(e.tris.length);
+          for(let i=0; ok && i<nt.length; i++){ nt[i] = map.newOf[e.tris[i]]; if(nt[i] < 0) ok = false; }
+          if(ok){ t = map.newOf[e.t]; tris = nt; box = b; }
+        }
+      }
+    }
+    if(!tris){
+      t = paintFaceAt(pt);
+      if(t >= 0){
+        tris = Int32Array.from(paintRegionAt(t));
+        // краску нашли лучом (грань сдвинули) — её место не у старой точки:
+        // такую не переносим
+        const P = pt.p, o = t*9;
+        let d = Infinity;
+        for(let j=0;j<3;j++) d = Math.min(d, Math.hypot(pos[o+j*3]-P[0], pos[o+j*3+1]-P[1], pos[o+j*3+2]-P[2]));
+        box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+        for(const u of tris){ const q = u*9;
+          for(let j=0;j<3;j++) for(let k=0;k<3;k++){ const x = pos[q+j*3+k]; if(x < box[k]) box[k] = x; if(x > box[3+k]) box[3+k] = x; } }
+        const ray = P[0] < box[0] - 0.06 || P[0] > box[3] + 0.06 || P[1] < box[1] - 0.06 || P[1] > box[4] + 0.06
+                 || P[2] < box[2] - 0.06 || P[2] > box[5] + 0.06;
+        if(ray) box = null;
+      }
+    }
     pt.lost = t < 0;
-    if(t >= 0) for(const u of paintRegionAt(t)) out[u] = pt.f;
+    if(t >= 0){
+      for(const u of tris) out[u] = pt.f;
+      if(box) regions.set(key, {t, tris, box});
+    }
+  }
+  if(cacheable){
+    const keep = map && c.attr === attr && c.ver === attr.version && c.pos.length === pos.length;
+    paintCache = {pos: keep ? c.pos : pos.slice(), attr, ver: attr.version, ctx, gsig,
+                  hash: hash || triHashes(pos), regions};
   }
   return out;
 }
