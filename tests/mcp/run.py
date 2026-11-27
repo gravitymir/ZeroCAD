@@ -1390,6 +1390,24 @@ def bend_a_line_into_an_arc():
 
 
 @case
+def long_text_keeps_the_mesh_clean():
+    # Врезка контура букв резала грань сотнями хорд: на «CLIFFORDS BAR»
+    # оставалось 12 открытых рёбер, 433 немногообразных и 7921 щепка.
+    # Теперь после врезки идёт тот же ремонт, что у гравировки, и чистка
+    for depth, what in [(0, 'outline'), (0.2, 'raised'), (-0.5, 'engraved')]:
+        call('new_shape', {'shape': 'cube', 'size': 20})
+        call('sweep_profile', {'profile': [[0, 0, 0], [213, 0, 0], [213, 23, 0], [0, 23, 0]],
+                               'path': [[0, 0, 0], [0, 0, 5]], 'operation': 'new'})
+        d = call('add_text', {'center': [106.5, 11.5, 5], 'normal': [0, 0, 1],
+                              'text': 'CLIFFORDS BAR', 'height': 19, 'depth': depth})
+        closed(d, 'text ' + what)
+        assert d['slivers'] < 300, (what, d['slivers'])
+        # объём: контур ничего не добавляет, буквы дают свой слой
+        if depth == 0:
+            near(d['volume_mm3'], 213 * 23 * 5, 1.5, 'outline keeps the volume')
+
+
+@case
 def export_glb_for_three_js():
     # GLB: метры вместо миллиметров, Y вверх; имена узлов — контракт с IEGarage
     call('new_shape', {'shape': 'cube', 'size': 400})

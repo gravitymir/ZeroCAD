@@ -33,7 +33,9 @@ class Tab:
 
     def _run(self):
         r = urllib.request.urlopen(self.base + '/agent/events?tab=%d' % self.id, timeout=60)
-        self._post('/agent/hello', {'build': 'fake', 'tools': [], 'tab': self.id})
+        # сборку берём с самой страницы: сервер считает вкладку со «своей»
+        # сборкой устаревшей и команд ей не шлёт (build != BUILD -> stale)
+        self._post('/agent/hello', {'build': page_build(self.base), 'tools': [], 'tab': self.id})
         self.ready.set()
         event = None
         for raw in r:
@@ -45,6 +47,9 @@ class Tab:
             elif line.startswith('data: ') and event == 'command':
                 msg = json.loads(line[6:])
                 self.got.append(msg)
+                # подтверждаем получение: без /agent/ack сервер за 5 с решает,
+                # что вкладка мертва, и отдаёт команду следующей (а её нет)
+                self._post('/agent/ack', {'id': msg['id'], 'tab': self.id})
                 if self.answer:
                     self._post('/agent/result', {'id': msg['id'], 'ok': True,
                                                  'result': {'tab': self.id}})
@@ -143,6 +148,14 @@ def protocol_version_is_negotiated(url, base):
     got = r['result']['protocolVersion']
     assert got != '2099-01-01', 'сервер подтвердил несуществующую версию'
     assert got == '2025-06-18', got
+
+
+def page_build(base):
+    """Номер сборки страницы: он зашит в index.html вместо __BUILD__."""
+    import re
+    html = urllib.request.urlopen(base + '/', timeout=10).read().decode('utf-8', 'ignore')
+    m = re.search(r'data-build="([^"]+)"', html)
+    return m.group(1) if m else ''
 
 
 def main():

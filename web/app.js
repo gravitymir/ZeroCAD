@@ -7220,11 +7220,29 @@ function placeTextAt(P, n){
       addGuide(A, B, true); splitMeshByChord(A, B, true);
     }
   };
+  // Врезка контура режет грань сотнями хорд: остаются Т-стыки и щепки
+  // (у «CLIFFORDS BAR» на пластине — 433 немногообразных ребра и 7921 щепка).
+  // Тот же ремонт, что у гравировки, плюс чистка щепок
+  const repairCarve = () => {
+    for(let i = 0; i < 80; i++){
+      const len0 = mesh.geometry.attributes.position.array.length;
+      cleanupMesh(); healCoplanarOverlaps(); healTJunctions();
+      if(mesh.geometry.attributes.position.array.length === len0) break;
+    }
+    healCracks();
+    removeInvertedShells();
+    tidySlivers();
+    // после чистки щепок могут остаться единичные швы — закрываем их
+    if(openEdgeCount() || nonManifoldEdgeCount()){
+      cleanupMesh(); healTJunctions(); healCracks(); removeInvertedShells();
+    }
+  };
   pushUndo();
   try{
     if(d === 0){
       // чертёжный набросок: только контур — области потом выдавит выбор
       carveOutline();
+      repairCarve();
       if(!modified){ modified = true; s_mod.textContent = 'yes'; }
       extractEdges();
       return;
@@ -7240,6 +7258,7 @@ function placeTextAt(P, n){
       // цельная оболочка буквы, вросшая в тело на 0.5 мм (копланарного
       // дна нет — нет мерцания; слайсеры такие союзы понимают)
       carveOutline();
+      repairCarve();
       const arr = Array.from(mesh.geometry.attributes.position.array);
       for(const t of letters) for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
       setMeshFromArray(new Float32Array(arr));
@@ -9560,6 +9579,14 @@ function weldTinyEdges(pos, maxLen = 0.01){
 function tidySlivers(maxLen = 0.05){
   const before = mesh.geometry.attributes.position.array;
   const keep = before.slice(), nBefore = before.length;
+  // отправная точка: сетка могла прийти уже с дефектами (врезка контура
+  // текста оставляет их сотнями). Требовать после чистки идеала нельзя —
+  // тогда она отказывается работать именно там, где нужнее всего. Условие:
+  // не стало хуже, чем было
+  // считаем дефекты вместе: сварка меняет немногообразное ребро на открытое
+  // (5 -> 3) — это улучшение, а подсчёт по каждому виду отдельно отвергал его
+  const bad0 = openEdgeCount() + nonManifoldEdgeCount();
+  const worse = () => openEdgeCount() + nonManifoldEdgeCount() > bad0;
   // 1) сварка микрорёбер. Объём здесь не проверяем: вершины двигаются не
   // дальше 0.01 мм (меньше шага ключа), и на большой грани это законно даёт
   // заметные в мм³ доли. Требуем только, чтобы сетка осталась замкнутой
@@ -9568,7 +9595,7 @@ function tidySlivers(maxLen = 0.05){
   if(welded !== before){
     setMeshFromArray(welded);
     cleanupMesh();
-    if(openEdgeCount() || nonManifoldEdgeCount()) setMeshFromArray(keep);
+    if(worse()) setMeshFromArray(keep);
     base = mesh.geometry.attributes.position.array;
   }
   // 2) схлопывание коротких рёбер и переворот щепок — эти правки объём
@@ -9581,8 +9608,7 @@ function tidySlivers(maxLen = 0.05){
     // допуск по объёму — от размера детали: у колеса Ø140 это 0.14 мм³ при
     // канавке в 565 мм³, то есть заметное изменение всё равно откатится
     const tol = Math.max(0.05, Math.abs(v0) * 1e-6);
-    if(openEdgeCount() || nonManifoldEdgeCount()
-       || Math.abs(meshVolumeOf(mesh.geometry.attributes.position.array) - v0) > tol)
+    if(worse() || Math.abs(meshVolumeOf(mesh.geometry.attributes.position.array) - v0) > tol)
       setMeshFromArray(baseKeep);
   }
   const pos = mesh.geometry.attributes.position.array;
