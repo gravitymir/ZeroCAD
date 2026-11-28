@@ -4745,8 +4745,9 @@ function orientPathToProfile(path, loop){
   const k = rest.indexOf(first);
   return {pts: rest.slice(k).concat(rest.slice(0, k)), closed: path.closed};
 }
-// применить тело из профиля: одна запись истории — до поглощения листа
-function applyProfileSolid(tris, op, consume){
+// применить тело из профиля: одна запись истории — до поглощения листа.
+// Булева — в фоновом потоке (zcApplySolidAsync)
+async function applyProfileSolid(tris, op, consume){
   const snap = takeSnapshot();
   if(consume && consume.length){
     const drop = new Set(consume), pos = mesh.geometry.attributes.position.array, keep = [];
@@ -4754,7 +4755,7 @@ function applyProfileSolid(tris, op, consume){
     setMeshFromArray(new Float32Array(keep));
   }
   let r;
-  try{ r = zcApplySolid(tris, op); }
+  try{ r = await zcApplySolidAsync(tris, op); }
   catch(err){ setMeshFromArray(snap.pos); extractEdges(); throw err; }
   undoStack[undoStack.length-1] = snap;
   if(Math.abs(r.volume_change_mm3) < 1e-3 && !(consume && consume.length)){
@@ -5050,13 +5051,18 @@ const profTool = {
         + Math.round(Math.abs(v)).toLocaleString('en-US').replace(/,/g, ' ') + ' mm³ · <b>' + (this.opNow() === 'cut' ? 'Cut' : 'Join') + '</b>';
     }
   },
-  commit(){
+  async commit(){
+    if(this.busy) return;
     if(this.stage !== 'ready' || !this.tris){ warnTip('Finish the profile' + (this.kind === 'revolve' ? ' and the axis' : this.kind === 'loft' ? 's' : '')); return; }
     const tris = this.tris, op = this.opNow();
     const consume = [...(this.profile.consume || []), ...((this.profile2 && this.profile2.consume) || [])];
     this.kill();
-    try{ applyProfileSolid(tris, op, consume); }
-    catch(err){ warnTip(err.message); this.preview(true); return; }
+    this.busy = true; pf_ok.disabled = true;
+    pf_info.style.color = ''; pf_info.textContent = op === 'cut' ? 'Cutting…' : 'Joining…';
+    try{ await applyProfileSolid(tris, op, consume); }
+    catch(err){ warnTip(err.message); if(activeTool === this) this.preview(true); return; }
+    finally{ this.busy = false; }
+    if(activeTool !== this) return; // окно закрыли, пока считалось: тело уже в модели
     clearEdgeSel();
     setActiveTool(null);
   }
@@ -6253,7 +6259,10 @@ const bevelTool = {
       return !this.broken;
     }
     const base = this.snap.pos;
-    if(this.face >= 0) return this.applyFace(size, segs, sig);
+    if(this.face >= 0){
+      const fseq = this.seq = (this.seq || 0) + 1, fsnap = this.snap;
+      return this.applyFace(size, segs, sig, () => this.seq !== fseq || this.snap !== fsnap || activeTool !== this);
+    }
     if(size > this.fitMax + 1e-6){ this.broken = 'too big'; return false; } // не помещается на гранях
     const seq = this.seq = (this.seq || 0) + 1, snap = this.snap;
     const stale = () => this.seq !== seq || this.snap !== snap || activeTool !== this;
@@ -6451,15 +6460,18 @@ const bevelTool = {
     return res1.edges.concat(res2.edges);
   },
   // по грани: всегда от исходной сетки; записи истории, которые делают
-  // хирургия и булева, снимаются — окно пишет одну запись при OK
-  applyFace(size, segs, sig){
+  // хирургия и булева, снимаются — окно пишет одну запись при OK. Булева
+  // контуров — в фоновом потоке; ответ на устаревшие числа не трогает окно
+  // (его сетку уже поменял следующий расчёт)
+  async applyFace(size, segs, sig, stale){
     setMeshFromArray(this.snap.pos);
     restoreGuides(this.snap.guides);
     hardEdges = this.snap.hard.map(h=>({a: h.a.clone(), b: h.b.clone()}));
     const u0 = undoStack.length, redo0 = redoStack.slice();
     try{
-      const r = bevelFaceOutlines(this.face, size, segs, this.loops);
+      const r = await bevelFaceOutlines(this.face, size, segs, this.loops);
       undoStack.length = u0; redoStack = redo0;
+      if(stale()) return false;
       clearEdgeSel(); hideSelEnds();
       extractEdges();
       this.shown = sig;
@@ -6469,6 +6481,7 @@ const bevelTool = {
       return true;
     }catch(err){
       undoStack.length = Math.min(undoStack.length, u0); redoStack = redo0;
+      if(stale()) return false;
       setMeshFromArray(this.snap.pos);
       restoreGuides(this.snap.guides);
       extractEdges();
@@ -7387,7 +7400,13 @@ function textCellsFine(str){
   }
   return fine;
 }
-function placeTextAt(P, n){
+// Текст на грани. Врезка контура и вдавливание считаются в фоновом потоке
+// (textCarveCore / textEngraveCore в geom.js), поэтому ответ — обещание.
+// Запись истории ставится сразу, как раньше: живой предпросмотр снимает её
+// undo(true) и ставит текст заново. Ответ потока применяется, только если
+// эта запись всё ещё наверху и сетка та же — иначе предпросмотр уже сняли
+// или заменили, и ответ устарел
+async function placeTextAt(P, n){
   const {str, h, d} = textParams;
   const s = h/14; // клетка мелкой сетки (textCellsFine): буква — 10×14
   const u = Math.abs(n.z) > 0.9
@@ -7399,7 +7418,7 @@ function placeTextAt(P, n){
   if(textHasSymbols(str)){
     if(d === 0){ warnTip('Symbols need Extrude + or − (outline only is for letters)'); return; }
     const tris = textSolidFlat(P, u, v, n, textParams, d > 0 ? d : 1.0, d > 0 ? 0.5 : -d);
-    try{ zcApplySolid(tris, d < 0 ? 'cut' : 'join'); }
+    try{ await zcApplySolidAsync(tris, d < 0 ? 'cut' : 'join'); }
     catch(err){ console.warn('text with symbols failed', err); warnTip(String(err.message || err)); }
     return;
   }
@@ -7408,8 +7427,7 @@ function placeTextAt(P, n){
   // строкам/столбцам; врезается в грань линиями-хордами (noExt: сегменты
   // замкнутого контура не продлеваются при заливке; режем только в
   // пределах сегмента — wholeLine резал бы соседние буквы)
-  let carvedSegs = [];
-  const carveOutline = ()=>{
+  const outlineSegs = ()=>{
     const H = new Map(), Vg = new Map(); // линия gy -> {gx}, линия gx -> {gy}
     const put = (m,k,x)=>{ if(!m.has(k)) m.set(k,new Set()); m.get(k).add(x); };
     for(const key of cells){
@@ -7429,86 +7447,41 @@ function placeTextAt(P, n){
       return r;
     };
     const pt = (gx,gy)=>P.clone().addScaledVector(u,gx*s).addScaledVector(v,gy*s);
-    // wholeLine=true обязателен: с false треугольник, чья линия пересечения
+    // wholeLine обязателен: с false треугольник, чья линия пересечения
     // ШИРЕ сегмента (середина за концами), не режется — недорез, и заливка
-    // протекает сквозь границу буквы. true режет всех, кого сегмент задел;
+    // протекает сквозь границу буквы. Режем всех, кого сегмент задел;
     // лишние резы копланарны и невидимы, а барьером служит точный тест
     // «ребро на сегменте» в facePatchAt
     const segs = [];
     for(const [gy,set] of H) for(const [x0,x1] of runs(set)) segs.push([pt(x0,gy), pt(x1,gy)]);
     for(const [gx,set] of Vg) for(const [y0,y1] of runs(set)) segs.push([pt(gx,y0), pt(gx,y1)]);
-    for(const [A, B] of segs){ addGuide(A, B, true); splitMeshByChord(A, B, 'outline'); }
-    carvedSegs = segs;
+    return segs;
   };
-  // Угол буквы, попавший на сторону длинного треугольника крышки, рез
-  // иногда пропускает: вершины на конце отрезка нет, отрезок не накрыт
-  // рёбрами, и заливка протекает (дырка «A» на плитке — в букву). Сразу
-  // повторный рез не помогает (мешают Т-стыки), после ремонта — ставит угол.
-  // true — что-то перерезали, нужен ещё ремонт
-  const recutMissing = () => {
-    const Q = 0.002, qk = (x, y, z) => Math.round(x/Q) + ',' + Math.round(y/Q) + ',' + Math.round(z/Q);
-    const arr = mesh.geometry.attributes.position.array, have = new Set();
-    for(let i = 0; i < arr.length; i += 3) have.add(qk(arr[i], arr[i+1], arr[i+2]));
-    const has = P0 => {
-      const x = Math.round(P0.x/Q), y = Math.round(P0.y/Q), z = Math.round(P0.z/Q);
-      for(let a=-1;a<=1;a++) for(let b=-1;b<=1;b++) for(let c=-1;c<=1;c++) if(have.has((x+a)+','+(y+b)+','+(z+c))) return true;
-      return false;
-    };
-    const miss = carvedSegs.filter(([A, B]) => !has(A) || !has(B));
-    for(const [A, B] of miss) splitMeshByChord(A, B, 'outline');
-    return miss.length > 0;
-  };
-  // Врезка контура режет грань сотнями хорд: остаются Т-стыки и щепки
-  // (у «CLIFFORDS BAR» на пластине — 433 немногообразных ребра и 7921 щепка).
-  // Тот же ремонт, что у гравировки, плюс чистка щепок
-  const repairCarve = () => {
-    for(let i = 0; i < 80; i++){
-      const len0 = mesh.geometry.attributes.position.array.length;
-      cleanupMesh(); healCoplanarOverlaps(); healTJunctions();
-      if(mesh.geometry.attributes.position.array.length === len0) break;
+  // врезка контура: линии — сразу (они часть записи истории), сетку режет поток
+  const carve = async () => {
+    const segs = outlineSegs();
+    for(const [A, B] of segs) addGuide(A, B, true);
+    const pos0 = mesh.geometry.attributes.position.array;
+    if(geomWorkerReady()){
+      const f = new Float64Array(segs.length * 6);
+      segs.forEach(([A, B], i) => f.set([A.x, A.y, A.z, B.x, B.y, B.z], i * 6));
+      try{
+        const m = await geomRun('textCarve', pos0, {job: {segs: f}});
+        return {pos0, arr: m.arr};
+      }catch(err){ if(!err.workerDown) throw err; }
     }
-    healCracks();
-    removeInvertedShells();
-    tidySlivers();
-    // после чистки щепок могут остаться единичные швы — закрываем их
-    if(openEdgeCount() || nonManifoldEdgeCount()){
-      cleanupMesh(); healTJunctions(); healCracks(); removeInvertedShells();
-    }
+    textCarveCore(segs); // нет потока — на странице
+    return {pos0, arr: mesh.geometry.attributes.position.array};
   };
-  // дырка в 3–4 точки в плоскости грани (повторный рез иногда теряет один
-  // треугольник 1.4 × 0.15 мм — closeSliverHoles такие не берёт по периметру)
-  const fillFlatHoles = () => {
-    const add = [];
-    for(const L of boundaryLoops()){
-      if(L.length > 4) continue;
-      const nn = new THREE.Vector3().subVectors(L[1], L[0]).cross(new THREE.Vector3().subVectors(L[2], L[0]));
-      if(nn.length() < 1e-9) continue;
-      nn.normalize();
-      if(L.some(P => Math.abs(nn.dot(new THREE.Vector3().subVectors(P, L[0]))) > 1e-3)) continue;
-      for(let i = 1; i + 1 < L.length; i++) for(const P of [L[0], L[i], L[i+1]]) add.push(P.x, P.y, P.z);
-    }
-    if(!add.length) return;
-    const pos = mesh.geometry.attributes.position.array, out = new Float32Array(pos.length + add.length);
-    out.set(pos); out.set(add, pos.length);
-    setMeshFromArray(out);
-    cleanupMesh();
-  };
-  const carveAndRepair = () => {
-    carveOutline();
-    repairCarve();
-    for(let pass = 0; pass < 3; pass++){
-      const keep = mesh.geometry.attributes.position.array.slice(), bad0 = openEdgeCount() + nonManifoldEdgeCount();
-      if(!recutMissing()) break;
-      repairCarve();
-      if(openEdgeCount() + nonManifoldEdgeCount() > bad0) fillFlatHoles();
-      if(openEdgeCount() + nonManifoldEdgeCount() > bad0){ setMeshFromArray(keep); break; }
-    }
-  };
-  pushUndo();
+  const snap = takeSnapshot();
+  pushHistory(snap);
+  const live = pos0 => undoStack[undoStack.length-1] === snap && mesh.geometry.attributes.position.array === pos0;
   try{
     if(d === 0){
       // чертёжный набросок: только контур — области потом выдавит выбор
-      carveAndRepair();
+      const r = await carve();
+      if(!live(r.pos0)) return;
+      if(r.arr !== r.pos0) setMeshFromArray(r.arr);
       if(!modified){ modified = true; s_mod.textContent = 'yes'; }
       extractEdges();
       return;
@@ -7523,47 +7496,36 @@ function placeTextAt(P, n){
       // основание остаётся адресуемой областью; затем добавляется
       // цельная оболочка буквы, вросшая в тело на 0.5 мм (копланарного
       // дна нет — нет мерцания; слайсеры такие союзы понимают)
-      carveAndRepair();
-      const arr = Array.from(mesh.geometry.attributes.position.array);
+      const r = await carve();
+      if(!live(r.pos0)) return;
+      const arr = Array.from(r.arr);
       for(const t of letters) for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
       setMeshFromArray(new Float32Array(arr));
     } else {
       // вдавить: одно честное вычитание, как commitPocketCSG
-      const pos = mesh.geometry.attributes.position.array;
-      const body = [];
-      for(let i=0;i<pos.length;i+=9)
-        body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]),
-                   new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
-                   new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
-      const res = csgSubtract(body, letters, true);
-      const arr = [];
-      for(const t of res){
-        const ar = new THREE.Vector3().subVectors(t[1],t[0])
-          .cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
-        if(ar < 1e-6) continue;
-        for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
+      const pos0 = mesh.geometry.attributes.position.array;
+      let done = false;
+      if(geomWorkerReady()){
+        try{
+          const m = await geomRun('textEngrave', pos0, {tris: letters});
+          if(!live(pos0)) return;
+          if(!(m.ret && m.ret.needPage)){ setMeshFromArray(m.arr); done = true; }
+        }catch(err){ if(!err.workerDown) throw err; }
       }
-      setMeshFromArray(new Float32Array(arr));
-      cleanupMesh();
-      if(openEdgeCount() || nonManifoldEdgeCount()){
-        // Т-стыков после BSP у текста сотни (healTJunctions чинит до 16 за
-        // вызов) — гоняем до полной сходимости. healCoplanarOverlaps
-        // обязателен: при сквозной гравировке (глубина = толщине тела) дно
-        // призмы копланарно задней грани — без взаимной подрезки остаются
-        // мембраны и вывернутые куски
-        for(let i=0;i<80;i++){
-          const len0 = mesh.geometry.attributes.position.array.length;
-          cleanupMesh(); healCoplanarOverlaps(); healTJunctions();
-          if(mesh.geometry.attributes.position.array.length === len0) break;
-        }
-        // трещины у букв (на Z калибровочного куба оставалось 39 открытых рёбер)
-        healCracks();
-        removeInvertedShells();
+      if(!done){
+        if(!live(pos0)) return;
+        // на странице: точная булева, а откажет — запасной BSP (csgSubtract)
+        const body = [];
+        for(let i=0;i<pos0.length;i+=9)
+          body.push([new THREE.Vector3(pos0[i],pos0[i+1],pos0[i+2]),
+                     new THREE.Vector3(pos0[i+3],pos0[i+4],pos0[i+5]),
+                     new THREE.Vector3(pos0[i+6],pos0[i+7],pos0[i+8])]);
+        textEngraveFinish(csgSubtract(body, letters, true));
       }
     }
   }catch(err){
-    console.warn('BSP-текст не удался — операция отменена', err);
-    undo(true);
+    console.warn('текст не удался — операция отменена', err);
+    if(undoStack[undoStack.length-1] === snap) undo(true);
     return;
   }
   if(!modified){ modified = true; s_mod.textContent = 'yes'; }
@@ -15966,12 +15928,12 @@ function textMapper(mode, C, n, p, opt){
   return {u, v, P0, mapAll, plan, hits, info: {}, points: () => cache.size};
 }
 // тело букв (все или только cells) на поверхность и в модель
-function zcTextOnSurface(mode, C, n, p, opt, cells){
+async function zcTextOnSurface(mode, C, n, p, opt, cells){
   if(p.d === 0) throw new Error(mode + ' needs depth: + raised or − engraved');
   const M = textMapper(mode, C, n, p, opt);
   const above = p.d > 0 ? p.d : 1.0, below = p.d > 0 ? 0.5 : -p.d;
   const flat = textSolidFlat(M.P0, M.u, M.v, n, p, above, below, cells);
-  const r = zcApplySolid(M.mapAll(flat), p.d < 0 ? 'cut' : 'join');
+  const r = await zcApplySolidAsync(M.mapAll(flat), p.d < 0 ? 'cut' : 'join');
   if(Math.abs(r.volume_change_mm3) < 1e-6){ undo(true); throw new Error('text could not be placed here'); }
   const extra = M.points ? {projected_points: M.points()} : {};
   return Object.assign(extra, M.info, {text_width_mm: +textWidth(p).toFixed(3)}, r);
@@ -16036,7 +15998,7 @@ function textLetterGroups(cells){
   }
   return groups;
 }
-function zcExtrudeText(a){
+async function zcExtrudeText(a){
   const d = snapMM(+a.distance);
   if(!Number.isFinite(d) || Math.abs(d) < 0.05) throw new Error('distance must be a number of mm (+ raised, − engraved)');
   if(!textSketches.length) throw new Error('no text sketch — draw one with add_text, depth 0 and wrap or project');
@@ -16060,7 +16022,7 @@ function zcExtrudeText(a){
         pick = textLetterGroups(cells).find(g => g.has((gx+dx)+','+(gy+dy))); break; }
     }
     if(!pick) continue;
-    const r = zcTextOnSurface(sk.mode, C, n, p, opt, pick);
+    const r = await zcTextOnSurface(sk.mode, C, n, p, opt, pick);
     return Object.assign({sketch: i, cells: pick.size, whole: !!a.whole}, r);
   }
   throw new Error('the point is not on a letter of a text sketch');
@@ -16480,9 +16442,9 @@ function patternBuild(a){
   return {tris: M.mapAll(flat), d, info: Object.assign({pattern: kind}, knurlK ? Object.assign({style: a.style || 'diamond'}, (a.style || 'diamond') !== 'cross' ? {angle_deg: a.angle == null ? ((a.style || 'diamond') === 'diamond' ? 30 : 0) : +a.angle} : {}) : {fill}, {tool_triangles: flat.length},
     a.ring ? {ring: true, cell_used_mm: +cellR.toFixed(4), cells_around: Math.round(Lr / cellR)} : {}, M.info)};
 }
-function zcAddPattern(a){
+async function zcAddPattern(a){
   const b = patternBuild(a);
-  const r = zcApplySolid(b.tris, b.d < 0 ? 'cut' : 'join');
+  const r = await zcApplySolidAsync(b.tris, b.d < 0 ? 'cut' : 'join');
   if(Math.abs(r.volume_change_mm3) < 1e-6){ undo(true); throw new Error('the pattern could not be placed here'); }
   return Object.assign(b.info, r);
 }
@@ -17805,7 +17767,7 @@ function dropAirGuides(prevPos, also){
 // Фаска/скругление контуров грани — общая для Ctrl+B по грани и MCP
 // bevel_outline. Внешний контур — сначала хирургия без булевых
 // (zcBevelFaceLoop), края отверстий и всё, что она не берёт, — точной булевой
-function bevelFaceOutlines(tri, size, segs, which){
+async function bevelFaceOutlines(tri, size, segs, which){
   cachedPatch = null;
   if(which === 'outer'){
     try{ return zcBevelFaceLoop(tri, size, segs); }
@@ -17844,7 +17806,7 @@ function zcCutThroughCSG(tri){
 // zcBevelFaceLoop не трогает. Контуры — из направленных граничных рёбер
 // лоскута: треугольники против часовой вокруг n, область слева от ребра,
 // внутрь грани — n × ребро и у внешнего контура, и у отверстий
-function zcBevelLoopsCSG(tri, size, segs, which){
+async function zcBevelLoopsCSG(tri, size, segs, which){
   const pos = mesh.geometry.attributes.position.array;
   const n = triNormalAt(tri).clone().normalize();
   const patch = facePatchCached(tri);
@@ -17964,7 +17926,7 @@ function zcBevelLoopsCSG(tri, size, segs, which){
   }
   // обход колец — по знаку объёма каждого по отдельности не нужен: все
   // сечения построены одинаково, zcApplySolid разворачивает целиком
-  const r = zcApplySolid(ring, 'cut', false);
+  const r = await zcApplySolidAsync(ring, 'cut', false);
   if(!(r.volume_change_mm3 < 0)){ undo(true); throw new Error('the bevel removed nothing here'); }
   if(r.open_edges || r.nonmanifold_edges){ undo(true); throw new Error('the bevel did not close the body here'); }
   delete r.solid_volume_mm3;
@@ -18073,7 +18035,7 @@ const ZC_COMMANDS = {
     }
   },
   add_text: {
-    run(a){
+    async run(a){
       const n = zcV3(a.normal, 'normal');
       if(n.length() < 1e-9) throw new Error('normal must not be zero');
       n.normalize();
@@ -18093,7 +18055,7 @@ const ZC_COMMANDS = {
       if(zcFaceAt(C, n) < 0) throw new Error('no face with this normal at the centre point');
       textParams = {str, h, d};
       const v0 = meshVolumeOf(mesh.geometry.attributes.position.array), u0 = undoStack.length;
-      placeTextAt(txLeftFromAnchor(C, n, textParams), n);
+      await placeTextAt(txLeftFromAnchor(C, n, textParams), n);
       if(undoStack.length === u0 || (d !== 0 && Math.abs(meshVolumeOf(mesh.geometry.attributes.position.array) - v0) < 1e-6))
         throw new Error('text could not be placed here');
       const cells = textCellsFine(str).size, s = h / 14;
@@ -18374,7 +18336,7 @@ const ZC_COMMANDS = {
     }
   },
   bevel_outline: {
-    run(a){
+    async run(a){
       const size = +a.size;
       if(!(size >= 0.1)) throw new Error('size must be at least 0.1 mm');
       const segs = Math.max(1, Math.min(32, Math.round(a.segments == null ? 1 : +a.segments)));
@@ -18383,7 +18345,7 @@ const ZC_COMMANDS = {
       if(activeTool) setActiveTool(null);
       const which = a.outlines || 'outer';
       if(!['outer', 'holes', 'all'].includes(which)) throw new Error('outlines must be outer, holes or all');
-      return Object.assign({kind: segs === 1 ? 'chamfer' : 'round'}, bevelFaceOutlines(t, size, segs, which), zcSummary());
+      return Object.assign({kind: segs === 1 ? 'chamfer' : 'round'}, await bevelFaceOutlines(t, size, segs, which), zcSummary());
     }
   },
   undo: {

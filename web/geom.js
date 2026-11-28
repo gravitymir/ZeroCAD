@@ -2174,3 +2174,114 @@ function bevelRoundCore(base, tools, corners, orders){
   }
   return {arr: mesh.geometry.attributes.position.array, broken, order: orders.length - 1, engine};
 }
+
+// ---------- Текст на грани: врезка контура и вдавливание ----------
+// Тяжёлая часть placeTextAt — здесь, чтобы считать в потоке. Линии контура
+// (guides) страница добавляет до вызова: guideLock в чистке держит их точки.
+// segs — [[A, B]…] (THREE.Vector3): отрезки контура букв по строкам/столбцам.
+// Врезка режет грань сотнями хорд: остаются Т-стыки и щепки (у «CLIFFORDS
+// BAR» на пластине — 433 немногообразных ребра и 7921 щепка) — тот же ремонт,
+// что у гравировки, плюс чистка щепок
+function textCarveCore(segs){
+  // wholeLine 'outline': режет всех, кого сегмент задел, с узким прилипанием
+  for(const [A, B] of segs) splitMeshByChord(A, B, 'outline');
+  const repair = () => {
+    for(let i = 0; i < 80; i++){
+      const len0 = mesh.geometry.attributes.position.array.length;
+      cleanupMesh(); healCoplanarOverlaps(); healTJunctions();
+      if(mesh.geometry.attributes.position.array.length === len0) break;
+    }
+    healCracks();
+    removeInvertedShells();
+    tidySlivers();
+    // после чистки щепок могут остаться единичные швы — закрываем их
+    if(openEdgeCount() || nonManifoldEdgeCount()){
+      cleanupMesh(); healTJunctions(); healCracks(); removeInvertedShells();
+    }
+  };
+  // Угол буквы, попавший на сторону длинного треугольника крышки, рез
+  // иногда пропускает: вершины на конце отрезка нет, отрезок не накрыт
+  // рёбрами, и заливка протекает (дырка «A» на плитке — в букву). Сразу
+  // повторный рез не помогает (мешают Т-стыки), после ремонта — ставит угол.
+  // true — что-то перерезали, нужен ещё ремонт
+  const recutMissing = () => {
+    const Q = 0.002, qk = (x, y, z) => Math.round(x/Q) + ',' + Math.round(y/Q) + ',' + Math.round(z/Q);
+    const arr = mesh.geometry.attributes.position.array, have = new Set();
+    for(let i = 0; i < arr.length; i += 3) have.add(qk(arr[i], arr[i+1], arr[i+2]));
+    const has = P0 => {
+      const x = Math.round(P0.x/Q), y = Math.round(P0.y/Q), z = Math.round(P0.z/Q);
+      for(let a=-1;a<=1;a++) for(let b=-1;b<=1;b++) for(let c=-1;c<=1;c++) if(have.has((x+a)+','+(y+b)+','+(z+c))) return true;
+      return false;
+    };
+    const miss = segs.filter(([A, B]) => !has(A) || !has(B));
+    for(const [A, B] of miss) splitMeshByChord(A, B, 'outline');
+    return miss.length > 0;
+  };
+  // дырка в 3–4 точки в плоскости грани (повторный рез иногда теряет один
+  // треугольник 1.4 × 0.15 мм — closeSliverHoles такие не берёт по периметру)
+  const fillFlatHoles = () => {
+    const add = [];
+    for(const L of boundaryLoops()){
+      if(L.length > 4) continue;
+      const nn = new THREE.Vector3().subVectors(L[1], L[0]).cross(new THREE.Vector3().subVectors(L[2], L[0]));
+      if(nn.length() < 1e-9) continue;
+      nn.normalize();
+      if(L.some(P => Math.abs(nn.dot(new THREE.Vector3().subVectors(P, L[0]))) > 1e-3)) continue;
+      for(let i = 1; i + 1 < L.length; i++) for(const P of [L[0], L[i], L[i+1]]) add.push(P.x, P.y, P.z);
+    }
+    if(!add.length) return;
+    const pos = mesh.geometry.attributes.position.array, out = new Float32Array(pos.length + add.length);
+    out.set(pos); out.set(add, pos.length);
+    setMeshFromArray(out);
+    cleanupMesh();
+  };
+  repair();
+  for(let pass = 0; pass < 3; pass++){
+    const keep = mesh.geometry.attributes.position.array.slice(), bad0 = openEdgeCount() + nonManifoldEdgeCount();
+    if(!recutMissing()) break;
+    repair();
+    if(openEdgeCount() + nonManifoldEdgeCount() > bad0) fillFlatHoles();
+    if(openEdgeCount() + nonManifoldEdgeCount() > bad0){ setMeshFromArray(keep); break; }
+  }
+}
+// вдавленный текст: одно честное вычитание тела букв, как commitPocketCSG.
+// false — точная булева отказала (страница посчитает с запасным BSP)
+function textEngraveCore(letters){
+  const pos = mesh.geometry.attributes.position.array;
+  const body = [];
+  for(let i=0;i<pos.length;i+=9)
+    body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]),
+               new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
+               new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
+  const res = exactBool(body, letters, 'subtract', true);
+  if(!res) return false;
+  textEngraveFinish(res);
+  return true;
+}
+function textEngraveFinish(res){
+  const q = x => Math.round(x*1000)/1000;
+  const arr = [];
+  for(const t of res){
+    const ar = new THREE.Vector3().subVectors(t[1],t[0])
+      .cross(new THREE.Vector3().subVectors(t[2],t[0])).length();
+    if(ar < 1e-6) continue;
+    for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
+  }
+  setMeshFromArray(new Float32Array(arr));
+  cleanupMesh();
+  if(openEdgeCount() || nonManifoldEdgeCount()){
+    // Т-стыков после булевой у текста сотни (healTJunctions чинит до 16 за
+    // вызов) — гоняем до полной сходимости. healCoplanarOverlaps
+    // обязателен: при сквозной гравировке (глубина = толщине тела) дно
+    // призмы копланарно задней грани — без взаимной подрезки остаются
+    // мембраны и вывернутые куски
+    for(let i=0;i<80;i++){
+      const len0 = mesh.geometry.attributes.position.array.length;
+      cleanupMesh(); healCoplanarOverlaps(); healTJunctions();
+      if(mesh.geometry.attributes.position.array.length === len0) break;
+    }
+    // трещины у букв (на Z калибровочного куба оставалось 39 открытых рёбер)
+    healCracks();
+    removeInvertedShells();
+  }
+}

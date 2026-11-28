@@ -53,6 +53,19 @@ async function geomTask(m){
       arr = r.arr;
       if(arr === m.pos) arr = arr.slice();
       ret = {broken: r.broken, order: r.order};
+    } else if(m.fn === 'textCarve'){
+      // контур текста: job.segs — Float64 [ax,ay,az,bx,by,bz…]
+      const f = m.job.segs, segs = [];
+      for(let i=0;i<f.length;i+=6) segs.push([V3(f, i), V3(f, i+3)]);
+      textCarveCore(segs);
+      arr = mesh.geometry.attributes.position.array;
+      if(arr === m.pos) arr = arr.slice();
+    } else if(m.fn === 'textEngrave'){
+      const tris = [];
+      for(let i=0;i<m.tris.length;i+=9) tris.push([V3(m.tris, i), V3(m.tris, i+3), V3(m.tris, i+6)]);
+      if(!textEngraveCore(tris)){ postMessage({id: m.id, ret: {needPage: true}, engine: geomLastEngine}); return; }
+      arr = mesh.geometry.attributes.position.array;
+      if(arr === m.pos) arr = arr.slice();
     } else if(MESH_CALLS.includes(m.fn)){
       ret = self[m.fn]();
       arr = mesh.geometry.attributes.position.array;
