@@ -1188,7 +1188,7 @@ def gear_v_grooves_on_tooth_flanks():
             d = call('move_edge', {'point': [(A[0]+B[0])/2, (A[1]+B[1])/2, 5.5], 'distance': -5.5})
             n += 1
             closed(d, f'groove {n}')
-            assert d.get('boolean') == 'exact', f'groove {n}: wedge not cut exactly'
+            assert d.get('boolean') in ('exact', 'manifold'), f'groove {n}: wedge not cut exactly'
             # одинаковые грани — одинаковый вырез (449–453; разница — обод по 2°)
             assert 440 < -d['volume_change_mm3'] < 460, f'groove {n}: removed {d["volume_change_mm3"]}'
     assert time.time() - t < 30, f'6 grooves took {time.time() - t:.1f} s'

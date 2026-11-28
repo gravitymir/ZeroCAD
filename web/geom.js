@@ -2008,8 +2008,28 @@ function manifoldOf(tris){
     if(c[0] === c[1] || c[1] === c[2] || c[2] === c[0]) continue;
     tv.push(c[0], c[1], c[2]);
   }
+  // Каждое ребро — ровно у двух треугольников, обходящих его навстречу.
+  // Тела, касающиеся ребром (кольцо копий куба), после склейки вершин дают
+  // ребро на четырёх гранях: Manifold такое принимал и терял объём (кольцо
+  // из четырёх кубов — минус шестая куба) — такой вход отдаём meshBoolean
+  const nV = vp.length / 3, uses = new Map();
+  for(let i=0;i<tv.length;i+=3) for(let j=0;j<3;j++){
+    const a = tv[i+j], b = tv[i+(j+1)%3], k = a < b ? a * nV + b : b * nV + a;
+    uses.set(k, (uses.get(k) || 0) + (a < b ? 1 : 1000));
+  }
+  for(const u of uses.values()) if(u !== 1001) throw new Error('input is not a closed 2-manifold');
   const mesh = new manifoldLib.Mesh({numProp: 3, vertProperties: new Float32Array(vp), triVerts: new Uint32Array(tv)});
   return new manifoldLib.Manifold(mesh);
+}
+// Булева двух тел массивом сетки, как meshBoolean, но Manifold, если он
+// включён и загружен; отказал — meshBoolean. Чем посчитано — geomLastEngine
+function meshBooleanAuto(aTris, bTris, op){
+  geomLastEngine = 'exact';
+  if(GEOM_BOOL_ENGINE === 'manifold' && manifoldLib){
+    const arr = manifoldBooleanOrNull(aTris, bTris, op);
+    if(arr){ geomLastEngine = 'manifold'; return arr; }
+  }
+  return meshBoolean(aTris, bTris, op);
 }
 function manifoldBooleanOrNull(aTris, bTris, op){
   let a = null, b = null, r = null;

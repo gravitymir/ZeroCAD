@@ -3601,8 +3601,8 @@ function applyBodyTransform(tris, mats, keep){
     const pb = boxOf(piece).expandByScalar(0.01), tb0 = new THREE.Box3();
     const touches = cur.some(t => { tb0.makeEmpty(); tb0.expandByPoint(t[0]); tb0.expandByPoint(t[1]); tb0.expandByPoint(t[2]); return tb0.intersectsBox(pb); });
     if(touches){
-      const arr = meshBoolean(cur, piece, 'union');
-      usedBool = true;
+      const arr = meshBooleanAuto(cur, piece, 'union');
+      usedBool = geomLastEngine;
       cur = [];
       for(let o=0;o<arr.length;o+=9) cur.push([V(arr, o), V(arr, o+3), V(arr, o+6)]);
     } else cur = cur.concat(piece);
@@ -3682,7 +3682,7 @@ function applyBodyTransform(tris, mats, keep){
   hardEdges = newHard;
   paints = newPaints; curvedSurfs = newSurfs;
   restoreGuides(newGuides);
-  lastBoolPath = usedBool ? 'exact' : '';
+  lastBoolPath = usedBool || '';
   if(!modified){ modified = true; s_mod.textContent = 'yes'; }
   clearEdgeSel(); deselect(); hidePatch(); ppPatch = null;
   extractEdges();
@@ -5399,7 +5399,7 @@ function slicePlaneArray(pos, P, n){
   const body = [];
   for(let i=0;i<pos.length;i+=9)
     body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]), new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]), new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
-  return meshBoolean(body, tris, 'subtract');
+  return meshBooleanAuto(body, tris, 'subtract');
 }
 // применить срез к модели: одна запись истории; линии, оставшиеся в воздухе, убираются
 function applySlice(P, n, snap){
@@ -8729,8 +8729,8 @@ function flatFillLoop(loop){
         body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]),
                    new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
                    new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
-      if(bulge > 0.01) body = csgSubtract(body, buildPrismTris(loopOut, nOut, bulge + 1, 0));
-      if(dent > 0.01) body = csgUnion(body, buildPrismTris(loopOut, nOut, 0, dent + 1));
+      if(bulge > 0.01) body = csgSubtract(body, buildPrismTris(loopOut, nOut, bulge + 1, 0), true);
+      if(dent > 0.01) body = csgUnion(body, buildPrismTris(loopOut, nOut, 0, dent + 1), true);
       const q = x => Math.round(x*1000)/1000;
       const arr = [];
       for(const t of body){
@@ -9429,8 +9429,8 @@ function csgClusters(tris){
   return groups.map(g => g.ts);
 }
 let lastBoolPath = ''; // 'exact' | 'bsp' — для отладки и тестов
-// useManifold — точную булеву считает Manifold (фаска, выдавливание, текст);
-// без него — meshBoolean
+// useManifold — точную булеву считает Manifold (все инструменты передают
+// true); без него — meshBoolean
 function csgUnion(aTris, bTris, useManifold){
   const ex = exactBool(aTris, bTris, 'union', useManifold);
   lastBoolPath = ex ? geomLastEngine : 'bsp';
@@ -10947,7 +10947,7 @@ function finishEdgeMove(){
                      new THREE.Vector3(sp[i+6],sp[i+7],sp[i+8])]);
         // только точный путь: BSP на шестерне считал 17 с и рвал сетку (сотни
         // щелей, дальше каждый зубец хуже); сгиб предпросмотра замкнут — лучше он
-        const res = exactBool(body, prism, 'subtract');
+        const res = exactBool(body, prism, 'subtract', true);
         if(!res) throw new Error('exact wedge cut failed');
         const q = x => Math.round(x*1000)/1000, arr = [];
         for(const t of res){
@@ -10964,7 +10964,7 @@ function finishEdgeMove(){
         if(vFold - vSnap < -1 && vCut - vSnap > (vFold - vSnap) * 0.5) throw new Error('wedge cut removed too little');
         // сняло меньше 2% объёма клина — булева не увидела пересечения
         if(vCut - vSnap > -0.02 * vPrism) throw new Error('wedge cut removed nothing');
-        lastBoolPath = 'exact';
+        lastBoolPath = geomLastEngine;
         tidySlivers(); // иглы от булевой: их края рисовались лишними рёбрами
         markNewFoldEdges(ed.snap.pos, true); // пологое дно канавки и излом от торца — видимыми рёбрами
         // линия канавки уехала со сгибом дальше выреза, хорды сверху частично
@@ -17075,7 +17075,7 @@ function patternTool(tris, mats){
     const pb = boxOf(piece).expandByScalar(0.01);
     const touches = cur.some(t => { tb.makeEmpty(); tb.expandByPoint(t[0]); tb.expandByPoint(t[1]); tb.expandByPoint(t[2]); return tb.intersectsBox(pb); });
     if(!touches){ cur = cur.concat(piece); continue; }
-    const arr = meshBoolean(cur, piece, 'union');
+    const arr = meshBooleanAuto(cur, piece, 'union');
     cur = [];
     for(let o=0;o<arr.length;o+=9) cur.push([V(arr, o), V(arr, o+3), V(arr, o+6)]);
   }
