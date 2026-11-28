@@ -890,11 +890,20 @@ function healAfterBool(){
   if(openEdgeCount() === 0 && nonManifoldEdgeCount() === 0) return;
   healAll();
 }
-function exactBool(aTris, bTris, op){
+// useManifold — считать Manifold, если он включён (GEOM_BOOL_ENGINE) и
+// загружен; отказал — meshBoolean. Чем посчитано — geomLastEngine
+function exactBool(aTris, bTris, op, useManifold){
   try{
     if(!aTris.length || !bTris.length) return null;
     if(openEdgesOfTris(aTris) || openEdgesOfTris(bTris)) return null;
-    const arr = meshBoolean(aTris, bTris, op), tris = [];
+    let arr = null;
+    geomLastEngine = 'exact';
+    if(useManifold && GEOM_BOOL_ENGINE === 'manifold' && manifoldLib){
+      arr = manifoldBooleanOrNull(aTris, bTris, op);
+      if(arr) geomLastEngine = 'manifold';
+    }
+    if(!arr) arr = meshBoolean(aTris, bTris, op);
+    const tris = [];
     for(let i=0;i<arr.length;i+=9)
       tris.push([new THREE.Vector3(arr[i],arr[i+1],arr[i+2]), new THREE.Vector3(arr[i+3],arr[i+4],arr[i+5]),
                  new THREE.Vector3(arr[i+6],arr[i+7],arr[i+8])]);

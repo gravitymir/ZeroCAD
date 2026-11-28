@@ -6295,14 +6295,14 @@ const bevelTool = {
                    new THREE.Vector3(base[i+6],base[i+7],base[i+8])]);
       const corners = bevelCorners(edges);
       for(const ed of edges){
-        body = ed.concave ? csgUnion(body, bevelPrism(ed, size, segs))
-                          : csgSubtract(body, bevelPrism(ed, size, segs));
+        body = ed.concave ? csgUnion(body, bevelPrism(ed, size, segs), true)
+                          : csgSubtract(body, bevelPrism(ed, size, segs), true);
         body = body.filter(t => new THREE.Vector3().subVectors(t[1],t[0])
           .cross(new THREE.Vector3().subVectors(t[2],t[0])).length() > 1e-6);
       }
       for(const c of corners){ // вершины, где сошлись три выбранных ребра, — шариком или тором
         const tool = c.mixed ? cornerTorusTris(c, size, segs) : cornerBallTris(c, size, segs);
-        body = c.mixed || c.concave ? csgUnion(body, tool) : csgSubtract(body, tool);
+        body = c.mixed || c.concave ? csgUnion(body, tool, true) : csgSubtract(body, tool, true);
         body = body.filter(t => new THREE.Vector3().subVectors(t[1],t[0])
           .cross(new THREE.Vector3().subVectors(t[2],t[0])).length() > 1e-6);
       }
@@ -9429,17 +9429,18 @@ function csgClusters(tris){
   return groups.map(g => g.ts);
 }
 let lastBoolPath = ''; // 'exact' | 'bsp' — для отладки и тестов
-function csgUnion(aTris, bTris){
-  const ex = exactBool(aTris, bTris, 'union');
-  lastBoolPath = ex ? 'exact' : 'bsp';
+// useManifold — точную булеву считает Manifold (фаска); без него — meshBoolean
+function csgUnion(aTris, bTris, useManifold){
+  const ex = exactBool(aTris, bTris, 'union', useManifold);
+  lastBoolPath = ex ? geomLastEngine : 'bsp';
   if(ex) return ex;
   const groups = csgClusters(bTris);
   if(groups.length > 1){ let cur = aTris; for(const g of groups) cur = csgUnionOne(cur, g); return cur; }
   return csgUnionOne(aTris, bTris);
 }
-function csgSubtract(aTris, bTris){
-  const ex = exactBool(aTris, bTris, 'subtract');
-  lastBoolPath = ex ? 'exact' : 'bsp';
+function csgSubtract(aTris, bTris, useManifold){
+  const ex = exactBool(aTris, bTris, 'subtract', useManifold);
+  lastBoolPath = ex ? geomLastEngine : 'bsp';
   if(ex) return ex;
   const groups = csgClusters(bTris);
   if(groups.length > 1){ let cur = aTris; for(const g of groups) cur = csgSubtractOne(cur, g); return cur; }
