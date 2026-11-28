@@ -5218,18 +5218,24 @@ const holeTool = {
     ho_info.innerHTML = what + ' Ø<b>' + o.d.toFixed(1) + '</b>' + (o.type === 'simple' ? '' : ' · head Ø' + o.head.toFixed(1))
       + ' · ' + (o.through ? '<b>through</b>' : 'depth <b>' + o.depth.toFixed(1) + '</b> mm');
   },
-  commit(){
-    if(this.stage !== 1) return;
+  // булева и починка — в фоновом потоке (zcApplySolidAsync): вкладка
+  // живая, пока сверлится; повторный Enter/клик на это время не считается
+  async commit(){
+    if(this.stage !== 1 || this.busy) return;
     let tris;
     try{ tris = this.build(); }catch(err){ warnTip(err.message); return; }
     this.kill();
     let res;
-    try{ res = zcApplySolid(tris, 'cut'); }
-    catch(err){ warnTip('Hole failed here: ' + err.message); this.draw(); return; }
+    this.busy = true; ho_ok.disabled = true;
+    ho_info.style.color = ''; ho_info.textContent = 'Drilling…';
+    try{ res = await zcApplySolidAsync(tris, 'cut'); }
+    catch(err){ warnTip('Hole failed here: ' + err.message); if(activeTool === this){ this.draw(); this.ui(); } return; }
+    finally{ this.busy = false; }
+    if(activeTool !== this) return; // окно закрыли, пока считалось: отверстие уже в модели
     if(Math.abs(res.volume_change_mm3) < 1e-3){
       undo(true);
       warnTip('Nothing to drill here — the hole is outside the body');
-      this.draw(); return;
+      this.draw(); this.ui(); return;
     }
     // следующее отверстие — сразу с центра, размеры в полях остаются
     this.stage = 0; this.P = null;
@@ -5358,19 +5364,25 @@ const cylTool = {
     const V = Math.PI * Math.abs(h) / 3 * (r*r + r*rt + rt*rt);
     cyl_info.innerHTML = (Math.abs(rt - r) < 1e-9 ? 'Cylinder' : rt < 1e-9 ? 'Cone' : 'Frustum') + ' · ' + Math.round(V).toLocaleString('en-US').replace(/,/g, ' ') + ' mm³ · <b>' + (this.opNow() === 'cut' ? 'Cut' : 'Join') + '</b>';
   },
-  commit(){
+  // булева — в фоновом потоке, как у G,D
+  async commit(){
+    if(this.busy) return;
     const r = this.radius(), h = this.height(), rt = this.topR();
     if(!(r >= 0.1) || Math.abs(h) < 0.1){ warnTip('Set the radius and a height of at least 0.1 mm'); return; }
     const op = this.opNow();
     const tris = frustumTris(this.C, this.C.clone().addScaledVector(this.n, h), r, rt, this.segs());
     this.kill();
     let res;
-    try { res = zcApplySolid(tris, op); }
-    catch(err){ warnTip('Cylinder failed here: ' + err.message); this.draw(); return; }
+    this.busy = true; cyl_ok.disabled = true;
+    cyl_info.textContent = op === 'cut' ? 'Cutting…' : 'Joining…';
+    try { res = await zcApplySolidAsync(tris, op); }
+    catch(err){ warnTip('Cylinder failed here: ' + err.message); if(activeTool === this){ this.draw(); this.ui(); } return; }
+    finally{ this.busy = false; }
+    if(activeTool !== this) return; // окно закрыли, пока считалось: тело уже в модели
     if(Math.abs(res.volume_change_mm3) < 1e-3){
       undo(true);
       warnTip(op === 'cut' ? 'Nothing to cut here — the cylinder is outside the body' : 'Nothing to add — the body is already there');
-      this.draw(); return;
+      this.draw(); this.ui(); return;
     }
     // следующий цилиндр — сразу с центра (размеры в полях остаются)
     this.stage = 0; this.C = null; this.h = 0; this.hLock = null; cyl_h.value = '';
