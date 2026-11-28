@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const {loadCore} = require('./load.js');
 const {makeSolids} = require('./solids.js');
 
-const core = loadCore(['collapseShortEdges', 'flipNeedles', 'weldTinyEdges']);
+const core = loadCore(['guideLock', 'collapseShortEdges', 'flipNeedles', 'weldTinyEdges']);
 const {V, box, flat, volume, edgeStats} = makeSolids(core.THREE);
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b} (±${tol})`);
 const stats = arr => {

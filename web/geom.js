@@ -19,6 +19,14 @@ function splitMeshByChord(A, B, wholeLine){
   // рез на веерном дне кармана давал вырожденные осколки и щели
   const exact = wholeLine === 'segment';
   if(wholeLine === 'segment') wholeLine = false;
+  // wholeLine === 'outline' — контур букв: режет как true, но прилипает и
+  // пропускает рез только в пределах 0.005 мм. При 0.02/0.04 угол буквы
+  // садился на точку хорды крышки в 0.02 мм от него, рёбра контура уходили
+  // с линии, и заливка протекала (плитка «CLIFFORDS BAR» со скруглёнными
+  // углами). Щепки от узкого порога убирает tidySlivers — точки на линиях
+  // она не уводит (guideLock)
+  const outline = wholeLine === 'outline';
+  if(outline) wholeLine = true;
   const posArr = mesh.geometry.attributes.position.array;
   const dir = new THREE.Vector3().subVectors(B, A);
   const chordLen = dir.length();
@@ -69,7 +77,7 @@ function splitMeshByChord(A, B, wholeLine){
     // области выходил зубчатым — у отверстия появлялись «грани» по 0.2 мм²,
     // а стенка кармана — полоски с лишними рёбрами. Осколки на плоской грани
     // безвредны; одиночной линии допуски оставлены как были
-    const SNAP = exact ? 1e-4 : 0.02, NEAR = exact ? 1e-4 : 0.04;
+    const SNAP = exact ? 1e-4 : (outline ? 0.005 : 0.02), NEAR = exact ? 1e-4 : (outline ? 0.005 : 0.04);
     // точка реза прилипает только к концам СВОЕГО ребра: прилипание к
     // противоположной вершине тонкого треугольника подворачивало осколок на
     // соседа — наложения ломали булевы (клинья и лишние линии у текста)
@@ -296,8 +304,51 @@ function boundaryLoops(){
 // это не рвёт сетку: у концов ребра общих соседей должно быть ровно столько,
 // сколько треугольников на ребре (link condition) — иначе получится
 // немногообразный стык
+// Что линии проекта не дают сдвигать при чистке: конец линии (и точку-якорь)
+// — никуда, точку на линии — только в другую точку той же линии.
+// canMove(p, q) — можно ли подтянуть вершину p ([x,y,z]) к q
+function guideLock(){
+  const C = 0.05, ends = new Map(), segs = new Map();
+  const ck = (x, y, z) => Math.floor(x / C) + ',' + Math.floor(y / C) + ',' + Math.floor(z / C);
+  const put = (m, k, v) => { let l = m.get(k); if(!l) m.set(k, l = []); l.push(v); };
+  const gl = typeof guides !== 'undefined' && guides ? guides : [];
+  const al = typeof anchors !== 'undefined' && anchors ? anchors : [];
+  for(const g of gl){ put(ends, ck(g.a.x, g.a.y, g.a.z), g.a); put(ends, ck(g.b.x, g.b.y, g.b.z), g.b); }
+  for(const a of al) put(ends, ck(a.pos.x, a.pos.y, a.pos.z), a.pos);
+  if(!ends.size) return {canMove: () => true};
+  // отрезки — в корзины по габариту (короткие рёбра у линий, длинные линии редки)
+  const SC = 2, sk = (x, y, z) => Math.floor(x / SC) + ',' + Math.floor(y / SC) + ',' + Math.floor(z / SC);
+  for(const g of gl){
+    const lo = [Math.min(g.a.x, g.b.x), Math.min(g.a.y, g.b.y), Math.min(g.a.z, g.b.z)].map(v => Math.floor((v - 0.01) / SC));
+    const hi = [Math.max(g.a.x, g.b.x), Math.max(g.a.y, g.b.y), Math.max(g.a.z, g.b.z)].map(v => Math.floor((v + 0.01) / SC));
+    if((hi[0]-lo[0]+1) * (hi[1]-lo[1]+1) * (hi[2]-lo[2]+1) > 4096) continue; // огромная линия — не держим
+    for(let x=lo[0];x<=hi[0];x++) for(let y=lo[1];y<=hi[1];y++) for(let z=lo[2];z<=hi[2];z++) put(segs, x+','+y+','+z, g);
+  }
+  const TOL = 2e-3;
+  const isEnd = p => {
+    const x0 = Math.floor((p[0]-TOL)/C), x1 = Math.floor((p[0]+TOL)/C), y0 = Math.floor((p[1]-TOL)/C), y1 = Math.floor((p[1]+TOL)/C),
+      z0 = Math.floor((p[2]-TOL)/C), z1 = Math.floor((p[2]+TOL)/C);
+    for(let x=x0;x<=x1;x++) for(let y=y0;y<=y1;y++) for(let z=z0;z<=z1;z++){
+      const l = ends.get(x+','+y+','+z);
+      if(l && l.some(Q => Math.hypot(Q.x-p[0], Q.y-p[1], Q.z-p[2]) < TOL)) return true;
+    }
+    return false;
+  };
+  const dSeg = (g, p) => {
+    const dx = g.b.x-g.a.x, dy = g.b.y-g.a.y, dz = g.b.z-g.a.z, L2 = dx*dx + dy*dy + dz*dz;
+    const t = L2 > 1e-18 ? Math.max(0, Math.min(1, ((p[0]-g.a.x)*dx + (p[1]-g.a.y)*dy + (p[2]-g.a.z)*dz) / L2)) : 0;
+    return Math.hypot(g.a.x + dx*t - p[0], g.a.y + dy*t - p[1], g.a.z + dz*t - p[2]);
+  };
+  return {canMove(p, q){
+    if(isEnd(p)) return false;
+    const l = segs.get(sk(p[0], p[1], p[2]));
+    if(l) for(const g of l) if(dSeg(g, p) < TOL && dSeg(g, q) >= TOL) return false;
+    return true;
+  }};
+}
 function collapseShortEdges(pos, maxLen = 0.05, maxPasses = 6, maxDV = 0.02){
   const K = (x, y, z) => keyOf(x, y, z);
+  const lock = guideLock();
   let cur = pos;
   for(let pass = 0; pass < maxPasses; pass++){
     const nT = cur.length / 9;
@@ -373,8 +424,13 @@ function collapseShortEdges(pos, maxLen = 0.05, maxPasses = 6, maxDV = 0.02){
       const L = Math.hypot(pa[0]-pb[0], pa[1]-pb[1], pa[2]-pb[2]);
       if(L > maxLen) continue;
       const va = moveVol(a, b), vb = moveVol(b, a);
-      const keepB = va <= vb;
-      if(Math.min(va, vb) > maxDV) continue; // это не игла, а тонкая деталь (у неё сотни мм³)
+      // линии держат свои точки: угол буквы (конец линии) не двигаем, точку
+      // на линии — только вдоль неё. Иначе угол уезжал к соседней точке
+      // хорды в 0.07 мм, отрезок контура оставался без ребра, и заливка
+      // протекала из «R» на всю плитку
+      const okA = lock.canMove(pa, pb) && va <= maxDV, okB = lock.canMove(pb, pa) && vb <= maxDV;
+      if(!okA && !okB) continue; // тонкая деталь (у неё сотни мм³) или обе точки держит линия
+      const keepB = okA && (!okB || va <= vb);
       cand.push({a: keepB ? a : b, b: keepB ? b : a, L, ts});
     }
     if(!cand.length) break;
@@ -2051,4 +2107,70 @@ function manifoldBooleanOrNull(aTris, bTris, op){
     if(b) b.delete();
     if(a) a.delete();
   }
+}
+
+// ---------- Фаска и скругление рёбер: булевы по порядкам рёбер ----------
+// Тяжёлая часть Ctrl+B (bevelTool.roundOn): инструменты (призмы рёбер, шарики
+// и торы углов) строит страница — им нужен луч по сетке, — а булевы, ремонт
+// после них и проверка целости идут здесь, на странице или в потоке.
+// base — сетка до фаски; tools — [{tris, union}] по рёбрам; corners — так же
+// для углов (после всех рёбер); orders — порядки рёбер (номера в tools):
+// порядок булевых важен, берём первый, при котором тело не порвалось.
+// Ответ: {arr, broken, order, engine} или {needPage: true}, если точная
+// булева отказала — тогда страница считает прежним путём (там есть BSP)
+function bevelRoundCore(base, tools, corners, orders){
+  const h0 = meshHealthOf(base);
+  const big = t => new THREE.Vector3().subVectors(t[1],t[0])
+    .cross(new THREE.Vector3().subVectors(t[2],t[0])).length() > 1e-6;
+  let broken = '', engine = '';
+  for(let oi=0; oi<orders.length; oi++){
+    let body = [];
+    for(let i=0;i<base.length;i+=9)
+      body.push([new THREE.Vector3(base[i],base[i+1],base[i+2]),
+                 new THREE.Vector3(base[i+3],base[i+4],base[i+5]),
+                 new THREE.Vector3(base[i+6],base[i+7],base[i+8])]);
+    for(const tool of orders[oi].map(i => tools[i]).concat(corners)){
+      const r = exactBool(body, tool.tris, tool.union ? 'union' : 'subtract', true);
+      if(!r) return {needPage: true};
+      engine = geomLastEngine;
+      body = r.filter(big);
+    }
+    const q = x => Math.round(x*1000)/1000;
+    const arr = new Float32Array(body.length * 9);
+    let k = 0;
+    for(const t of body) for(const v of t){ arr[k++] = q(v.x); arr[k++] = q(v.y); arr[k++] = q(v.z); }
+    setMeshFromArray(arr);
+    healAfterBool();
+    // стык нескольких скруглений: убрать вершины-разрезы на прямых и
+    // заново сшить Т-стыки, иначе грани расползаются на треугольники.
+    // Уборка — косметика, и она не вправе портить тело: на коробке с
+    // крюками она выкидывала 454 вершины и съедала кусок ребра крюка
+    // далеко от скругления (−58 мм³, дыры). Испортила (дыры, рёбра на три
+    // грани, объём) — возвращаем сетку как была после булевой
+    {
+      const pre = mesh.geometry.attributes.position.array.slice();
+      const bad = pos => ({open: openEdgeCount(), nm: nonManifoldEdgeCount(), vol: meshVolumeOf(pos)});
+      const b0 = bad(pre);
+      if(collapseCollinearVertices()){
+        for(let i=0;i<40;i++){
+          const len0 = mesh.geometry.attributes.position.array.length;
+          cleanupMesh(); healTJunctions();
+          if(mesh.geometry.attributes.position.array.length === len0) break;
+        }
+        removeInvertedShells();
+        const b1 = bad(mesh.geometry.attributes.position.array);
+        if(b1.open > b0.open || b1.nm > b0.nm || Math.abs(b1.vol - b0.vol) > Math.max(0.05, Math.abs(b0.vol) * 1e-5))
+          setMeshFromArray(pre);
+      }
+    }
+    // Скругление не вправе рвать тело: много рёбер разом (17 по углам
+    // полки) давали дыры, а окно молча показывало и принимало результат —
+    // выкружки выходили обрывками. Стало хуже, чем до, — OK закрыт
+    const h1 = meshHealthOf(mesh.geometry.attributes.position.array);
+    broken = (h1.open > h0.open || h1.nm > h0.nm)
+      ? [h1.open > h0.open ? (h1.open - h0.open) + ' open edges' : '', h1.nm > h0.nm ? (h1.nm - h0.nm) + ' edges on three faces' : ''].filter(Boolean).join(', ')
+      : '';
+    if(!broken) return {arr: mesh.geometry.attributes.position.array, broken: '', order: oi, engine};
+  }
+  return {arr: mesh.geometry.attributes.position.array, broken, order: orders.length - 1, engine};
 }

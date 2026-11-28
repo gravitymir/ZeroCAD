@@ -803,6 +803,27 @@ def ball_corner_at_a_vertex():
 
 
 @case
+def text_outline_letters_are_closed_on_rounded_plate():
+    # контур текста (depth 0) на плитке со скруглёнными углами: у крышки
+    # плитки длинные хорды почти вдоль низа букв, в сотых мм от углов. Угол
+    # «R» садился на точку хорды, «S» и дырка «A» тоже теряли угол, и
+    # покраска буквы растекалась на всю плитку (3107 треугольников вместо ~90)
+    call('new_shape', {'shape': 'cube', 'size': 40})
+    R, prof = 4.0, []
+    for cx, cy, a0 in [(209, 104, -90), (209, 119, 0), (4, 119, 90), (4, 104, 180)]:
+        for k in range(9):
+            a = math.radians(a0 + k * 90 / 8)
+            prof.append([round(cx + R * math.cos(a), 4), round(cy + R * math.sin(a), 4), 0])
+    call('sweep_profile', {'profile': prof, 'path': [[106.5, 111.5, 0], [106.5, 111.5, 1.2]]})
+    d = call('add_text', {'center': [106.5, 111.5, 1.2], 'normal': [0, 0, 1], 'text': 'CLIFFORDS BAR', 'height': 14, 'depth': 0})
+    closed(d, 'text outline')
+    field = call('paint_face', {'point': [5, 111.5, 1.2], 'normal': [0, 0, 1], 'filament': 2})['faces'][0]['triangles']
+    for what, pt in [('first R', [102.5, 111.5]), ('S', [130.5, 117.5]), ('hole of A', [166.5, 114.5]), ('last R', [174.5, 111.5])]:
+        n = call('paint_face', {'point': pt + [1.2], 'normal': [0, 0, 1], 'filament': 3})['faces'][0]['triangles']
+        assert n < field / 3, '%s: paint leaked into the plate (%d triangles, plate %d)' % (what, n, field)
+
+
+@case
 def paint_faces_for_multicolour():
     # покраска граней филаментом: в 3MF — paint_color (Bambu/Orca) и
     # slic3rpe:mmu_segmentation (Prusa) у каждого треугольника грани;

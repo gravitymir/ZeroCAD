@@ -9,6 +9,8 @@
 //
 // Задача: {id, fn, pos: Float32Array, guides: Float64Array [ax,ay,az,bx,by,bz…],
 // anchors: Float64Array [x,y,z…], engine: 'exact' | 'manifold', …аргументы}.
+// Фаска (fn 'bevelRound'): job = {tools, corners: [{f: Float64Array, union}],
+// orders: [[номера инструментов]…]} — bevelRoundCore из geom.js.
 // Ответ: {id, arr, ret, engine} или {id, error}
 importScripts('vendor/three.min.js', 'geom.js');
 
@@ -41,6 +43,16 @@ async function geomTask(m){
       const tris = [];
       for(let i=0;i<m.tris.length;i+=9) tris.push([V3(m.tris, i), V3(m.tris, i+3), V3(m.tris, i+6)]);
       arr = solidBoolMesh(m.pos, tris, m.op, m.round);
+    } else if(m.fn === 'bevelRound'){
+      // фаска: инструменты рёбер и углов — Float64 [x,y,z…] по 9 на треугольник
+      const T = f => { const t = []; for(let i=0;i<f.length;i+=9) t.push([V3(f, i), V3(f, i+3), V3(f, i+6)]); return t; };
+      const tools = m.job.tools.map(x => ({tris: T(x.f), union: x.union}));
+      const corners = m.job.corners.map(x => ({tris: T(x.f), union: x.union}));
+      const r = bevelRoundCore(m.pos, tools, corners, m.job.orders);
+      if(r.needPage){ postMessage({id: m.id, ret: {needPage: true}, engine: geomLastEngine}); return; }
+      arr = r.arr;
+      if(arr === m.pos) arr = arr.slice();
+      ret = {broken: r.broken, order: r.order};
     } else if(MESH_CALLS.includes(m.fn)){
       ret = self[m.fn]();
       arr = mesh.geometry.attributes.position.array;

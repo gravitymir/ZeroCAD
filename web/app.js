@@ -6218,10 +6218,21 @@ const bevelTool = {
     if(now) this.apply();
     else this.timer = setTimeout(()=>{ if(activeTool === this) this.apply(); }, 120);
   },
-  // срез тела по текущим параметрам (всегда от исходной сетки)
+  // срез тела по текущим параметрам (всегда от исходной сетки). Булевы
+  // считает фоновый поток (bevelRoundCore), поэтому ответ — обещание: пока
+  // идёт расчёт, вкладка живая. Тот же размер, что уже считается, ждёт тот
+  // же расчёт; ответ на устаревшие числа (ввод ушёл дальше) отбрасывается
   apply(){
     const {size, segs} = this.params();
     const sig = size + '|' + segs + '|' + (this.face >= 0 ? this.loops : '');
+    if(this.pending && this.pending.sig === sig && this.pending.snap === this.snap) return this.pending.p;
+    const p = this.applyNow(size, segs, sig);
+    const job = {sig, snap: this.snap, p};
+    this.pending = job;
+    p.finally(() => { if(this.pending === job) this.pending = null; });
+    return p;
+  },
+  async applyNow(size, segs, sig){
     if(this.shown === sig){
       if(this.broken){ // предпросмотр с теми же числами: надпись о поломке не затирать
         bev_info.style.color = '#ff6b6b';
@@ -6232,13 +6243,17 @@ const bevelTool = {
     const base = this.snap.pos;
     if(this.face >= 0) return this.applyFace(size, segs, sig);
     if(size > this.fitMax + 1e-6){ this.broken = 'too big'; return false; } // не помещается на гранях
+    const seq = this.seq = (this.seq || 0) + 1, snap = this.snap;
+    const stale = () => this.seq !== seq || this.snap !== snap || activeTool !== this;
     try{
       {
-        const res = this.roundOn(base, this.edges, size, segs);
+        const res = await this.roundOn(base, this.edges, size, segs);
+        if(stale()) return false;
         this.broken = res.broken;
         if(!res.broken) this.edges = res.edges;
         else if(!this.searching && this.vertPts && this.vertPts.length >= 2){
-          const sp = this.roundSplit(size, segs);
+          const sp = await this.roundSplit(size, segs);
+          if(stale()) return false;
           if(sp){ this.broken = ''; this.edges = sp; this.split = true; }
         }
         if(!this.broken) bevelFlushCaps(this.edges, size);
@@ -6264,6 +6279,7 @@ const bevelTool = {
       }
       return true;
     }catch(err){
+      if(stale()) return false;
       console.warn('bevel failed', err);
       setMeshFromArray(base);
       hardEdges = this.snap.hard.map(h=>({a: h.a.clone(), b: h.b.clone()}));
@@ -6276,8 +6292,45 @@ const bevelTool = {
     }
   },
   // Один проход скругления по сетке base: перебор порядков рёбер; сетка
-  // остаётся с результатом, broken — пусто, если тело целое
-  roundOn(base, edgesIn, size, segs){
+  // остаётся с результатом, broken — пусто, если тело целое. Инструменты
+  // строятся здесь, булевы и ремонт — bevelRoundCore в фоновом потоке (нет
+  // потока — на странице); точная булева отказала — прежний путь с BSP
+  async roundOn(base, edgesIn, size, segs){
+    const conc = [], conv = [];
+    edgesIn.forEach((ed, i) => (ed.concave ? conc : conv).push(i));
+    const idx = edgesIn.map((_, i) => i);
+    // поиск рабочего размера пробует много размеров — там два порядка, не четыре
+    const orders = this.searching ? [idx, idx.slice().reverse()]
+      : [idx, idx.slice().reverse(), conc.concat(conv), conv.concat(conc)];
+    const corners = bevelCorners(edgesIn);
+    this.corners = corners.length;
+    const tools = edgesIn.map(ed => ({tris: bevelPrism(ed, size, segs), union: !!ed.concave}));
+    const ctools = corners.map(c => ({tris: c.mixed ? cornerTorusTris(c, size, segs) : cornerBallTris(c, size, segs),
+      union: !!(c.mixed || c.concave)}));
+    let r = null;
+    if(geomWorkerReady()){
+      const F = tris => {
+        const f = new Float64Array(tris.length * 9);
+        tris.forEach((t, i) => { for(let j=0;j<3;j++) f.set([t[j].x, t[j].y, t[j].z], i*9 + j*3); });
+        return f;
+      };
+      const job = {tools: tools.map(t => ({f: F(t.tris), union: t.union})),
+        corners: ctools.map(t => ({f: F(t.tris), union: t.union})), orders};
+      try{
+        const m = await geomRun('bevelRound', base, {job});
+        r = m.ret.needPage ? {needPage: true} : {arr: m.arr, broken: m.ret.broken, order: m.ret.order, engine: m.engine};
+      }catch(err){ if(!err.workerDown) throw err; }
+    }
+    if(!r) r = bevelRoundCore(base, tools, ctools, orders);
+    if(r.needPage) return this.roundOnPage(base, edgesIn, size, segs);
+    if(r.arr !== mesh.geometry.attributes.position.array) setMeshFromArray(r.arr);
+    if(r.engine) lastBoolPath = r.engine;
+    this.skipped = 0;
+    this.broken = r.broken;
+    return r.broken ? {broken: r.broken, edges: edgesIn} : {broken: '', edges: orders[r.order].map(i => edgesIn[i])};
+  },
+  // прежний путь целиком на странице: булевы с запасным BSP
+  roundOnPage(base, edgesIn, size, segs){
     // Порядок булевых важен: три угла полки в одном порядке рвали тело (дыры
     // у косого верха стенки), в обратном — ни одной складки. Вышло битым —
     // пробуем другие порядки рёбер и берём первый целый
@@ -6355,7 +6408,7 @@ const bevelTool = {
   // другой группой рёбра — только до середины; вторая — на новой сетке: её
   // половины этих рёбер доходят до готовой выкружки и сливаются с ней
   // (как выкружка пола доходит до выкружки угла)
-  roundSplit(size, segs){
+  async roundSplit(size, segs){
     const pts = this.vertPts;
     if(!pts || pts.length < 2) return null;
     const box = new THREE.Box3();
@@ -6375,13 +6428,13 @@ const bevelTool = {
       ed.L /= 2;
       ed['planes' + end] = []; ed['open' + end] = true; ed._ext = {};
     }
-    const res1 = this.roundOn(this.snap.pos, r1.eds, size, segs);
+    const res1 = await this.roundOn(this.snap.pos, r1.eds, size, segs);
     if(res1.broken) return null;
     const after1 = mesh.geometry.attributes.position.array.slice();
     extractEdges();
     const r2 = ballCornerEdges(g2);
     if(r2.err) return null;
-    const res2 = this.roundOn(after1, r2.eds, size, segs);
+    const res2 = await this.roundOn(after1, r2.eds, size, segs);
     if(res2.broken) return null;
     return res1.edges.concat(res2.edges);
   },
@@ -6422,24 +6475,24 @@ const bevelTool = {
     this.searching = true; bev_find.disabled = true;
     const {size} = this.params();
     const step = size > 2 ? 0.5 : 0.1, grid = x => Math.floor(x / step + 1e-6) * step;
-    const test = s => { bev_d.value = +s.toFixed(2); this.shown = null; return s <= this.fitMax + 1e-6 && this.apply(); };
+    const test = async s => { bev_d.value = +s.toFixed(2); this.shown = null; return s <= this.fitMax + 1e-6 && await this.apply(); };
     const tick = () => new Promise(r => setTimeout(r, 20));
     let lo = 0, hi = size, best = 0;
     // сначала самый малый: ломается и он — дело не в размере, а в сочетании
     // рёбер, дальше искать незачем (на 8 углах полки поиск шёл 7 минут впустую)
     bev_info.style.color = ''; bev_info.textContent = 'Trying ' + step + ' mm…'; await tick();
-    if(!test(step)) hi = 0;
+    if(!(await test(step))) hi = 0;
     else { best = lo = step; }
     const first = hi > 0 ? grid(Math.min(this.fitMax, size - step)) : 0;
     if(first > 0){
       bev_info.style.color = ''; bev_info.textContent = 'Trying ' + first + ' mm…'; await tick();
-      if(test(first)){ best = lo = first; } else hi = first;
+      if(await test(first)){ best = lo = first; } else hi = first;
     }
     while(hi - lo > step + 1e-9){
       const mid = grid((lo + hi) / 2);
       if(mid <= lo + 1e-9) break;
       bev_info.style.color = ''; bev_info.textContent = 'Trying ' + mid + ' mm…'; await tick();
-      if(test(mid)){ best = lo = mid; } else hi = mid;
+      if(await test(mid)){ best = lo = mid; } else hi = mid;
     }
     this.searching = false; bev_find.disabled = false;
     if(best > 0){
@@ -6454,9 +6507,12 @@ const bevelTool = {
     }
     return best || null;
   },
-  commit(){
+  async commit(){
     clearTimeout(this.timer);
-    if(!this.apply()){ warnTip('Bevel failed on this edge'); return; }
+    const snap = this.snap;
+    const ok = await this.apply();
+    if(activeTool !== this || this.snap !== snap) return; // окно закрыли, пока считалось
+    if(!ok){ warnTip('Bevel failed on this edge'); return; }
     pushHistory(this.snap); // одна запись: Ctrl+Z вернёт тело до фаски
     this.committed = true;
     {
@@ -7340,6 +7396,7 @@ function placeTextAt(P, n){
   // строкам/столбцам; врезается в грань линиями-хордами (noExt: сегменты
   // замкнутого контура не продлеваются при заливке; режем только в
   // пределах сегмента — wholeLine резал бы соседние буквы)
+  let carvedSegs = [];
   const carveOutline = ()=>{
     const H = new Map(), Vg = new Map(); // линия gy -> {gx}, линия gx -> {gy}
     const put = (m,k,x)=>{ if(!m.has(k)) m.set(k,new Set()); m.get(k).add(x); };
@@ -7365,14 +7422,29 @@ function placeTextAt(P, n){
     // протекает сквозь границу буквы. true режет всех, кого сегмент задел;
     // лишние резы копланарны и невидимы, а барьером служит точный тест
     // «ребро на сегменте» в facePatchAt
-    for(const [gy,set] of H) for(const [x0,x1] of runs(set)){
-      const A = pt(x0,gy), B = pt(x1,gy);
-      addGuide(A, B, true); splitMeshByChord(A, B, true);
-    }
-    for(const [gx,set] of Vg) for(const [y0,y1] of runs(set)){
-      const A = pt(gx,y0), B = pt(gx,y1);
-      addGuide(A, B, true); splitMeshByChord(A, B, true);
-    }
+    const segs = [];
+    for(const [gy,set] of H) for(const [x0,x1] of runs(set)) segs.push([pt(x0,gy), pt(x1,gy)]);
+    for(const [gx,set] of Vg) for(const [y0,y1] of runs(set)) segs.push([pt(gx,y0), pt(gx,y1)]);
+    for(const [A, B] of segs){ addGuide(A, B, true); splitMeshByChord(A, B, 'outline'); }
+    carvedSegs = segs;
+  };
+  // Угол буквы, попавший на сторону длинного треугольника крышки, рез
+  // иногда пропускает: вершины на конце отрезка нет, отрезок не накрыт
+  // рёбрами, и заливка протекает (дырка «A» на плитке — в букву). Сразу
+  // повторный рез не помогает (мешают Т-стыки), после ремонта — ставит угол.
+  // true — что-то перерезали, нужен ещё ремонт
+  const recutMissing = () => {
+    const Q = 0.002, qk = (x, y, z) => Math.round(x/Q) + ',' + Math.round(y/Q) + ',' + Math.round(z/Q);
+    const arr = mesh.geometry.attributes.position.array, have = new Set();
+    for(let i = 0; i < arr.length; i += 3) have.add(qk(arr[i], arr[i+1], arr[i+2]));
+    const has = P0 => {
+      const x = Math.round(P0.x/Q), y = Math.round(P0.y/Q), z = Math.round(P0.z/Q);
+      for(let a=-1;a<=1;a++) for(let b=-1;b<=1;b++) for(let c=-1;c<=1;c++) if(have.has((x+a)+','+(y+b)+','+(z+c))) return true;
+      return false;
+    };
+    const miss = carvedSegs.filter(([A, B]) => !has(A) || !has(B));
+    for(const [A, B] of miss) splitMeshByChord(A, B, 'outline');
+    return miss.length > 0;
   };
   // Врезка контура режет грань сотнями хорд: остаются Т-стыки и щепки
   // (у «CLIFFORDS BAR» на пластине — 433 немногообразных ребра и 7921 щепка).
@@ -7391,12 +7463,40 @@ function placeTextAt(P, n){
       cleanupMesh(); healTJunctions(); healCracks(); removeInvertedShells();
     }
   };
+  // дырка в 3–4 точки в плоскости грани (повторный рез иногда теряет один
+  // треугольник 1.4 × 0.15 мм — closeSliverHoles такие не берёт по периметру)
+  const fillFlatHoles = () => {
+    const add = [];
+    for(const L of boundaryLoops()){
+      if(L.length > 4) continue;
+      const nn = new THREE.Vector3().subVectors(L[1], L[0]).cross(new THREE.Vector3().subVectors(L[2], L[0]));
+      if(nn.length() < 1e-9) continue;
+      nn.normalize();
+      if(L.some(P => Math.abs(nn.dot(new THREE.Vector3().subVectors(P, L[0]))) > 1e-3)) continue;
+      for(let i = 1; i + 1 < L.length; i++) for(const P of [L[0], L[i], L[i+1]]) add.push(P.x, P.y, P.z);
+    }
+    if(!add.length) return;
+    const pos = mesh.geometry.attributes.position.array, out = new Float32Array(pos.length + add.length);
+    out.set(pos); out.set(add, pos.length);
+    setMeshFromArray(out);
+    cleanupMesh();
+  };
+  const carveAndRepair = () => {
+    carveOutline();
+    repairCarve();
+    for(let pass = 0; pass < 3; pass++){
+      const keep = mesh.geometry.attributes.position.array.slice(), bad0 = openEdgeCount() + nonManifoldEdgeCount();
+      if(!recutMissing()) break;
+      repairCarve();
+      if(openEdgeCount() + nonManifoldEdgeCount() > bad0) fillFlatHoles();
+      if(openEdgeCount() + nonManifoldEdgeCount() > bad0){ setMeshFromArray(keep); break; }
+    }
+  };
   pushUndo();
   try{
     if(d === 0){
       // чертёжный набросок: только контур — области потом выдавит выбор
-      carveOutline();
-      repairCarve();
+      carveAndRepair();
       if(!modified){ modified = true; s_mod.textContent = 'yes'; }
       extractEdges();
       return;
@@ -7411,8 +7511,7 @@ function placeTextAt(P, n){
       // основание остаётся адресуемой областью; затем добавляется
       // цельная оболочка буквы, вросшая в тело на 0.5 мм (копланарного
       // дна нет — нет мерцания; слайсеры такие союзы понимают)
-      carveOutline();
-      repairCarve();
+      carveAndRepair();
       const arr = Array.from(mesh.geometry.attributes.position.array);
       for(const t of letters) for(const vv of t) arr.push(q(vv.x), q(vv.y), q(vv.z));
       setMeshFromArray(new Float32Array(arr));
@@ -8044,17 +8143,21 @@ function facePatchAt(triIdx, reseeded, plane){
       const ex = dx/L, ey = dy/L;
       return {a:[A[0]-ex, A[1]-ey], b:[B[0]+ex, B[1]+ey], noExt:false};
     });
-  // ребро лежит на сегменте cut? Оба конца на его прямой (0.05 мм) и
+  // ребро лежит на сегменте cut? Оба конца на его прямой (0.01 мм) и
   // проекции перекрываются с сегментом — ловит и рёбра, лишь частично
-  // накрывающие сегмент (середина такого ребра может быть за концом)
+  // накрывающие сегмент (середина такого ребра может быть за концом).
+  // Контур врезан в сетку точно, а чистка не уводит точки с линий
+  // (guideLock), поэтому допуск узкий: при 0.05 барьером считалась и
+  // длинная хорда крышки плитки в 0.03–0.05 мм от низа букв — «O» и «S»
+  // резались пополам
   const midOnCut = (A2, B2, cut) => {
     const ax=cut.a[0], ay=cut.a[1];
     const dx=cut.b[0]-ax, dy=cut.b[1]-ay;
     const L = Math.hypot(dx,dy);
     if(L < 1e-9) return false;
     const ux=dx/L, uy=dy/L;
-    if(Math.abs((A2[0]-ax)*uy - (A2[1]-ay)*ux) > 0.05) return false;
-    if(Math.abs((B2[0]-ax)*uy - (B2[1]-ay)*ux) > 0.05) return false;
+    if(Math.abs((A2[0]-ax)*uy - (A2[1]-ay)*ux) > 0.01) return false;
+    if(Math.abs((B2[0]-ax)*uy - (B2[1]-ay)*ux) > 0.01) return false;
     let tA = (A2[0]-ax)*ux + (A2[1]-ay)*uy;
     let tB = (B2[0]-ax)*ux + (B2[1]-ay)*uy;
     if(tA > tB){ const t=tA; tA=tB; tB=t; }
@@ -17118,6 +17221,7 @@ function geomRun(fn, pos, extra = {}){
     anchors.forEach((a, i) => { an.set([a.pos.x, a.pos.y, a.pos.z], i * 3); });
     const msg = {id, fn, pos: pos.slice(), guides: g, anchors: an, op: extra.op, round: extra.round, engine: GEOM_BOOL_ENGINE};
     const tr = [msg.pos.buffer, g.buffer, an.buffer];
+    if(extra.job) msg.job = extra.job; // фаска: инструменты и порядки (bevelRound)
     if(extra.tris){
       const t = new Float64Array(extra.tris.length * 9);
       extra.tris.forEach((tri, i) => { for(let j=0;j<3;j++) t.set([tri[j].x, tri[j].y, tri[j].z], i*9 + j*3); });
@@ -18244,7 +18348,7 @@ const ZC_COMMANDS = {
       bevelTool.vertPts = vs.length ? vs.map((pt, i) => zcV3(pt, 'vertices[' + i + ']')) : null;
       bev_d.value = size; bev_s.value = segs;
       setActiveTool(bevelTool);  // on(): снимок и предпросмотр по полям окна
-      bevelTool.commit();         // одна запись истории на все рёбра
+      await bevelTool.commit();   // одна запись истории на все рёбра
       if(activeTool === bevelTool){
         // не вышло — найти самый большой рабочий размер и сказать агенту
         const best = await bevelTool.findWorkingSize(true);
