@@ -75,7 +75,8 @@ def near(a, b, tol, what=''):
 
 
 def exact(d, what=''):
-    assert d.get('boolean', 'exact') == 'exact', f'{what}: boolean path {d.get("boolean")}'
+    # точный путь — наш meshBoolean или Manifold; не запасной BSP
+    assert d.get('boolean', 'exact') in ('exact', 'manifold'), f'{what}: boolean path {d.get("boolean")}'
 
 
 ngon = lambda r, n=48: n / 2 * r * r * math.sin(2 * math.pi / n)

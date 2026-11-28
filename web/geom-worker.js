@@ -8,8 +8,8 @@
 // которые чистка не стягивает) приходят вместе с задачей.
 //
 // Задача: {id, fn, pos: Float32Array, guides: Float64Array [ax,ay,az,bx,by,bz…],
-// anchors: Float64Array [x,y,z…], …аргументы}. Ответ: {id, arr, ret} или
-// {id, error}
+// anchors: Float64Array [x,y,z…], engine: 'exact' | 'manifold', …аргументы}.
+// Ответ: {id, arr, ret, engine} или {id, error}
 importScripts('vendor/three.min.js', 'geom.js');
 
 let mesh = null, guides = [], anchors = [];
@@ -22,9 +22,15 @@ const V3 = (a, i) => new THREE.Vector3(a[i], a[i+1], a[i+2]);
 const MESH_CALLS = ['cleanupMesh', 'healTJunctions', 'healCracks', 'healAll', 'healAfterBool', 'tidySlivers',
   'collapseCollinearVertices', 'healCoplanarOverlaps', 'removeInvertedShells', 'openEdgeCount', 'nonManifoldEdgeCount'];
 
-onmessage = e => {
-  const m = e.data;
+// задачи — строго по одной: загрузка Manifold ждёт, а общая сетка одна
+let geomQueue = Promise.resolve();
+onmessage = e => { geomQueue = geomQueue.then(() => geomTask(e.data)); };
+async function geomTask(m){
   try{
+    GEOM_BOOL_ENGINE = m.engine === 'manifold' ? 'manifold' : 'exact';
+    if(GEOM_BOOL_ENGINE === 'manifold'){
+      try{ await manifoldLoad(); }catch(err){ console.warn('Manifold did not load:', err && err.message || err); }
+    }
     setMeshFromArray(m.pos);
     guides = [];
     for(let i=0;i<m.guides.length;i+=6) guides.push({a: V3(m.guides, i), b: V3(m.guides, i+3)});
@@ -39,8 +45,8 @@ onmessage = e => {
       ret = self[m.fn]();
       arr = mesh.geometry.attributes.position.array;
     } else throw new Error('unknown geometry call ' + m.fn);
-    postMessage({id: m.id, arr, ret}, [arr.buffer]);
+    postMessage({id: m.id, arr, ret, engine: geomLastEngine}, [arr.buffer]);
   }catch(err){
     postMessage({id: m.id, error: String(err && err.message || err)});
   }
-};
+}

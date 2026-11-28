@@ -1924,8 +1924,15 @@ function solidBoolMesh(pos, tris, op, round){
     body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]), new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
                new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
   const R = t => round ? t.map(v => new THREE.Vector3(q3(v.x), q3(v.y), q3(v.z))) : t;
-  const out = meshBoolean(body, tris.map(R),
-    op === 'cut' ? 'subtract' : op === 'intersect' ? 'intersect' : 'union');
+  const bop = op === 'cut' ? 'subtract' : op === 'intersect' ? 'intersect' : 'union';
+  const tool = tris.map(R);
+  let out = null;
+  geomLastEngine = 'exact';
+  if(GEOM_BOOL_ENGINE === 'manifold' && manifoldLib){
+    out = manifoldBooleanOrNull(body, tool, bop);
+    if(out) geomLastEngine = 'manifold';
+  }
+  if(!out) out = meshBoolean(body, tool, bop);
   if(!out.length) throw new Error('the result is empty');
   // Т-стыки на вырожденных треугольниках — сначала сварка микрорёбер, потом
   // честный разрез соседа (resolveDegenerate). Если результат с дефектом —
@@ -1958,4 +1965,61 @@ function solidBoolMesh(pos, tris, op, round){
   const openBad = best.bad >= 1000, small = out.length / 9 < 40000;
   if(best.bad > 0 && fixedOut !== out && (openBad || small)){ const alt = finish(out); if(alt.bad < best.bad) best = alt; }
   return best.arr;
+}
+// ---------- второй движок булевых: Manifold (vendor/manifold.js + .wasm) ----------
+// Manifold (Apache-2.0) по построению выдаёт замкнутое многообразное тело —
+// без щелей и рёбер на трёх гранях, которые наш meshBoolean оставляет и
+// которые потом лечит починка. Включается GEOM_BOOL_ENGINE = 'manifold' и
+// грузится по требованию (manifoldLoad — асинхронно, дальше вызовы
+// синхронные). Вход — наши треугольники: вершины склеиваются по keyOf (как
+// во всём ядре), вырожденные (две вершины в одной) выбрасываются. Тело не
+// замкнуто или Manifold отказал — null, и считает meshBoolean
+let GEOM_BOOL_ENGINE = 'exact';  // 'exact' — meshBoolean, 'manifold' — Manifold
+let geomLastEngine = '';         // чем посчитана последняя булева solidBoolMesh
+let manifoldLib = null, manifoldLoading = null;
+function manifoldLoad(){
+  if(manifoldLib) return Promise.resolve(manifoldLib);
+  if(!manifoldLoading)
+    manifoldLoading = import('./vendor/manifold.js')
+      .then(m => m.default())
+      .then(w => { w.setup(); manifoldLib = w; return w; })
+      .catch(err => { manifoldLoading = null; throw err; });
+  return manifoldLoading;
+}
+function manifoldOf(tris){
+  const ids = new Map(), vp = [], tv = [];
+  for(const t of tris){
+    const c = [0, 0, 0];
+    for(let j=0;j<3;j++){
+      const v = t[j], k = keyOf(v.x, v.y, v.z);
+      let id = ids.get(k);
+      if(id === undefined){ id = vp.length / 3; ids.set(k, id); vp.push(v.x, v.y, v.z); }
+      c[j] = id;
+    }
+    if(c[0] === c[1] || c[1] === c[2] || c[2] === c[0]) continue;
+    tv.push(c[0], c[1], c[2]);
+  }
+  const mesh = new manifoldLib.Mesh({numProp: 3, vertProperties: new Float32Array(vp), triVerts: new Uint32Array(tv)});
+  return new manifoldLib.Manifold(mesh);
+}
+function manifoldBooleanOrNull(aTris, bTris, op){
+  let a = null, b = null, r = null;
+  try{
+    a = manifoldOf(aTris); b = manifoldOf(bTris);
+    r = op === 'subtract' ? a.subtract(b) : op === 'intersect' ? a.intersect(b) : a.add(b);
+    const m = r.getMesh(), np = m.numProp, P = m.vertProperties, T = m.triVerts;
+    const out = new Float32Array(T.length * 3);
+    for(let i=0;i<T.length;i++){
+      const o = T[i] * np;
+      out[i*3] = P[o]; out[i*3+1] = P[o+1]; out[i*3+2] = P[o+2];
+    }
+    return out;
+  }catch(err){
+    console.warn('Manifold boolean failed, using meshBoolean:', err && err.message || err);
+    return null;
+  }finally{
+    if(r) r.delete();
+    if(b) b.delete();
+    if(a) a.delete();
+  }
 }

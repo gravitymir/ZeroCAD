@@ -17114,7 +17114,7 @@ function geomRun(fn, pos, extra = {}){
     guides.forEach((gd, i) => { g.set([gd.a.x, gd.a.y, gd.a.z, gd.b.x, gd.b.y, gd.b.z], i * 6); });
     const an = new Float64Array(anchors.length * 3);
     anchors.forEach((a, i) => { an.set([a.pos.x, a.pos.y, a.pos.z], i * 3); });
-    const msg = {id, fn, pos: pos.slice(), guides: g, anchors: an, op: extra.op, round: extra.round};
+    const msg = {id, fn, pos: pos.slice(), guides: g, anchors: an, op: extra.op, round: extra.round, engine: GEOM_BOOL_ENGINE};
     const tr = [msg.pos.buffer, g.buffer, an.buffer];
     if(extra.tris){
       const t = new Float64Array(extra.tris.length * 9);
@@ -17146,14 +17146,14 @@ async function zcApplySolidAsync(tris, op, round = true){
   const pos = mesh.geometry.attributes.position.array;
   const v0 = meshVolumeOf(pos);
   const snap = takeSnapshot();
-  let arr;
-  try{ arr = (await geomRun('solidBoolMesh', pos, {tris: S.tris, op, round})).arr; }
+  let arr, engine = 'exact';
+  try{ const r = await geomRun('solidBoolMesh', pos, {tris: S.tris, op, round}); arr = r.arr; engine = r.engine || 'exact'; }
   catch(err){
     if(err.workerDown && mesh.geometry.attributes.position.array === pos) return zcApplySolid(tris, op, round);
     throw err;
   }
   if(mesh.geometry.attributes.position.array !== pos) throw new Error('the model changed while the boolean was computing — run it again');
-  lastBoolPath = 'exact';
+  lastBoolPath = engine;
   return zcSolidFinish(snap, pos, v0, S.vol, arr, op);
 }
 function zcApplySolid(tris, op, round = true){
@@ -17164,7 +17164,7 @@ function zcApplySolid(tris, op, round = true){
   const snap = takeSnapshot();
   let arr;
   if(op === 'new') arr = zcSolidNewArr(tris);
-  else { arr = solidBoolMesh(pos, tris, op, round); lastBoolPath = 'exact'; }
+  else { arr = solidBoolMesh(pos, tris, op, round); lastBoolPath = geomLastEngine; }
   return zcSolidFinish(snap, pos, v0, vol, arr, op);
 }
 // тело целиком новое (op new): треугольники с округлением до 0.001 мм
@@ -18938,7 +18938,18 @@ async function zcExec(name, a){
   if(lastBoolPath && res && typeof res === 'object' && !Array.isArray(res)) res.boolean = lastBoolPath;
   return res;
 }
-window.zc = {run: zcRun, tools: zcToolList}; // и для консоли разработчика
+// Движок булевых тела с телом (solidBoolMesh): 'manifold' — Manifold, по
+// умолчанию, грузится при старте; пока не загрузился или не загрузится
+// (страница открыта файлом) — 'exact', наш meshBoolean. Сменить для сверки —
+// из консоли: zc.boolEngine('exact')
+async function setBoolEngine(name){
+  if(name !== 'exact' && name !== 'manifold') throw new Error('engine must be exact or manifold');
+  if(name === 'manifold') await manifoldLoad();
+  GEOM_BOOL_ENGINE = name;
+  return name;
+}
+setBoolEngine('manifold').catch(err => console.warn('Manifold did not load, booleans use meshBoolean:', err && err.message || err));
+window.zc = {run: zcRun, tools: zcToolList, boolEngine: setBoolEngine}; // и для консоли разработчика
 let zcBadgeT = 0;
 function zcAgentBadge(name){
   let b = document.getElementById('zcAgent');

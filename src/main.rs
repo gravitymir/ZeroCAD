@@ -8,6 +8,8 @@
 //!   GET /geom-worker.js      -> фоновый поток с тем же ядром
 //!   GET /tools.js            -> схема команд для агента (её же вшивает сервер)
 //!   GET /vendor/three.min.js -> three.js r128 (локально: расширениям CDN нельзя)
+//!   GET /vendor/manifold.js, /vendor/manifold.wasm -> Manifold 3.5.4 (Apache-2.0):
+//!                               второй движок булевых, грузится по требованию
 //!   GET /api/wheel.stl?...   -> бинарный STL с параметрами из query
 //!   POST /mcp                -> MCP для AI-агента (agent.rs); команды исполняет
 //!                               открытая вкладка: GET /agent/events (SSE),
@@ -36,6 +38,8 @@ const GEOM_WORKER_JS: &str = include_str!("../web/geom-worker.js");
 /// его в `agent::embedded_tools()`, чтобы отвечать на `tools/list` без вкладки.
 pub const TOOLS_JS: &str = include_str!("../web/tools.js");
 const THREE_JS: &str = include_str!("../web/vendor/three.min.js");
+const MANIFOLD_JS: &str = include_str!("../web/vendor/manifold.js");
+const MANIFOLD_WASM: &[u8] = include_bytes!("../web/vendor/manifold.wasm");
 pub const BUILD: &str = env!("ZEROCAD_BUILD");
 static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
 
@@ -248,6 +252,14 @@ fn handle(stream: TcpStream) {
             &[],
             TOOLS_JS.as_bytes(),
         ),
+        "/vendor/manifold.js" => respond(
+            &mut stream,
+            "200 OK",
+            "text/javascript; charset=utf-8",
+            &[],
+            MANIFOLD_JS.as_bytes(),
+        ),
+        "/vendor/manifold.wasm" => respond(&mut stream, "200 OK", "application/wasm", &[], MANIFOLD_WASM),
         "/vendor/three.min.js" => respond(
             &mut stream,
             "200 OK",
