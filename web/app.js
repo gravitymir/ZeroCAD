@@ -7424,7 +7424,7 @@ function placeTextAt(P, n){
         body.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]),
                    new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
                    new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
-      const res = csgSubtract(body, letters);
+      const res = csgSubtract(body, letters, true);
       const arr = [];
       for(const t of res){
         const ar = new THREE.Vector3().subVectors(t[1],t[0])
@@ -9429,7 +9429,8 @@ function csgClusters(tris){
   return groups.map(g => g.ts);
 }
 let lastBoolPath = ''; // 'exact' | 'bsp' — для отладки и тестов
-// useManifold — точную булеву считает Manifold (фаска); без него — meshBoolean
+// useManifold — точную булеву считает Manifold (фаска, выдавливание, текст);
+// без него — meshBoolean
 function csgUnion(aTris, bTris, useManifold){
   const ex = exactBool(aTris, bTris, 'union', useManifold);
   lastBoolPath = ex ? geomLastEngine : 'bsp';
@@ -9551,7 +9552,7 @@ function commitPocketCSG(snap, patchTris, n, depth){
       bodyTris.push([new THREE.Vector3(pos[i],pos[i+1],pos[i+2]),
                      new THREE.Vector3(pos[i+3],pos[i+4],pos[i+5]),
                      new THREE.Vector3(pos[i+6],pos[i+7],pos[i+8])]);
-    const res = csgSubtract(bodyTris, prism);
+    const res = csgSubtract(bodyTris, prism, true);
     const q = x => Math.round(x*1000)/1000; // сетка ключей — микрощели слипаются
     const arr = [];
     for(const t of res){
@@ -9707,8 +9708,8 @@ function extrudeCSG(basePos, prism, op){
     body.push([new THREE.Vector3(cp[i],cp[i+1],cp[i+2]),
                new THREE.Vector3(cp[i+3],cp[i+4],cp[i+5]),
                new THREE.Vector3(cp[i+6],cp[i+7],cp[i+8])]);
-  const res = op === 'cut' ? (body.length ? csgSubtract(body, prism) : [])
-    : (body.length ? csgUnion(body, prism) : prism);
+  const res = op === 'cut' ? (body.length ? csgSubtract(body, prism, true) : [])
+    : (body.length ? csgUnion(body, prism, true) : prism);
   const q = x => Math.round(x*1000)/1000;
   const arr = [...parts.aside];
   for(const t of res){
@@ -10003,7 +10004,7 @@ function commitExtrudeRun(){
         body.push([new THREE.Vector3(snap.pos[i],snap.pos[i+1],snap.pos[i+2]),
                    new THREE.Vector3(snap.pos[i+3],snap.pos[i+4],snap.pos[i+5]),
                    new THREE.Vector3(snap.pos[i+6],snap.pos[i+7],snap.pos[i+8])]);
-      const res = bigMesh ? exactBool(body, prism, 'union') : csgUnion(body, prism);
+      const res = bigMesh ? exactBool(body, prism, 'union', true) : csgUnion(body, prism, true);
       if(!res) throw new Error('exact union failed on a large mesh');
       const q = x => Math.round(x*1000)/1000;
       const arr = [];
