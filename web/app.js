@@ -4398,13 +4398,14 @@ function shellInnerTris(pos, tris, open, t, ext){
   if(!(vol > 1e-3)) throw new Error('the wall of ' + t + ' mm is thicker than half of the body — no room inside');
   return out;
 }
-// Shell тела: одна запись истории; итог должен быть замкнут
-function applyShell(tris, open, t){
+// Shell тела: одна запись истории; итог должен быть замкнут. Булева — в
+// фоновом потоке (zcApplySolidAsync)
+async function applyShell(tris, open, t){
   if(!(t >= 0.1)) throw new Error('wall thickness must be at least 0.1 mm');
   const pos = mesh.geometry.attributes.position.array;
   const body = tris || Array.from({length: pos.length / 9}, (_, i) => i);
   const inner = shellInnerTris(pos, body, open, t, Math.max(1, t));
-  const r = zcApplySolid(inner, 'cut');
+  const r = await zcApplySolidAsync(inner, 'cut');
   if(r.open_edges > 0 || r.nonmanifold_edges > 0 || !(r.volume_change_mm3 < -1e-3)){
     undo(true);
     throw new Error(r.volume_change_mm3 < -1e-3 ? 'the shell came out broken here — try another wall thickness' : 'nothing was hollowed out');
@@ -4513,7 +4514,8 @@ const shellTool = {
   ui(){
     sh_state.textContent = this.stage === 'body' ? 'pick a body' : this.faces.length ? this.faces.length + ' open' : 'closed';
     sh_hint.hidden = !hintsChk.checked;
-    sh_ok.disabled = !(this.stage === 'faces' && !this.err && this.innerVol > 0);
+    sh_ok.disabled = this.busy || !(this.stage === 'faces' && !this.err && this.innerVol > 0);
+    if(this.busy){ sh_info.style.color = ''; sh_info.textContent = 'Hollowing…'; return; }
     sh_info.style.color = this.err ? '#ff6b6b' : '';
     if(this.stage === 'body'){ sh_info.textContent = 'Click the body to hollow · Enter — the whole model'; return; }
     if(this.err){ sh_info.textContent = this.err; return; }
@@ -4522,13 +4524,20 @@ const shellTool = {
       ? this.faces.length + (this.faces.length === 1 ? ' open face' : ' open faces')
       : '<span style="color:#f5c542">closed cavity — add an open face or a hole to drain</span>');
   },
-  commit(){
+  async commit(){
     clearTimeout(this.timer);
-    if(this.stage !== 'faces') return;
+    if(this.busy || this.stage !== 'faces') return;
     this.ghostG = killGroup(this.ghostG); this.hiG = killGroup(this.hiG);
-    try{ applyShell(this.tris, this.openTris(), this.thick()); }
-    catch(err){ warnTip('Shell failed: ' + err.message); this.paintFaces(); this.preview(true); return; }
-    setActiveTool(null);
+    this.busy = true; this.ui();
+    try{ await applyShell(this.tris, this.openTris(), this.thick()); }
+    catch(err){
+      this.busy = false;
+      warnTip('Shell failed: ' + err.message);
+      if(activeTool === this){ this.paintFaces(); this.preview(true); }
+      return;
+    }
+    this.busy = false;
+    if(activeTool === this) setActiveTool(null); // окно закрыли, пока считалось: оболочка уже в модели
   }
 };
 
@@ -9937,7 +9946,9 @@ function releaseToolInput(){ // фокус обратно на сцену
 // молча ломалась. Стало хуже, чем было до операции, — откат и сообщение
 // (как у скругления); команда агента получает ошибку
 let extrudeRejected = null;
-function commitExtrude(){
+// Ответ — обещание: выдавливание с End size ≠ 100 % считает булеву в фоновом
+// потоке, проверка целостности и шаг истории — после неё
+async function commitExtrude(){
   extrudeRejected = null;
   const pre = exLive ? undoStack[undoStack.length - 1] : null; // снимок до выдавливания
   // шаг истории: грань одна (не мультивыбор), не лист — как extrude_face
@@ -9951,7 +9962,7 @@ function commitExtrude(){
       if(exLive.taper && Math.abs(exLive.taper - 1) > 1e-6) args.end_scale = exLive.taper;
     }
   }
-  commitExtrudeRun();
+  await commitExtrudeRun();
   if(pre && !exLive && mesh && undoStack[undoStack.length - 1] === pre){
     const h0 = meshHealthOf(pre.pos), h1 = meshHealthOf(mesh.geometry.attributes.position.array);
     if(h1.open > h0.open || h1.nm > h0.nm){
@@ -9976,7 +9987,7 @@ function commitExtrudeRun(){
   exLive && updateOrbitCursor(false);
   if(!exLive){ exPopup.hidden = true; return; }
   applyExtrudeLive(snapMM(+ex_val.value||0));
-  if(exLive.taper && Math.abs(exLive.taper - 1) > 1e-6 && exLive.applied && !exLive.sheet){ commitTaperExtrude(); return; }
+  if(exLive.taper && Math.abs(exLive.taper - 1) > 1e-6 && exLive.applied && !exLive.sheet) return commitTaperExtrude();
   const applied = exLive.applied, n = exLive.n.clone(), op = exOp(), sheet = exLive.sheet;
   // Быстрый путь (грань просто сдвинулась, проверка по объёму) законен, только
   // если призма выдавливания целиком в теле (вырез) или целиком снаружи
@@ -10174,7 +10185,7 @@ function buildPatchPrismRange(pos, trisIdx, n, hLow, hHigh){
 // телом или вычитается точной булевой — работает и наружу, и в тело (карман
 // с уклоном), и у граней с отверстиями. Предпросмотр откатывается к снимку
 // до окна, призма строится по тем же треугольникам лоскута
-function commitTaperExtrude(){
+async function commitTaperExtrude(){
   const L = exLive, v = L.applied, k = L.taper, op = exOp(), n = L.n.clone().normalize();
   exLive = null; exPopup.hidden = true;
   hideExAxis(); exFaceDrag = null; releaseToolInput(); updateOrbitCursor(false);
@@ -10194,7 +10205,7 @@ function commitTaperExtrude(){
   }
   for(const w of cnt.values()) if(w.n === 1) tris.push([w.P, w.Q, top(w.Q)], [w.P, top(w.Q), top(w.P)]);
   try{
-    const r = zcApplySolid(tris, op === 'cut' ? 'cut' : 'join', false);
+    const r = await zcApplySolidAsync(tris, op === 'cut' ? 'cut' : 'join', false);
     if(r.open_edges || r.nonmanifold_edges || !r.volume_change_mm3){
       undo(true);
       warnTip(r.volume_change_mm3 ? 'Extrude with end size failed here' : 'Nothing to ' + (op === 'cut' ? 'cut' : 'add') + ' here');
@@ -17783,7 +17794,7 @@ async function bevelFaceOutlines(tri, size, segs, which){
 // лоскута от 1 мм над гранью до выхода за тело по -n. В отличие от
 // zcCutThrough не нужна параллельная обратная грань, а область может быть с
 // отверстиями; тот остаётся запасным путём
-function zcCutThroughCSG(tri){
+async function zcCutThroughCSG(tri){
   const pos = mesh.geometry.attributes.position.array;
   const n = triNormalAt(tri).clone().normalize();
   const patch = facePatchCached(tri);
@@ -17792,7 +17803,7 @@ function zcCutThroughCSG(tri){
   for(let i=0;i<pos.length;i+=3) dmin = Math.min(dmin, n.x*pos[i] + n.y*pos[i+1] + n.z*pos[i+2] - d0);
   if(dmin > -0.01) throw new Error('nothing below this region to cut through');
   const prism = buildPatchPrismRange(pos, patch.tris, n, dmin - 1, 1);
-  const r = zcApplySolid(prism, 'cut', false);
+  const r = await zcApplySolidAsync(prism, 'cut', false);
   if(!(r.volume_change_mm3 < 0)){ undo(true); throw new Error('cut through removed nothing here'); }
   if(r.open_edges || r.nonmanifold_edges){ undo(true); throw new Error('cut through did not close the body here'); }
   delete r.solid_volume_mm3;
@@ -17995,7 +18006,7 @@ const ZC_COMMANDS = {
     }
   },
   extrude_face: {
-    run(a){
+    async run(a){
       const d = +a.distance;
       if(!Number.isFinite(d) || Math.abs(d) < 0.05) throw new Error('distance must be a number of mm');
       const t = zcFaceAt(zcV3(a.point, 'point'), a.normal ? zcV3(a.normal, 'normal').normalize() : null);
@@ -18012,7 +18023,7 @@ const ZC_COMMANDS = {
       exLive.taper = k; ex_taper.value = Math.round(k * 100); // End size окна
       applyExtrudeLive(snapMM(d));
       const v1 = undoStack.length;
-      commitExtrude();
+      await commitExtrude();
       if(extrudeRejected) throw new Error(extrudeRejected.replace(/^Extrude/, 'extrude'));
       if(Math.abs(k - 1) > 1e-6 && !exLive && undoStack.length < v1){ releaseToolInput(); throw new Error('extrude with end_scale failed here (nothing to ' + (d < 0 ? 'cut' : 'add') + ', or the solid did not close)'); }
       if(exLive){ closeExtrude(); throw new Error('nothing to ' + (exOp() === 'cut' ? 'cut' : 'add') + ' here'); }
@@ -18022,11 +18033,11 @@ const ZC_COMMANDS = {
     }
   },
   cut_through: {
-    run(a){
+    async run(a){
       const t = zcFaceAt(zcV3(a.point, 'point'), a.normal ? zcV3(a.normal, 'normal').normalize() : null);
       if(t < 0) throw new Error('no face at this point');
       cachedPatch = null;
-      try{ return zcCutThroughCSG(t); }
+      try{ return await zcCutThroughCSG(t); }
       catch(err){
         if(/nothing below/.test(err.message)) throw err;
         cachedPatch = null;
@@ -18480,7 +18491,7 @@ const ZC_COMMANDS = {
   },
   shell_body: {
     // то же, что окно Shell (G,H): applyShell
-    run(a){
+    async run(a){
       const t = +a.thickness;
       if(!(t >= 0.1)) throw new Error('thickness must be at least 0.1 mm');
       const tris = zcBodyAt(a.body_point), pos = mesh.geometry.attributes.position.array;
@@ -18492,7 +18503,7 @@ const ZC_COMMANDS = {
         if(tris && !tris.includes(tri)) throw new Error('open face ' + JSON.stringify(f.point) + ' is not on the body');
         open.push(...coplanarFaceTris(pos, tri, tris));
       }
-      return applyShell(tris, open, t);
+      return await applyShell(tris, open, t);
     }
   },
   mirror_body: {
